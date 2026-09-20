@@ -1,0 +1,231 @@
+/* ---------------------------------------------------------
+   调子：琥珀/赭石。这个站的内容大半是「坑」和「警告」，
+   用警示色系比通用蓝绿更贴题，也更少撞脸。
+   --------------------------------------------------------- */
+:root {
+  --vp-c-brand-1: #b45309;
+  --vp-c-brand-2: #c2670f;
+  --vp-c-brand-3: #d97706;
+  --vp-c-brand-soft: rgba(217, 119, 6, 0.14);
+
+  --vp-c-tip-1: var(--vp-c-brand-1);
+  --vp-c-tip-soft: var(--vp-c-brand-soft);
+
+  --vp-font-family-base: "PingFang SC", "HarmonyOS Sans SC", "Source Han Sans SC",
+    "Noto Sans CJK SC", "Microsoft YaHei", -apple-system, BlinkMacSystemFont,
+    "Segoe UI", Roboto, sans-serif;
+  --vp-font-family-mono: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  --vp-layout-max-width: 1340px;
+  --vp-nav-logo-height: 0;
+}
+
+.dark {
+  --vp-c-brand-1: #e8a33d;
+  --vp-c-brand-2: #d9902b;
+  --vp-c-brand-3: #c2790f;
+  --vp-c-brand-soft: rgba(232, 163, 61, 0.15);
+}
+
+/* 正文：中文阅读节奏 —— 行高松一点，段距大一点 */
+.vp-doc p,
+.vp-doc li {
+  line-height: 1.85;
+}
+.vp-doc p {
+  margin: 1.1em 0;
+}
+.vp-doc h1 {
+  letter-spacing: -0.01em;
+  font-weight: 650;
+}
+.vp-doc h2 {
+  margin-top: 3rem;
+  padding-top: 1.6rem;
+  letter-spacing: -0.005em;
+}
+
+/* 行内代码：参数名、函数名在这个站里出现频率极高，得看得清 */
+.vp-doc :not(pre) > code {
+  font-size: 0.86em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--vp-c-brand-soft);
+  color: var(--vp-c-text-1);
+  font-weight: 500;
+}
+
+/* 表格：版本清单全靠表格，默认的太松散 */
+.vp-doc table {
+  display: table;
+  width: 100%;
+  font-size: 0.94em;
+}
+.vp-doc th {
+  font-weight: 600;
+  background: var(--vp-c-bg-soft);
+  white-space: nowrap;
+}
+.vp-doc td,
+.vp-doc th {
+  padding: 9px 14px;
+}
+
+/* ---------- 版本徽标 <Ver>22.5</Ver> 的替代：.ver ---------- */
+.ver {
+  display: inline-block;
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.8em;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: var(--vp-c-brand-soft);
+  color: var(--vp-c-brand-1);
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.ver.break {
+  background: rgba(220, 38, 38, 0.12);
+  color: #dc2626;
+}
+.dark .ver.break {
+  color: #f87171;
+}
+
+/* ---------- 首页 ---------- */
+.home-lede {
+  font-size: 1.06rem;
+  line-height: 1.9;
+  color: var(--vp-c-text-2);
+  max-width: 44em;
+}
+.home-lede strong {
+  color: var(--vp-c-text-1);
+}
+
+.idlinks {
+  font-size: 0.9rem;
+  color: var(--vp-c-text-3);
+  margin: 1.6rem 0 0;
+}
+.idlinks a {
+  font-weight: 500;
+}
+
+/* 时间线：版本 → 变更 */
+.timeline {
+  margin: 1.5rem 0 0;
+  border-left: 2px solid var(--vp-c-divider);
+  padding-left: 0;
+  list-style: none;
+}
+.timeline li {
+  position: relative;
+  padding: 0 0 1.35rem 1.4rem;
+  margin: 0;
+  line-height: 1.7;
+}
+.timeline li::before {
+  content: "";
+  position: absolute;
+  left: -6px;
+  top: 0.62em;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--vp-c-bg);
+  border: 2px solid var(--vp-c-brand-1);
+}
+.timeline li.break::before {
+  background: #dc2626;
+  border-color: #dc2626;
+}
+.timeline .tl-v {
+  font-family: var(--vp-font-family-mono);
+  font-weight: 650;
+  color: var(--vp-c-text-1);
+  margin-right: 0.55em;
+}
+.timeline .tl-d {
+  color: var(--vp-c-text-2);
+}
+
+/* 入口卡片 */
+.entries {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+  gap: 14px;
+  margin: 1.6rem 0 0;
+}
+.entry {
+  display: block;
+  padding: 18px 20px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 10px;
+  text-decoration: none !important;
+  transition: border-color 0.2s, background 0.2s;
+  background: var(--vp-c-bg);
+}
+.entry:hover {
+  border-color: var(--vp-c-brand-1);
+  background: var(--vp-c-bg-soft);
+}
+.entry h3 {
+  margin: 0 0 6px;
+  font-size: 1rem;
+  font-weight: 620;
+  color: var(--vp-c-text-1) !important;
+  letter-spacing: 0;
+}
+.entry p {
+  margin: 0 !important;
+  font-size: 0.875rem;
+  line-height: 1.65;
+  color: var(--vp-c-text-3);
+}
+
+/* Field Notes 条目 */
+.note {
+  border-left: 3px solid var(--vp-c-brand-1);
+  padding: 2px 0 2px 16px;
+  margin: 1.4rem 0;
+}
+.note > strong:first-child {
+  display: block;
+  margin-bottom: 0.3rem;
+  color: var(--vp-c-text-1);
+}
+.note p {
+  margin: 0.3rem 0 !important;
+  color: var(--vp-c-text-2);
+  font-size: 0.94em;
+}
+
+.hr-soft {
+  border: 0;
+  border-top: 1px solid var(--vp-c-divider);
+  margin: 3.2rem 0 2.4rem;
+}
+
+/* 启动流程 */
+.flow { margin: 1.6rem 0; }
+.flow-step {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 11px 14px; margin: 0 0 6px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 8px; background: var(--vp-c-bg-soft);
+  font-size: 0.93rem; line-height: 1.6;
+}
+.flow-step.hl-a { border-color: var(--vp-c-brand-1); background: var(--vp-c-brand-soft); }
+.flow-step.hl-b { border-color: #dc2626; border-width: 2px; background: rgba(220,38,38,0.07); }
+.dark .flow-step.hl-b { background: rgba(248,113,113,0.1); }
+.flow-n {
+  flex: 0 0 22px; height: 22px; line-height: 22px; text-align: center;
+  border-radius: 50%; font-size: 0.75rem; font-weight: 700;
+  background: var(--vp-c-bg); border: 1px solid var(--vp-c-divider);
+  font-family: var(--vp-font-family-mono);
+}
+.flow-step.hl-a .flow-n { background: var(--vp-c-brand-1); color: #fff; border-color: transparent; }
+.flow-step.hl-b .flow-n { background: #dc2626; color: #fff; border-color: transparent; }
+.flow-t em { color: var(--vp-c-text-3); font-size: 0.86em; font-style: normal; margin-left: 4px; }
