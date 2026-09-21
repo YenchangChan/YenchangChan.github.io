@@ -21,7 +21,14 @@
 
 ## 文章
 
-- [扩容之后为什么不自动做数据均衡](/clickhouse/tooling/why-not-auto-rebalance)
+<div class="posts">
+
+<a class="post" href="/clickhouse/tooling/why-not-auto-rebalance">
+<span class="post-t">扩容之后为什么不自动做数据均衡</span>
+<span class="post-d">技术上完全做得到，但 sharding 的所有权假设决定了它不该由工具替你决定。</span>
+</a>
+
+</div>
 
 <!-- TODO：
   - 线程池监控与合并指标：起点是我自己因为看不见而给了错误建议

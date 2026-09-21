@@ -4,9 +4,9 @@ pageClass: home-page
 
 # 禹鼎侯
 
-<div class="home-lede">
+<p class="hero-line">做 ClickHouse 的存储与集群运维，主要场景是金融和信创。</p>
 
-做 ClickHouse 的存储与集群运维，主要场景是金融和信创。
+<div class="home-lede">
 
 这类环境有几个共同点：变更窗口是提前排期排出来的，出了事进不去现场，机器可能是 aarch64，网络大概率不通外网。所以判断标准和互联网侧不太一样 —— **确定性优先于最优性**。一个边界清楚、能回滚的方案，比一个理论上更优但说不准的方案有用。
 
@@ -15,12 +15,10 @@ pageClass: home-page
 </div>
 
 <div class="idlinks">
-
-[ClickHouse/ClickHouse](https://github.com/ClickHouse/ClickHouse) contributor ·
-[ckman](https://github.com/housepower/ckman) author ·
-[clickhouse_sinker](https://github.com/housepower/clickhouse_sinker) maintainer ·
-[clickhouse-go](https://github.com/ClickHouse/clickhouse-go) contributor
-
+<span class="id"><a href="https://github.com/housepower/ckman">ckman</a><i>author</i></span>
+<span class="id"><a href="https://github.com/housepower/clickhouse_sinker">clickhouse_sinker</a><i>maintainer</i></span>
+<span class="id"><a href="https://github.com/ClickHouse/ClickHouse">ClickHouse</a><i>contributor</i></span>
+<span class="id"><a href="https://github.com/ClickHouse/clickhouse-go">clickhouse-go</a><i>contributor</i></span>
 </div>
 
 <hr class="hr-soft" />
@@ -124,9 +122,21 @@ ReplicatedMergeTree 防的是节点故障，防不了误删和逻辑错误。这
 <p>一手压测和源码级对比。有实测的标出条件，没实测的标明是推断。</p>
 </a>
 
-<a class="entry" href="/systems/">
+<a class="entry wide" href="/systems/">
 <h3>系统底层</h3>
 <p>内核、cgroup、采集器工程。比 ClickHouse 更下面的那一层。</p>
 </a>
+
+</div>
+
+<hr class="hr-soft" />
+
+<div class="whoami">
+
+**陈衍长 / 禹鼎侯** —— 做 ClickHouse 的工具（[ckman](https://github.com/housepower/ckman) 第一作者、[clickhouse_sinker](https://github.com/housepower/clickhouse_sinker) 维护者），也扛 ClickHouse 的线上故障。2020 年起只做这一件事，场景集中在金融和信创。
+
+这里写的都是自己踩过的：能复现的给命令，不能复现的说清楚边界，判断错的地方也留着不删。
+
+[关于我](/about/) · [GitHub](https://github.com/YenchangChan) · [知乎](https://www.zhihu.com/people/yu-ding-hou)
 
 </div>

@@ -49,6 +49,14 @@
 
 ## 文章
 
+<div class="soon">
+
+这一栏还在写。第一批会是存算分离横评和冷数据方案对比 —— 都带一手压测，测试条件随结论一起给出。
+
+在那之前，[版本升级避坑清单](/clickhouse/upgrade-gotchas) 和 [生产排障](/clickhouse/troubleshooting/) 里已经有可以直接用的东西。
+
+</div>
+
 <!-- TODO：
   - 存算分离横评：ClickHouse / OpenObserve / Doris / GreptimeDB
     （含一手压测；实测发现 OpenObserve 查询静默丢数并已向官方提 issue）

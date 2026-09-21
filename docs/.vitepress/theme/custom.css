@@ -1,15 +1,39 @@
-/* ---------------------------------------------------------
-   调子：琥珀/赭石。这个站的内容大半是「坑」和「警告」，
-   用警示色系比通用蓝绿更贴题，也更少撞脸。
-   --------------------------------------------------------- */
+/* ═══════════════════════════════════════════════════════════════
+   禹鼎侯 · 站点样式
+
+   设计前提：这个站的每一条结论都锚定在一个版本号上，内容大半是
+   「坑」和「警告」。所以：
+
+   ① 琥珀是信号，不是底色。页面上出现琥珀的地方必须意味着「注意」，
+      出现赤红的地方必须意味着「会崩」。正文、代码、表格一律走中性色 ——
+      到处都是琥珀，等于琥珀什么也不说明。
+   ② 结构即信息。左边线、分隔线、色槽都在编码内容类型，不做纯装饰。
+   ③ 一处出彩。版本时间线是唯一允许「有设计感」的组件，其余保持克制。
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ───────────────────────────── 1. 令牌 ───────────────────────── */
+
 :root {
+  /* 品牌：琥珀 / 赭石 */
   --vp-c-brand-1: #b45309;
   --vp-c-brand-2: #c2670f;
   --vp-c-brand-3: #d97706;
-  --vp-c-brand-soft: rgba(217, 119, 6, 0.14);
+  --vp-c-brand-soft: rgba(217, 119, 6, 0.13);
 
-  --vp-c-tip-1: var(--vp-c-brand-1);
-  --vp-c-tip-soft: var(--vp-c-brand-soft);
+  /* 语义信号层：三档，对应内容的三种严重度 */
+  --sig-note: var(--vp-c-text-3); /* 中性：只是记一笔 */
+  --sig-warn: #b45309; /* 琥珀：要注意 */
+  --sig-break: #b91c1c; /* 赤红：会崩 */
+  --sig-warn-soft: rgba(217, 119, 6, 0.1);
+  --sig-break-soft: rgba(185, 28, 28, 0.08);
+
+  /* 发丝线：比 vp-c-divider 再淡一档，用于正文内部的密集分隔 */
+  --rule: var(--vp-c-divider);
+  --rule-soft: rgba(60, 60, 67, 0.09);
+
+  /* 容器提示沿用信号层，不另起一套颜色 */
+  --vp-c-tip-1: var(--sig-warn);
+  --vp-c-tip-soft: var(--sig-warn-soft);
 
   --vp-font-family-base: "PingFang SC", "HarmonyOS Sans SC", "Source Han Sans SC",
     "Noto Sans CJK SC", "Microsoft YaHei", -apple-system, BlinkMacSystemFont,
@@ -19,6 +43,10 @@
 
   --vp-layout-max-width: 1340px;
   --vp-nav-logo-height: 0;
+
+  /* 正文字阶 */
+  --doc-size: 16.5px;
+  --doc-leading: 1.85;
 }
 
 .dark {
@@ -26,206 +54,951 @@
   --vp-c-brand-2: #d9902b;
   --vp-c-brand-3: #c2790f;
   --vp-c-brand-soft: rgba(232, 163, 61, 0.15);
+
+  --sig-warn: #e8a33d;
+  --sig-break: #f87171;
+  --sig-warn-soft: rgba(232, 163, 61, 0.12);
+  --sig-break-soft: rgba(248, 113, 113, 0.1);
+
+  --rule-soft: rgba(235, 235, 245, 0.09);
 }
 
-/* 正文：中文阅读节奏 —— 行高松一点，段距大一点 */
+/* ───────────────────────── 2. 正文排版 ───────────────────────── */
+
+/* 正文列宽：中文在 690px 上一行约 40 字，偏窄；放到 744 更接近
+   「一眼扫完一行」的节奏，同时右侧目录的空档也不至于那么突兀 */
+.VPDoc.has-aside .content-container {
+  max-width: 744px;
+}
+
+.vp-doc {
+  font-size: var(--doc-size);
+}
+
 .vp-doc p,
 .vp-doc li {
-  line-height: 1.85;
+  line-height: var(--doc-leading);
 }
+
 .vp-doc p {
-  margin: 1.1em 0;
+  margin: 1.05em 0;
 }
+
+/* 锚点跳转时别让标题贴在导航栏底下 */
+.vp-doc :is(h1, h2, h3, h4) {
+  scroll-margin-top: calc(var(--vp-nav-height) + 24px);
+}
+
 .vp-doc h1 {
-  letter-spacing: -0.01em;
+  font-size: 2.05rem;
   font-weight: 650;
+  letter-spacing: -0.015em;
+  line-height: 1.3;
+  margin-bottom: 0.65rem;
 }
+
+/* h2 起一节：上方留白 + 一条发丝线。这条线是全站最主要的分节信号 */
 .vp-doc h2 {
-  margin-top: 3rem;
-  padding-top: 1.6rem;
+  margin-top: 3.2rem;
+  padding-top: 1.7rem;
+  border-top: 1px solid var(--rule);
+  font-size: 1.42rem;
+  font-weight: 650;
+  letter-spacing: -0.008em;
+}
+
+.vp-doc h1 + h2 {
+  margin-top: 2.5rem;
+}
+
+.vp-doc h3 {
+  margin-top: 2.2rem;
+  font-size: 1.1rem;
+  font-weight: 620;
   letter-spacing: -0.005em;
 }
 
-/* 行内代码：参数名、函数名在这个站里出现频率极高，得看得清 */
-.vp-doc :not(pre) > code {
-  font-size: 0.86em;
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: var(--vp-c-brand-soft);
-  color: var(--vp-c-text-1);
-  font-weight: 500;
+/* 标题里的行内代码不该比标题本身还抢眼 */
+.vp-doc :is(h1, h2, h3, h4) code {
+  font-size: 0.88em;
+  font-weight: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
 }
 
-/* 表格：版本清单全靠表格，默认的太松散 */
+.vp-doc :is(ul, ol) {
+  padding-left: 1.35rem;
+}
+
+.vp-doc li + li {
+  margin-top: 0.45rem;
+}
+
+.vp-doc strong {
+  font-weight: 620;
+  color: var(--vp-c-text-1);
+}
+
+/* 链接：正文里下划线要克制，悬停才实 */
+.vp-doc a {
+  font-weight: 500;
+  text-decoration-color: var(--vp-c-brand-soft);
+  text-underline-offset: 3px;
+  transition: text-decoration-color 0.15s;
+}
+.vp-doc a:hover {
+  text-decoration-color: currentColor;
+}
+
+/* ─────────────────── 3. 代码：行内与块 ─────────────────── */
+
+/* 行内代码走中性色。参数名、函数名在这个站里几乎每段都出现，
+   给它们上琥珀底会让整页起斑点，也把琥珀的信号价值稀释掉了 */
+.vp-doc :not(pre) > code {
+  font-size: 0.855em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--vp-c-bg-soft);
+  border: 1px solid var(--rule-soft);
+  color: var(--vp-c-text-1);
+  font-weight: 500;
+  word-break: break-word;
+}
+
+.vp-doc a > code {
+  color: var(--vp-c-brand-1);
+  border-color: var(--vp-c-brand-soft);
+}
+
+.vp-doc div[class*="language-"] {
+  border-radius: 8px;
+  border: 1px solid var(--rule);
+  margin: 1.35rem 0;
+}
+
+/* 语言标签常驻，不用悬停才认得出这是 SQL 还是 XML */
+.vp-doc div[class*="language-"] > span.lang {
+  opacity: 0.55;
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  transition: opacity 0.2s;
+}
+.vp-doc div[class*="language-"]:hover > span.lang {
+  opacity: 0;
+}
+
+.vp-doc div[class*="language-"] code {
+  font-size: 0.83rem;
+  line-height: 1.7;
+}
+
+/* ─────────────────────── 4. 表格 ─────────────────────── */
+
+/* 版本清单、PR 列表全靠表格，默认样式太松散 */
 .vp-doc table {
   display: table;
   width: 100%;
-  font-size: 0.94em;
-}
-.vp-doc th {
-  font-weight: 600;
-  background: var(--vp-c-bg-soft);
-  white-space: nowrap;
-}
-.vp-doc td,
-.vp-doc th {
-  padding: 9px 14px;
+  font-size: 0.93em;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+  margin: 1.4rem 0;
 }
 
-/* ---------- 版本徽标 <Ver>22.5</Ver> 的替代：.ver ---------- */
+.vp-doc th {
+  font-weight: 600;
+  font-size: 0.88em;
+  background: var(--vp-c-bg-soft);
+  white-space: nowrap;
+  text-align: left;
+}
+
+.vp-doc td,
+.vp-doc th {
+  padding: 10px 14px;
+  border: 1px solid var(--rule);
+  line-height: 1.7;
+}
+
+.vp-doc tr {
+  background: transparent;
+  border-top: none;
+}
+.vp-doc tr:hover td {
+  background: var(--vp-c-bg-soft);
+}
+
+/* 全空表头（about 页的 PR 清单用了 | | | ）就别占高度了 */
+.vp-doc table thead:has(th:empty:only-child),
+.vp-doc table thead:has(th:empty + th:empty) {
+  display: none;
+}
+
+/* ───────────────── 5. 引文与内置容器 ───────────────── */
+
+.vp-doc blockquote {
+  border-left: 3px solid var(--vp-c-brand-1);
+  padding: 0.15rem 0 0.15rem 1.15rem;
+  margin: 1.5rem 0;
+}
+.vp-doc blockquote > p {
+  color: var(--vp-c-text-1);
+  font-size: 1.02em;
+  margin: 0.4rem 0;
+}
+
+/* tip / warning / danger：统一成「左色槽 + 标题行」的结构。
+   颜色对应信号层，严重度一眼可辨 */
+.vp-doc .custom-block {
+  border: 1px solid var(--rule);
+  border-left-width: 3px;
+  border-radius: 6px;
+  padding: 14px 18px;
+  margin: 1.6rem 0;
+  font-size: 0.96em;
+}
+
+.vp-doc .custom-block .custom-block-title {
+  font-weight: 620;
+  font-size: 0.86em;
+  margin-bottom: 0.55rem;
+  letter-spacing: 0.01em;
+}
+
+.vp-doc .custom-block p {
+  margin: 0.6rem 0;
+  line-height: 1.8;
+}
+.vp-doc .custom-block p:last-child {
+  margin-bottom: 0;
+}
+
+.vp-doc .custom-block.tip {
+  border-color: var(--rule);
+  border-left-color: var(--vp-c-brand-1);
+  background: var(--vp-c-bg-soft);
+}
+.vp-doc .custom-block.tip .custom-block-title {
+  color: var(--vp-c-brand-1);
+}
+
+.vp-doc .custom-block.warning {
+  border-color: var(--rule);
+  border-left-color: var(--sig-warn);
+  background: var(--sig-warn-soft);
+}
+.vp-doc .custom-block.warning .custom-block-title {
+  color: var(--sig-warn);
+}
+
+.vp-doc .custom-block.danger {
+  border-color: var(--rule);
+  border-left-color: var(--sig-break);
+  background: var(--sig-break-soft);
+}
+.vp-doc .custom-block.danger .custom-block-title {
+  color: var(--sig-break);
+}
+
+.vp-doc .custom-block :not(pre) > code {
+  background: var(--vp-c-bg);
+  border-color: var(--rule);
+}
+
+/* ─────────────────── 6. 版本徽标 .ver ─────────────────── */
+
 .ver {
   display: inline-block;
   font-family: var(--vp-font-family-mono);
-  font-size: 0.8em;
+  font-size: 0.79em;
   font-weight: 600;
-  padding: 1px 7px;
+  font-variant-numeric: tabular-nums;
+  padding: 1px 6px;
   border-radius: 4px;
-  background: var(--vp-c-brand-soft);
-  color: var(--vp-c-brand-1);
+  background: var(--sig-warn-soft);
+  color: var(--sig-warn);
   border: 1px solid transparent;
   white-space: nowrap;
+  vertical-align: 0.05em;
 }
+
 .ver.break {
-  background: rgba(220, 38, 38, 0.12);
-  color: #dc2626;
-}
-.dark .ver.break {
-  color: #f87171;
+  background: var(--sig-break-soft);
+  color: var(--sig-break);
 }
 
-/* ---------- 首页 ---------- */
-.home-lede {
-  font-size: 1.06rem;
-  line-height: 1.9;
-  color: var(--vp-c-text-2);
-  max-width: 44em;
-}
-.home-lede strong {
-  color: var(--vp-c-text-1);
-}
+/* ─────────────── 7. 版本时间线（站点标志组件） ─────────────── */
 
-.idlinks {
-  font-size: 0.9rem;
-  color: var(--vp-c-text-3);
-  margin: 1.6rem 0 0;
-}
-.idlinks a {
-  font-weight: 500;
-}
-
-/* 时间线：版本 → 变更 */
+/* 版本号对齐成一列，可以竖着扫；右边是一条连续的时间轴，
+   轴上的刻度点用颜色编码严重度。这是全站唯一一个「有设计」的组件 */
 .timeline {
-  margin: 1.5rem 0 0;
-  border-left: 2px solid var(--vp-c-divider);
+  --tl-gutter: 6.8rem;
+  margin: 1.8rem 0 0;
+  padding: 0;
+  list-style: none;
+  position: relative;
+}
+
+/* VitePress 的 .vp-doc ul 选择器优先级高于 .timeline，得显式压掉 */
+.vp-doc ul.timeline {
   padding-left: 0;
   list-style: none;
 }
-.timeline li {
-  position: relative;
-  padding: 0 0 1.35rem 1.4rem;
-  margin: 0;
-  line-height: 1.7;
-}
-.timeline li::before {
+
+/* 连续轴线 */
+.vp-doc ul.timeline::before {
   content: "";
   position: absolute;
-  left: -6px;
-  top: 0.62em;
-  width: 10px;
-  height: 10px;
+  left: var(--tl-gutter);
+  top: 0.9rem;
+  bottom: 0.9rem;
+  width: 1px;
+  background: var(--rule);
+}
+
+.vp-doc ul.timeline > li {
+  display: grid;
+  grid-template-columns: calc(var(--tl-gutter) - 1.1rem) 1fr;
+  column-gap: 2.1rem;
+  align-items: start;
+  margin: 0;
+  padding: 0.85rem 0;
+  border-top: 1px solid var(--rule-soft);
+  line-height: 1.75;
+  position: relative;
+}
+
+.vp-doc ul.timeline > li:first-child {
+  border-top: none;
+}
+
+/* 轴上的刻度点：空心 = 记一笔，实心赤红 = 会崩 */
+.vp-doc ul.timeline > li::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--tl-gutter) - 3px);
+  top: 1.32em;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--vp-c-bg);
-  border: 2px solid var(--vp-c-brand-1);
+  border: 1.5px solid var(--vp-c-text-3);
+  box-sizing: border-box;
 }
-.timeline li.break::before {
-  background: #dc2626;
-  border-color: #dc2626;
+
+.vp-doc ul.timeline > li.break::before {
+  background: var(--sig-break);
+  border-color: var(--sig-break);
 }
+
 .timeline .tl-v {
+  grid-column: 1;
+  text-align: right;
   font-family: var(--vp-font-family-mono);
+  font-size: 0.8rem;
   font-weight: 650;
-  color: var(--vp-c-text-1);
-  margin-right: 0.55em;
+  font-variant-numeric: tabular-nums;
+  color: var(--vp-c-text-3);
+  padding-top: 0.45em;
+  margin-right: 0;
+  white-space: nowrap;
 }
+
+.timeline > li.break .tl-v {
+  color: var(--sig-break);
+}
+
 .timeline .tl-d {
+  grid-column: 2;
   color: var(--vp-c-text-2);
 }
 
-/* 入口卡片 */
+.timeline .tl-d strong {
+  color: var(--vp-c-text-1);
+}
+
+/* 时间线里代码出现得非常密，边框收掉，免得整块起格子 */
+.timeline .tl-d :not(pre) > code {
+  border-color: transparent;
+}
+
+/* ─────────────── 8. 经验条目 .note ─────────────── */
+
+.note {
+  border-left: 3px solid var(--vp-c-brand-1);
+  border-radius: 0 6px 6px 0;
+  background: var(--vp-c-bg-soft);
+  padding: 13px 18px;
+  margin: 1.3rem 0;
+}
+
+.note > strong:first-child,
+.note > p:first-child > strong:first-child {
+  display: block;
+  margin-bottom: 0.35rem;
+  color: var(--vp-c-text-1);
+  font-weight: 620;
+}
+
+.note p {
+  margin: 0.35rem 0 !important;
+  color: var(--vp-c-text-2);
+  font-size: 0.94em;
+  line-height: 1.78;
+}
+.note p:first-child {
+  margin-top: 0 !important;
+}
+.note p:last-child {
+  margin-bottom: 0 !important;
+}
+
+/* ─────────────── 9. 文章清单 .posts ─────────────── */
+
+/* 栏目页的文章列表。标题一行、导语一行，中间发丝线分隔 ——
+   比裸 Markdown 的「- 链接 —— 说明」可扫得多 */
+.posts {
+  margin: 1.5rem 0 0;
+  border-top: 1px solid var(--rule);
+}
+
+.post {
+  display: block;
+  padding: 16px 2px;
+  border-bottom: 1px solid var(--rule);
+  text-decoration: none !important;
+  transition: background 0.15s, padding-left 0.15s;
+}
+
+.post:hover {
+  background: var(--vp-c-bg-soft);
+  padding-left: 12px;
+}
+
+.post .post-t {
+  display: block;
+  font-size: 1.02rem;
+  font-weight: 600;
+  color: var(--vp-c-text-1);
+  line-height: 1.55;
+}
+
+.post:hover .post-t {
+  color: var(--vp-c-brand-1);
+}
+
+.post .post-d {
+  display: block;
+  margin-top: 5px;
+  font-size: 0.89rem;
+  line-height: 1.7;
+  color: var(--vp-c-text-3);
+}
+
+/* 文章清单里的版本徽标：跟在标题后面做限定 */
+.post .ver {
+  margin-left: 0.5em;
+  vertical-align: 0.12em;
+}
+
+/* ─────────────── 10. 入口卡片 .entries ─────────────── */
+
 .entries {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
   margin: 1.6rem 0 0;
 }
+
 .entry {
   display: block;
-  padding: 18px 20px;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 10px;
+  position: relative;
+  padding: 17px 19px;
+  border: 1px solid var(--rule);
+  border-radius: 9px;
   text-decoration: none !important;
-  transition: border-color 0.2s, background 0.2s;
   background: var(--vp-c-bg);
+  transition: border-color 0.18s, background 0.18s, transform 0.18s;
 }
+
+/* 顶部那道琥珀短线平时收着，悬停时拉开 —— 唯一的一处动效 */
+.entry::after {
+  content: "";
+  position: absolute;
+  left: 19px;
+  right: 19px;
+  top: -1px;
+  height: 2px;
+  background: var(--vp-c-brand-1);
+  border-radius: 0 0 2px 2px;
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.22s ease;
+}
+
 .entry:hover {
   border-color: var(--vp-c-brand-1);
   background: var(--vp-c-bg-soft);
 }
+.entry:hover::after {
+  transform: scaleX(1);
+}
+
 .entry h3 {
-  margin: 0 0 6px;
-  font-size: 1rem;
+  margin: 0 0 6px !important;
+  padding: 0;
+  border: none;
+  font-size: 0.99rem;
   font-weight: 620;
   color: var(--vp-c-text-1) !important;
   letter-spacing: 0;
 }
+
 .entry p {
   margin: 0 !important;
-  font-size: 0.875rem;
-  line-height: 1.65;
+  font-size: 0.865rem;
+  line-height: 1.68;
   color: var(--vp-c-text-3);
 }
 
-/* Field Notes 条目 */
-.note {
-  border-left: 3px solid var(--vp-c-brand-1);
-  padding: 2px 0 2px 16px;
-  margin: 1.4rem 0;
+/* 落单的第五张横过来占满一行，免得右下角空一块 */
+.entry.wide {
+  grid-column: 1 / -1;
 }
-.note > strong:first-child {
-  display: block;
-  margin-bottom: 0.3rem;
+
+/* ─────────────── 11. 未完成栏目 .soon ─────────────── */
+
+/* 好几个栏目页目前只有一个 h1，落地就是一片空白。
+   与其留白，不如明说「在写，写的是什么」 */
+.soon {
+  margin: 1.8rem 0;
+  padding: 18px 20px;
+  border: 1px dashed var(--rule);
+  border-radius: 8px;
+  background: var(--vp-c-bg-soft);
+}
+
+.soon > p:first-child {
+  margin-top: 0 !important;
+}
+.soon > p:last-child {
+  margin-bottom: 0 !important;
+}
+
+.soon p {
+  color: var(--vp-c-text-2);
+  font-size: 0.93rem;
+  line-height: 1.78;
+}
+
+.soon ul {
+  margin: 0.7rem 0 0;
+  padding-left: 1.15rem;
+}
+
+.soon li {
+  color: var(--vp-c-text-3);
+  font-size: 0.9rem;
+  line-height: 1.72;
+}
+
+.soon li::marker {
+  color: var(--vp-c-brand-1);
+}
+
+/* ─────────── 11.5 Field Notes 条目节奏 ─────────── */
+
+/* 这一页的每条都是「结论在前，原因在后」，但排出来是一整片段落，
+   看不出条目边界。凡是以粗体开头的段落就是一条，给它一道左槽。
+   :first-child 只认元素不认文本节点，「这里是**条目**」这类也会命中 ——
+   条目都在第一个 h2 之后，用 h2 ~ p 把导语段挡掉 */
+.notes-page .vp-doc h2 ~ p:has(> strong:first-child) {
+  position: relative;
+  margin: 1.55rem 0;
+  padding-left: 1.15rem;
+}
+
+.notes-page .vp-doc h2 ~ p:has(> strong:first-child)::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.45em;
+  bottom: 0.3em;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--vp-c-brand-1);
+  opacity: 0.45;
+}
+
+/* 结论那句压住，后面的原因退半档 */
+.notes-page .vp-doc h2 ~ p:has(> strong:first-child) {
+  color: var(--vp-c-text-2);
+}
+
+.notes-page .vp-doc p > strong:first-child {
   color: var(--vp-c-text-1);
 }
-.note p {
-  margin: 0.3rem 0 !important;
-  color: var(--vp-c-text-2);
-  font-size: 0.94em;
-}
+
+/* ─────────────── 12. 分隔线 ─────────────── */
 
 .hr-soft {
   border: 0;
-  border-top: 1px solid var(--vp-c-divider);
-  margin: 3.2rem 0 2.4rem;
+  border-top: 1px solid var(--rule);
+  margin: 3rem 0 0;
 }
 
-/* 启动流程 */
-.flow { margin: 1.6rem 0; }
+/* 分隔线紧跟着 h2 时两条线会叠在一起 —— Markdown 的 `---` 和
+   .hr-soft 都会这样。留 h2 自己那条，分节信号全站才一致 */
+.vp-doc hr:has(+ h2) {
+  display: none;
+}
+
+/* ─────────────── 13. 启动流程 .flow ─────────────── */
+
+/* 这里的序号是有意义的：它确实是一个启动顺序 */
+.flow {
+  margin: 1.6rem 0;
+}
+
 .flow-step {
-  display: flex; align-items: flex-start; gap: 12px;
-  padding: 11px 14px; margin: 0 0 6px;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 8px; background: var(--vp-c-bg-soft);
-  font-size: 0.93rem; line-height: 1.6;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 11px 14px;
+  margin: 0 0 6px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--vp-c-bg-soft);
+  font-size: 0.92rem;
+  line-height: 1.65;
 }
-.flow-step.hl-a { border-color: var(--vp-c-brand-1); background: var(--vp-c-brand-soft); }
-.flow-step.hl-b { border-color: #dc2626; border-width: 2px; background: rgba(220,38,38,0.07); }
-.dark .flow-step.hl-b { background: rgba(248,113,113,0.1); }
+
+.flow-step.hl-a {
+  border-color: var(--vp-c-brand-1);
+  background: var(--sig-warn-soft);
+}
+
+.flow-step.hl-b {
+  border-color: var(--sig-break);
+  border-width: 2px;
+  background: var(--sig-break-soft);
+}
+
 .flow-n {
-  flex: 0 0 22px; height: 22px; line-height: 22px; text-align: center;
-  border-radius: 50%; font-size: 0.75rem; font-weight: 700;
-  background: var(--vp-c-bg); border: 1px solid var(--vp-c-divider);
+  flex: 0 0 22px;
+  height: 22px;
+  line-height: 21px;
+  text-align: center;
+  border-radius: 50%;
+  font-size: 0.74rem;
+  font-weight: 700;
   font-family: var(--vp-font-family-mono);
+  background: var(--vp-c-bg);
+  border: 1px solid var(--rule);
+  color: var(--vp-c-text-2);
 }
-.flow-step.hl-a .flow-n { background: var(--vp-c-brand-1); color: #fff; border-color: transparent; }
-.flow-step.hl-b .flow-n { background: #dc2626; color: #fff; border-color: transparent; }
-.flow-t em { color: var(--vp-c-text-3); font-size: 0.86em; font-style: normal; margin-left: 4px; }
+
+.flow-step.hl-a .flow-n {
+  background: var(--vp-c-brand-1);
+  color: #fff;
+  border-color: transparent;
+}
+
+.flow-step.hl-b .flow-n {
+  background: var(--sig-break);
+  color: #fff;
+  border-color: transparent;
+}
+
+.flow-t em {
+  color: var(--vp-c-text-3);
+  font-size: 0.86em;
+  font-style: normal;
+  margin-left: 4px;
+}
+
+/* ─────────────── 14. 首页 ─────────────── */
+
+/* 首页没有左侧栏，正文被顶在左边、右边空一大块。
+   目录对一张落地页也没什么用 —— 收掉，正文居中放宽 */
+.home-page .VPDoc .aside {
+  display: none;
+}
+
+/* 目录都收掉了，窄屏那条「本页目录」横栏也就没有意义 */
+.home-page .VPLocalNav {
+  display: none;
+}
+
+.home-page .VPDoc.has-aside .content-container {
+  max-width: 100%;
+}
+
+@media (min-width: 960px) {
+  .home-page .VPDoc .container {
+    max-width: 800px;
+  }
+  .home-page .VPDoc .content {
+    max-width: 800px;
+    min-width: 0;
+    margin: 0 auto;
+  }
+}
+
+.home-page .vp-doc > div > h1:first-child {
+  font-size: 2.6rem;
+  letter-spacing: -0.02em;
+  margin-bottom: 0.5rem;
+}
+
+/* 落地第一句：比正文大半级，单独成行 */
+.hero-line {
+  font-size: 1.16rem;
+  line-height: 1.7;
+  color: var(--vp-c-text-2);
+  margin: 0 0 1.8rem !important;
+  max-width: 34em;
+}
+
+.home-lede {
+  font-size: 1.02rem;
+  line-height: 1.88;
+  color: var(--vp-c-text-2);
+  max-width: 40em;
+}
+
+.home-lede strong {
+  color: var(--vp-c-text-1);
+  box-shadow: inset 0 -0.42em 0 var(--vp-c-brand-soft);
+}
+
+/* 身份行：四组「仓库 + 角色」。原来是用 · 串成一条靠自然换行，
+   结果会在仓库名和它的角色之间断开。改成 2×2：每组是一个不可断的
+   单元，自然换行也就用不上了。顺带上一行是自己的项目，下一行是上游 */
+.idlinks {
+  display: grid;
+  grid-template-columns: repeat(2, max-content);
+  gap: 0.6rem 2.5rem;
+  margin: 1.9rem 0 0 !important;
+  padding-top: 1.15rem;
+  border-top: 1px solid var(--rule);
+  max-width: 40em; /* 与上面的 .home-lede 对齐，那条线才不会比正文宽 */
+}
+
+.idlinks .id {
+  white-space: nowrap;
+  font-size: 0.89rem;
+  line-height: 1.5;
+}
+
+.idlinks a {
+  font-weight: 600;
+  color: var(--vp-c-text-1) !important;
+  text-decoration: none !important;
+  border-bottom: 1px solid var(--vp-c-brand-soft);
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.idlinks a:hover {
+  color: var(--vp-c-brand-1) !important;
+  border-bottom-color: currentColor;
+}
+
+/* 角色退到次要层级，并把它和仓库名的间距固定住 */
+.idlinks .id i {
+  font-style: normal;
+  margin-left: 0.5em;
+  font-size: 0.82rem;
+  color: var(--vp-c-text-3);
+}
+
+/* ─────────────── 15. 站点外壳 ─────────────── */
+
+.VPNavBar:not(.home.top) {
+  backdrop-filter: saturate(160%) blur(12px);
+}
+
+.VPNavBar .title {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+/* 侧栏：分组标题压住，条目退后，当前项用琥珀左槽标出 */
+.VPSidebarItem.level-0 > .item > .text {
+  font-weight: 620;
+  font-size: 0.93rem;
+}
+
+.VPSidebarItem.is-link > .item .link .text {
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+.VPSidebarItem.is-active > .item .link .text {
+  font-weight: 600;
+}
+
+.VPSidebarItem.is-link > .item {
+  position: relative;
+}
+
+.VPSidebarItem.is-active:not(.level-0) > .item::before {
+  content: "";
+  position: absolute;
+  left: -14px;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--vp-c-brand-1);
+}
+
+/* 右侧目录 */
+.VPDocAsideOutline .outline-title {
+  font-size: 0.82rem;
+  font-weight: 620;
+  color: var(--vp-c-text-2);
+}
+
+.VPDocAsideOutline .outline-link {
+  font-size: 0.83rem;
+  line-height: 1.6;
+  padding: 3px 0;
+}
+
+/* 页脚与上下篇 */
+.VPDocFooter .prev-next .pager-link {
+  border-radius: 8px;
+  border-color: var(--rule);
+  transition: border-color 0.18s, background 0.18s;
+}
+.VPDocFooter .prev-next .pager-link:hover {
+  border-color: var(--vp-c-brand-1);
+  background: var(--vp-c-bg-soft);
+}
+
+.VPFooter {
+  border-top: 1px solid var(--rule);
+}
+.VPFooter .message,
+.VPFooter .copyright {
+  font-size: 0.83rem;
+  line-height: 1.8;
+}
+
+.VPDoc .VPDocFooter .edit-info .last-updated {
+  font-size: 0.82rem;
+  color: var(--vp-c-text-3);
+}
+
+/* ─────────────── 16. 质量底线 ─────────────── */
+
+/* 键盘焦点必须看得见 */
+:focus-visible {
+  outline: 2px solid var(--vp-c-brand-1);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* 窄屏：时间线的版本槽收回到内容上方 */
+@media (max-width: 640px) {
+  :root {
+    --doc-size: 16px;
+  }
+
+  .timeline {
+    --tl-gutter: 0px;
+  }
+
+  .vp-doc ul.timeline > li {
+    grid-template-columns: 1fr;
+    row-gap: 0.25rem;
+    padding-left: 1.1rem;
+  }
+
+  .vp-doc ul.timeline > li::before {
+    left: -3px;
+    top: 1.5em;
+  }
+
+  .vp-doc ul.timeline::before {
+    left: 0;
+  }
+
+  .timeline .tl-v {
+    grid-column: 1;
+    text-align: left;
+    padding-top: 0;
+  }
+
+  .timeline .tl-d {
+    grid-column: 1;
+  }
+
+  .home-page .vp-doc > div > h1:first-child {
+    font-size: 2rem;
+  }
+
+  .hero-line {
+    font-size: 1.05rem;
+  }
+
+  /* 窄屏放不下两列，排成一列 */
+  .idlinks {
+    grid-template-columns: max-content;
+    gap: 0.5rem;
+  }
+
+  .vp-doc h2 {
+    font-size: 1.28rem;
+    margin-top: 2.6rem;
+  }
+
+  /* 宽表格横向滚动，别把版面撑破 */
+  .vp-doc table {
+    font-size: 0.88em;
+  }
+  .vp-doc td,
+  .vp-doc th {
+    padding: 8px 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── 阅读时长：h1 下的一行，给读者一个时间承诺 ───────────── */
+.vp-doc h1 + .reading-time {
+  margin: -0.6rem 0 2rem;
+  font-size: 0.82rem;
+  color: var(--vp-c-text-3);
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 首页署名块：读完内容之后才出现的「谁写的」 ───────────── */
+.whoami {
+  margin: 2.5rem 0 1rem;
+  padding: 1.1rem 1.3rem;
+  border-left: 3px solid var(--vp-c-brand-1);
+  background: var(--vp-c-bg-soft);
+  border-radius: 0 6px 6px 0;
+}
+.whoami p {
+  margin: 0 0 0.6rem;
+  font-size: 0.93rem;
+  line-height: 1.75;
+}
+.whoami p:last-child {
+  margin-bottom: 0;
+  font-size: 0.86rem;
+  color: var(--vp-c-text-2);
+}

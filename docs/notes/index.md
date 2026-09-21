@@ -1,3 +1,7 @@
+---
+pageClass: notes-page
+---
+
 # Field Notes
 
 生产里踩出来的经验法则和判断方法。每条结论在前，原因在后。

@@ -8,14 +8,29 @@
 
 ## 硬件与指令集
 
-- [ARM 上一跑就 SIGILL，以及为什么这类问题查不出来](/clickhouse/vendor/kylin-arm-instruction-baseline)
-  —— 反汇编 8900 万条指令之后发现：缺的不是 LSE 是 rcpc，而 ClickHouse 的指令集自检永远不会触发
+<div class="posts">
+
+<a class="post" href="/clickhouse/vendor/kylin-arm-instruction-baseline">
+<span class="post-t">ARM 上一跑就 SIGILL，以及为什么这类问题查不出来</span>
+<span class="post-d">反汇编 8900 万条指令之后发现：缺的不是 LSE 是 rcpc，而 ClickHouse 的指令集自检永远不会触发。</span>
+</a>
+
+</div>
 
 ## 华为 MRS
 
-- [sinker 在华为 MRS 上内存涨到 60G，最后发现和内存没关系](/clickhouse/vendor/huawei-mrs-protocol-trap)
-  —— 一个被错误归因三次的连接协议问题
-- [并发 INSERT 串表：HTTP 下 prepare 语句的缓存陷阱](/clickhouse/vendor/mrs-http-prepare-cache)
-  —— 两层各自都没错，合起来数据落到了别的表上
+<div class="posts">
+
+<a class="post" href="/clickhouse/vendor/huawei-mrs-protocol-trap">
+<span class="post-t">sinker 在华为 MRS 上内存涨到 60G，最后发现和内存没关系</span>
+<span class="post-d">一个被错误归因三次的连接协议问题。</span>
+</a>
+
+<a class="post" href="/clickhouse/vendor/mrs-http-prepare-cache">
+<span class="post-t">并发 INSERT 串表：HTTP 下 prepare 语句的缓存陷阱</span>
+<span class="post-d">两层各自都没错，合起来数据落到了别的表上。</span>
+</a>
+
+</div>
 
 <!-- TODO：阿里云 / 腾讯云托管版的差异；其他国产 OS / CPU 的适配 -->

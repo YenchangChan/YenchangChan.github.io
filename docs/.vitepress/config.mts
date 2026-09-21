@@ -2,6 +2,18 @@ import { defineConfig } from 'vitepress'
 
 const SITE = 'https://yenchangchan.github.io'
 
+/**
+ * 中英混排的字数与阅读时长估算。
+ * CJK 按 450 字/分钟，西文按 200 词/分钟 —— 技术文档比散文慢，
+ * 代码块和表格照常计入，因为读者确实要在上面花时间。
+ */
+function readingStats(src: string) {
+  const cjk = (src.match(/[\u4e00-\u9fa5]/g) || []).length
+  const latin = (src.replace(/[\u4e00-\u9fa5]/g, ' ').match(/[A-Za-z0-9_.\-]+/g) || []).length
+  const words = cjk + latin
+  return { words, minutes: Math.max(1, Math.round(cjk / 450 + latin / 200)) }
+}
+
 export default defineConfig({
   lang: 'zh-CN',
   title: '禹鼎侯',
@@ -11,6 +23,31 @@ export default defineConfig({
   ignoreDeadLinks: true,
 
   sitemap: { hostname: SITE },
+
+  markdown: {
+    config(md) {
+      // 在 h1 之后插一行「字数 · 阅读时长」。
+      // 概览页和短页不插：一眼能看完的页面，标时长不是信息。
+      md.core.ruler.push('reading_time', (state: any) => {
+        const env = state.env || {}
+        if (env.frontmatter?.readingTime === false) return false
+        if (/(^|\/)index\.md$/.test(env.relativePath || '')) return false
+
+        const stats = readingStats(state.src || '')
+        if (stats.words < 800) return false
+
+        const i = state.tokens.findIndex(
+          (t: any) => t.type === 'heading_close' && t.tag === 'h1'
+        )
+        if (i === -1) return false
+
+        const tok = new state.Token('html_block', '', 0)
+        tok.content = `<p class="reading-time">${stats.words} 字 · 约 ${stats.minutes} 分钟</p>\n`
+        state.tokens.splice(i + 1, 0, tok)
+        return true
+      })
+    },
+  },
 
   head: [
     ['meta', { name: 'author', content: '陈衍长 / 禹鼎侯' }],
