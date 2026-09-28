@@ -1,0 +1,14 @@
+direction: down
+
+alter: "ALTER TABLE 命令" {shape: oval; class: warn}
+
+decision: "动 part 数据吗?" {shape: diamond; class: base}
+
+alter -> decision
+
+meta_path: "纯元数据路径（瞬时）" {class: ok; m1: "更新 schema metadata"; m2: "通知副本(ZK)"; m3: "完成,零 S3 IO"; m1 -> m2; m2 -> m3}
+
+mutation_path: "Mutation 路径（重写 part）" {class: hot; u1: "为每个 part 创建 mutation"; u2: "读取依赖列 + 重写"; u3: "异步清理老 part"; u4: "几小时~几周不等"; u1 -> u2; u2 -> u3; u3 -> u4}
+
+decision -> meta_path: "否\nADD COLUMN(无 MATERIALIZE)\nRENAME COLUMN\nDROP COLUMN(数据延迟清理)\nMODIFY ORDER BY(限定情形)"
+decision -> mutation_path: "是\nMATERIALIZE COLUMN\nMODIFY COLUMN type\nALTER UPDATE/DELETE\nMODIFY TTL(部分版本)"

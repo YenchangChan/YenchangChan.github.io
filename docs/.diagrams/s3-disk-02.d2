@@ -1,0 +1,24 @@
+direction: down
+
+User: "用户冷数据查询需求" {class: base}
+Decision: "查询模式?" {shape: diamond; class: base}
+
+Pre: {label: "第一种:预聚合(治本)"; class: ok; P1: "多粒度物化视图\n5min / 1hour / 1day"; P2: "业务路由到合适粒度"; P3: "查询永远走热盘\nSLA: 毫秒到秒级"}
+
+Async: {label: "第二种:异步导出(兜底)"; class: warn; A1: "用户提单"; A2: "INSERT INTO FUNCTION s3\n结果落 S3"; A3: "邮件通知下载链接"; A4: "SLA: 小时级~T+1"}
+
+Stream: {label: "第三种:流式查询(交互式)"; class: cold; S1: "查询代理按时间切片"; S2: "小并发执行子查询"; S3: "流式拼接返回"; S4: "SLA: 首字节秒级,可中断"}
+
+User -> Decision
+Decision -> Pre: "聚合 / 趋势\nSUM/COUNT/AVG"
+Decision -> Async: "批量明细导出\n审计/合规"
+Decision -> Stream: "交互式探索\nBI 钻取"
+
+Pre.P1 -> Pre.P2
+Pre.P2 -> Pre.P3
+Async.A1 -> Async.A2
+Async.A2 -> Async.A3
+Async.A3 -> Async.A4
+Stream.S1 -> Stream.S2
+Stream.S2 -> Stream.S3
+Stream.S3 -> Stream.S4

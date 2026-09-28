@@ -1,0 +1,29 @@
+direction: down
+
+S: 选型起点 {shape: oval; class: base}
+Q1: "需要高频更新\nCDC 入库 / 主键语义?" {shape: diamond; class: base}
+D1: "Doris（2.2.2）" {class: warn}
+Q2: "需要私有化部署的\n存算分离?" {shape: diamond; class: base}
+D2: "Doris（2.1.8）\nCK 开源版无 SharedMergeTree" {class: warn}
+Q3: "需要当 ES 用\n做全文检索?" {shape: diamond; class: base}
+D3: "Doris（2.1.4）" {class: warn}
+Q4: "集群需频繁扩缩容\n且运维人力紧张?" {shape: diamond; class: base}
+D4: "Doris（3.2）\n或 CK + 外部均衡工具" {class: warn}
+Q5: "查询以高并发短请求为主\n还是少量重聚合?" {shape: diamond; class: base}
+D5: "Doris（2.1.3）" {class: warn}
+C1: "ClickHouse（2.1.1）" {class: cold}
+P: "按自己的数据分布、查询集合\n与故障场景做 POC" {class: mute}
+
+S -> Q1
+Q1 -> D1: 是
+Q1 -> Q2: 否
+Q2 -> D2: 是
+Q2 -> Q3: 否
+Q3 -> D3: 是
+Q3 -> Q4: 否
+Q4 -> D4: 是
+Q4 -> Q5: 否
+Q5 -> D5: 高并发短请求
+Q5 -> C1: 少量重聚合
+Q5 -> P: 两者都有
+

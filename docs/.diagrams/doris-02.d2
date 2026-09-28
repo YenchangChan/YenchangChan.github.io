@@ -1,0 +1,27 @@
+direction: right
+
+K: Kafka {shape: cylinder; class: base}
+KE: "Kafka 引擎表" {class: base}
+MV0: "MV：解析 / 清洗 / 转换" {class: base}
+RAW: "MergeTree 明细表" {class: base}
+
+K -> KE -> MV0 -> RAW
+
+MVa: "MV\nsumState / uniqState" {class: base}
+AGG1: "分钟级\nAggregatingMergeTree" {class: cold}
+MVb: "MV\n-MergeState" {class: base}
+AGG2: "小时级" {class: cold}
+MVc: "MV\n-MergeState" {class: base}
+AGG3: "天级" {class: cold}
+
+RAW -> MVa -> AGG1 -> MVb -> AGG2 -> MVc -> AGG3
+
+NULLT: "Null 引擎表\n写入不落盘" {style.stroke-dash: 5; class: base}
+MV1: "MV WHERE type='A'" {class: base}
+MV2: "MV WHERE type='B'" {class: base}
+TA: "表 A" {class: base}
+TB: "表 B" {class: base}
+
+NULLT -> MV1 -> TA
+NULLT -> MV2 -> TB
+

@@ -1,0 +1,15 @@
+direction: right
+
+reader: S3 Reader {class: base}
+decoder: Parquet Decoder {class: base}
+filter: Filter (LIKE) {class: base}
+limit: "Limit(10)" {class: warn}
+sink: Sink {class: base}
+
+reader -> decoder -> filter -> limit -> sink
+
+reader_note: 按需 Range GET 下一段 {shape: text; class: base}
+limit_note: 凑满 10 行就 tear down {shape: text; class: base}
+
+reader_note -> reader: {style.stroke-dash: 3}
+limit_note -> limit: {style.stroke-dash: 3}

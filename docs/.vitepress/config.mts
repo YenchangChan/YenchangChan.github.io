@@ -79,11 +79,35 @@ export default defineConfig({
           ],
         },
         {
+          text: '冷热分层',
+          collapsed: false,
+          items: [
+            { text: '概览与选型', link: '/clickhouse/cold-storage/' },
+            { text: 'S3 Disk 会遇到什么', link: '/clickhouse/cold-storage/s3-disk' },
+            { text: 'BACKUP 超冷归档', link: '/clickhouse/cold-storage/backup-restore' },
+            { text: '为什么要转 Parquet', link: '/clickhouse/cold-storage/parquet' },
+            { text: '冷数据上的 ALTER', link: '/clickhouse/cold-storage/alter' },
+            { text: '应用平台的 S3 冷盘', link: '/clickhouse/cold-storage/platform' },
+            { text: 'chDB + S3 Parquet', link: '/clickhouse/cold-storage/chdb' },
+          ],
+        },
+        {
+          text: '一次讲透',
+          collapsed: false,
+          items: [
+            { text: '概览', link: '/clickhouse/deep-dive/' },
+            { text: '物化视图', link: '/clickhouse/deep-dive/materialized-view' },
+            { text: '字典', link: '/clickhouse/deep-dive/dictionary' },
+            { text: '到底要不要写 UDF', link: '/clickhouse/deep-dive/udf' },
+          ],
+        },
+        {
           text: '工具与设计',
           collapsed: false,
           items: [
             { text: '概览', link: '/clickhouse/tooling/' },
             { text: '扩容后为什么不自动均衡', link: '/clickhouse/tooling/why-not-auto-rebalance' },
+            { text: '集群机房搬迁实战', link: '/clickhouse/tooling/datacenter-migration' },
           ],
         },
         {
@@ -99,7 +123,13 @@ export default defineConfig({
         {
           text: '选型与横评',
           collapsed: false,
-          items: [{ text: '概览', link: '/clickhouse/comparison/' }],
+          items: [
+            { text: '概览与立场', link: '/clickhouse/comparison/' },
+            { text: 'ClickHouse 和 Doris 怎么选', link: '/clickhouse/comparison/clickhouse-vs-doris' },
+            { text: '存算分离横评', link: '/clickhouse/comparison/storage-compute-separation' },
+            { text: 'OpenObserve：源码深挖', link: '/clickhouse/comparison/openobserve-internals' },
+            { text: 'OpenObserve：压测实录', link: '/clickhouse/comparison/openobserve-benchmark' },
+          ],
         },
       ],
       '/systems/': [

@@ -1,0 +1,21 @@
+direction: down
+
+A: "批次到达 BE" {class: base}
+B: "memtable 内按 key 排序" {class: base}
+C: "逐 key 查各 segment 的主键索引" {class: hot}
+D: "该 key 已存在?" {shape: diamond; class: base}
+E: "定位到 rowset + row id\n在 delete bitmap 上置位" {class: base}
+F: 跳过 {class: base}
+G: "新行写入全新 rowset" {class: base}
+H: "查询时直接跳过被标记的行\n无需按 key 多版本合并" {class: base}
+I: "旧数据留在磁盘\n等 compaction 回收" {class: base}
+W: "写放大主要来源\n开销随存量与并发线性上升" {class: warn}
+
+A -> B -> C -> D
+D -> E: 是
+D -> F: 否
+E -> G
+F -> G
+G -> H -> I
+C -> W: {style.stroke-dash: 3}
+

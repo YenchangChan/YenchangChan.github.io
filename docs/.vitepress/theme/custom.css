@@ -1002,3 +1002,302 @@
   font-size: 0.86rem;
   color: var(--vp-c-text-2);
 }
+
+/* ─────────────── 14. 手绘图示 .sk ─────────────── */
+
+/* 冷热分层那一系列里有 23 张图，原稿是 D2 源码，站点不渲染。
+   全部改写成手写组件：手绘感靠形状做 —— 不规则圆角、错位的第二道笔触、
+   每个盒子微小的随机旋转。不引外部库，不用 SVG 滤镜（Chrome 对 CSS 里
+   引用 data-URI filter 的支持不稳），颜色一律走 CSS 变量，暗色模式自动跟随。 */
+
+.sk {
+  margin: 1.9rem 0;
+  font-size: 0.89rem;
+  line-height: 1.6;
+}
+
+.sk-cap {
+  font-size: 0.82rem;
+  color: var(--vp-c-text-3);
+  text-align: center;
+  margin-top: 0.7rem;
+}
+
+/* ── 手绘盒子 ── */
+
+.sk-box {
+  position: relative;
+  padding: 11px 15px;
+  border: 2px solid var(--vp-c-text-2);
+  border-radius: 225px 12px 205px 14px / 14px 205px 12px 225px;
+  background: var(--vp-c-bg-soft);
+}
+
+/* 第二道笔触：手绘时描重的那一下 */
+.sk-box::after {
+  content: '';
+  position: absolute;
+  inset: -5px -3px -3px -5px;
+  border: 2px solid var(--vp-c-text-3);
+  border-radius: 14px 205px 12px 225px / 225px 12px 205px 14px;
+  opacity: 0.22;
+  pointer-events: none;
+}
+
+/* 每个盒子歪一点点，歪的方向不一样 */
+.sk-box:nth-child(3n + 1) { transform: rotate(-0.35deg); }
+.sk-box:nth-child(3n + 2) { transform: rotate(0.28deg); }
+.sk-box:nth-child(3n)     { transform: rotate(-0.16deg); }
+
+.sk-t { font-weight: 600; }
+
+.sk-d {
+  display: block;
+  margin-top: 3px;
+  font-size: 0.82rem;
+  color: var(--vp-c-text-2);
+  white-space: pre-line;
+}
+
+/* 语义色：沿用站点既有的 signal 变量 */
+.sk-box.is-hot   { border-color: var(--sig-break); background: var(--sig-break-soft); }
+.sk-box.is-warm  { border-color: var(--sig-warn);  background: var(--sig-warn-soft); }
+.sk-box.is-cold  { border-color: #3b82f6; background: rgba(59, 130, 246, 0.09); }
+.sk-box.is-arch,
+.sk-box.is-accent { border-color: #7c5cd6; background: rgba(124, 92, 214, 0.09); }
+.sk-box.is-mute  { border-color: var(--vp-c-text-3); background: var(--vp-c-bg-alt); }
+.sk-box.is-ok    { border-color: #15803d; background: rgba(21, 128, 61, 0.09); }
+
+.dark .sk-box.is-cold { border-color: #7aa7f0; }
+.dark .sk-box.is-arch,
+.dark .sk-box.is-accent { border-color: #a78bfa; }
+.dark .sk-box.is-ok   { border-color: #4ade80; }
+
+/* ── 手绘箭头 ── */
+
+.sk-ar {
+  display: block;
+  margin: 0 auto;
+  color: var(--vp-c-text-3);
+  overflow: visible;
+}
+
+.sk-ar path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.sk-ar.is-dash path:first-child { stroke-dasharray: 4 4; }
+
+.sk-arw {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 2px 0;
+}
+
+.sk-arl {
+  font-size: 0.8rem;
+  color: var(--vp-c-text-3);
+  white-space: pre-line;
+  text-align: center;
+}
+
+/* ── 编号线性步骤 .sk-steps ── */
+
+.sk-steps .sk-box { margin-bottom: 2px; }
+
+.sk-n {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 21px;
+  height: 21px;
+  margin-right: 9px;
+  border: 1.6px solid var(--vp-c-text-3);
+  border-radius: 48% 52% 51% 49% / 51% 48% 52% 49%;
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--vp-c-text-2);
+  vertical-align: 1px;
+}
+
+/* ── 分层阶梯 .sk-tiers ── */
+
+.sk-tiers .sk-box { margin-bottom: 2px; }
+
+.sk-tag {
+  float: right;
+  margin-left: 10px;
+  font-size: 0.76rem;
+  font-family: var(--vp-font-family-mono);
+  color: var(--vp-c-text-3);
+}
+
+/* ── 决策分支 .sk-branch ── */
+
+.sk-q {
+  position: relative;
+  max-width: 24rem;
+  margin: 0 auto;
+  padding: 11px 18px;
+  text-align: center;
+  font-weight: 600;
+  border: 2px solid var(--vp-c-brand-1);
+  border-radius: 46% 54% 49% 51% / 12px 12px 12px 12px;
+  background: var(--vp-c-brand-soft);
+}
+
+.sk-forks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+  margin-top: 2px;
+}
+
+.sk-fork { min-width: 0; }
+
+/* 分叉箭头：两侧各朝外偏一点，中间那条保持竖直。
+   偏转用 transform，所以分支数量变了也不用改 SVG。 */
+.sk-fork > .sk-arw {
+  margin-bottom: 3px;
+  justify-content: flex-start;
+  padding-left: 6px;
+}
+
+.sk-fork:first-child > .sk-arw .sk-ar { transform: rotate(-13deg); }
+.sk-fork:last-child > .sk-arw .sk-ar { transform: rotate(13deg); }
+.sk-fork:only-child > .sk-arw .sk-ar { transform: none; }
+
+/* ── 并列泳道 .sk-lanes ── */
+
+.sk-lanes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 18px;
+}
+
+.sk-lane .sk-box { margin-bottom: 2px; }
+
+.sk-lane-h {
+  margin-bottom: 8px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--vp-c-text-2);
+  text-align: center;
+}
+
+/* 窄屏：泳道与分支都退成单列。
+   退成单列后分支是上下排的，箭头再朝外偏就没有意义了，拨回竖直。 */
+@media (max-width: 640px) {
+  .sk { font-size: 0.86rem; }
+  .sk-forks,
+  .sk-lanes { grid-template-columns: 1fr; }
+  .sk-fork > .sk-arw .sk-ar { transform: none !important; }
+}
+
+
+/* ─────────────── 15. d2 生成的图示 .dfig ─────────────── */
+
+/* 带分支汇合的图用 d2 --sketch 渲染（手写 HTML 装不下这种拓扑，会丢汇合关系）。
+   每张出明/暗两个 SVG：<img> 引入的 SVG 是独立文档，看不到页面上的 .dark class，
+   所以暗色不能靠改 SVG 内部选择器，只能在这里按主题切换整张图。
+   两张 SVG 背景都是透明的，露出站点底色。 */
+
+.dfig {
+  margin: 1.8rem 0;
+  text-align: center;
+}
+
+.dfig img {
+  max-width: 100%;
+  height: auto;
+}
+
+.dfig .dfig-d { display: none; }
+
+.dark .dfig .dfig-l { display: none; }
+.dark .dfig .dfig-d { display: inline-block; }
+
+/* ── 象限图 .sk-quad ── */
+
+.sk-quad {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin: 0.4rem 0;
+}
+
+.sk-quad .sk-box { margin: 0; }
+
+.sk-quad-x,
+.sk-quad-y {
+  font-size: 0.8rem;
+  color: var(--vp-c-text-3);
+  text-align: center;
+}
+
+.sk-quad-y {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.sk-quad-x {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+}
+
+.sk-pin {
+  display: inline-block;
+  margin: 5px 5px 0 0;
+  padding: 2px 9px;
+  font-size: 0.79rem;
+  font-family: var(--vp-font-family-mono);
+  border: 1.4px solid var(--vp-c-text-3);
+  border-radius: 12px 4px 14px 5px / 5px 14px 4px 12px;
+  background: var(--vp-c-bg);
+}
+
+/* ── 阶段卡 .sk-phases ── */
+
+.sk-phases .sk-box { margin-bottom: 2px; }
+
+.sk-ph-h {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  margin-bottom: 5px;
+}
+
+.sk-ph-n {
+  flex: 0 0 auto;
+  padding: 1px 9px;
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--vp-c-text-2);
+  border: 1.5px solid var(--vp-c-text-3);
+  border-radius: 13px 4px 15px 5px / 5px 15px 4px 13px;
+}
+
+.sk-ph-when {
+  font-size: 0.79rem;
+  font-family: var(--vp-font-family-mono);
+  color: var(--vp-c-text-3);
+}
+
+.sk-box ul {
+  margin: 0;
+  padding-left: 1.15rem;
+  font-size: 0.85rem;
+  line-height: 1.7;
+}
+
+.sk-box ul li { margin: 0; }

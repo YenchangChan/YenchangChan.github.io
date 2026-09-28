@@ -28,6 +28,11 @@
 <span class="post-d">技术上完全做得到，但 sharding 的所有权假设决定了它不该由工具替你决定。</span>
 </a>
 
+<a class="post" href="/clickhouse/tooling/datacenter-migration">
+<span class="post-t">ClickHouse 集群机房搬迁实战</span>
+<span class="post-d">难的不是技术，是数据迁移、shard 拓扑、元数据对象、业务双写、对账验证要同时成立。任何一环漏了，都在切流当天翻车。</span>
+</a>
+
 </div>
 
 <!-- TODO：

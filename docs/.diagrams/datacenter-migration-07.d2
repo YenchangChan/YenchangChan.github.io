@@ -1,0 +1,13 @@
+direction: right
+client: 客户端 {class: base}
+dist: Distributed 表 {class: base}
+s1: shard 1\nlocal 表 {class: base}
+s2: shard 2\nlocal 表 {class: base}
+s3: shard 3\nlocal 表 {class: base}
+
+client -> dist: INSERT
+dist -> s1: cityHash64(user_id) % 3 == 0
+dist -> s2: cityHash64(user_id) % 3 == 1
+dist -> s3: cityHash64(user_id) % 3 == 2
+
+s2.class: accent

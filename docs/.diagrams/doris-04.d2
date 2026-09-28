@@ -1,0 +1,29 @@
+direction: down
+
+A: "ClickHouse：对象存储 = 一块磁盘" {
+  class: base
+  direction: right
+  AT: 表 {class: base}
+  AP: storage_policy {class: base}
+  AV1: "volume hot\n本地 SSD" {class: base}
+  AV2: "volume cold" {class: base}
+  AS: "S3 / HDFS\n注册为 disk" {shape: cylinder; class: base}
+  AX: "整个 CK 服务起不来" {class: hot}
+  AT -> AP
+  AP -> AV1
+  AP -> AV2
+  AV2 -> AS
+  AS -> AX: 不可达 {style.stroke-dash: 3}
+}
+
+B: "Doris：对象存储 = 一种资源" {
+  class: base
+  direction: right
+  BT: 表 {class: base}
+  BP: "STORAGE POLICY" {class: base}
+  BR: "RESOURCE\nS3 / HDFS" {shape: cylinder; class: base}
+  BX: "仅该资源上的数据查不到\n服务照常运行" {class: warn}
+  BT -> BP -> BR
+  BR -> BX: 不可达 {style.stroke-dash: 3}
+}
+

@@ -1,0 +1,19 @@
+direction: down
+
+Cron: 每日 cron 触发 {class: base}
+Export: "INSERT INTO FUNCTION s3\n按 dt + hash bucket 分区写入" {class: base}
+Cnt: "源行数 == S3 行数?" {shape: diamond; class: base}
+Sample: "抽样聚合\nCH vs chDB 一致?" {shape: diamond; class: base}
+Alert: "告警 + 不回填\n分区保留在 CH" {class: hot}
+Mark: "ALTER UPDATE\nexported_at = now" {class: warn}
+Done: 分区进入可删除集合 {class: ok}
+Watch: 人工介入 / CH 存储增长可见 {class: base}
+
+Cron -> Export
+Export -> Cnt
+Cnt -> Alert: 不一致
+Cnt -> Sample: 一致
+Sample -> Alert: 不一致
+Sample -> Mark: 一致
+Mark -> Done
+Alert -> Watch

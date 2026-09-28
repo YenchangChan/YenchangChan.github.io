@@ -1,0 +1,26 @@
+direction: down
+
+S: 开始 {shape: oval; class: base}
+V: "Validate\n检查分片键列是否存在\n确定列类型以构造 hash 表达式" {class: base}
+C: "各 shard 建 tmp 表\n镜像 engine_full，替换 ZK 路径" {class: base}
+M: "原表数据 → tmp 表" {class: base}
+K1: "行数校验\ncount >= 基线?" {shape: diamond; class: base}
+R1: "等待 5s 重试一次\n覆盖 cluster() 可见性延迟" {class: base}
+K1B: "仍不通过?" {shape: diamond; class: base}
+F: 失败退出 {shape: oval; class: hot}
+I: "从 cluster() 读 tmp 表\n按 hash(key) % N = idx 过滤\n各 host 只 INSERT 属于自己的行" {class: base}
+K2: "再次行数校验" {shape: diamond; class: base}
+D: "清理 tmp 表" {class: base}
+E: 完成 {shape: oval; class: ok}
+
+S -> V -> C -> M -> K1
+K1 -> R1: 否
+R1 -> K1B
+K1B -> F: 是
+K1B -> I: 否
+K1 -> I: 是
+I -> K2
+K2 -> F: 否
+K2 -> D: 是
+D -> E
+

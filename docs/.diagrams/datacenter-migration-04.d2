@@ -1,0 +1,11 @@
+shape: sequence_diagram
+app: 业务应用 {class: base}
+a: A 集群 {class: base}
+b: B 集群 {class: base}
+
+app -> a: T0: 正常写入
+b -> a: T1: 一次性 INSERT SELECT 全量灌过去
+b -> b: T2: 验证完整性 (count + checksum)
+app -> a: T3: 开启双写
+app -> b: T3: 开启双写
+b -> a: T4: 抽样对账（只验证双写后的新数据）

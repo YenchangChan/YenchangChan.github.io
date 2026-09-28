@@ -1,0 +1,24 @@
+direction: down
+
+q: "查询进来" {class: base}
+parse: "SQL 解析\n提取表/列/时间窗/算子" {class: base}
+fast: "fast path?\n时间≤1天+主键过滤" {shape: diamond; class: base}
+exec_direct: "直接执行" {class: base}
+estimate: "EXPLAIN ESTIMATE" {class: base}
+convert: "行数 × 列字节\n+ SQL 形状风险评分" {class: base}
+route: "预估字节" {shape: diamond; class: base}
+sync: "同步执行\n<1G" {class: base}
+slice: "切片流式\n1G-100G" {class: base}
+async: "异步导出\n>100G" {class: base}
+reject: "返回任务ID\n邮件通知下载" {class: base}
+
+q -> parse
+parse -> fast
+fast -> exec_direct: "yes"
+fast -> estimate: "no"
+estimate -> convert
+convert -> route
+route -> sync
+route -> slice
+route -> async
+async -> reject

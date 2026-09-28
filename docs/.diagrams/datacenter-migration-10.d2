@@ -1,0 +1,29 @@
+direction: down
+obj: 对象类型 {class: base}
+
+v: 普通视图 {class: base}
+mv: 物化视图 {class: base}
+dist: 分布式表 {class: base}
+dict: 字典 {class: base}
+udf: UDF {class: base}
+
+obj -> v
+obj -> mv
+obj -> dist
+obj -> dict
+obj -> udf
+
+v_plan: 纯元数据 DDL 重建 {class: base}
+mv_plan: 元数据 + 底层存储表\n(底层表当普通表迁) {class: base}
+dist_plan: 纯元数据 DDL 重建\n注意 cluster 名变化 {class: base}
+dict_plan: 元数据 + 数据源\n源在哪决定迁移方式 {class: base}
+udf_plan: SQL UDF 元数据\nExecutable UDF 还要迁脚本 {class: base}
+
+v -> v_plan
+mv -> mv_plan
+dist -> dist_plan
+dict -> dict_plan
+udf -> udf_plan
+
+mv_plan.class: accent
+dict_plan.class: accent

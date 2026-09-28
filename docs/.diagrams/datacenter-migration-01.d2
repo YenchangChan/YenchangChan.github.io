@@ -1,0 +1,14 @@
+direction: right
+q1: 业务能否\n停写几小时? {class: base}
+q2: 是否需要\nresharding? {class: base}
+
+s1: 双写 + 回填\n(首选) {class: base}
+s2: BACKUP DATABASE\n+ 物理拷贝 {class: base}
+s3: 双写 + S3 中转\n+ s3Cluster {class: base}
+
+q1 -> s1: 不能停写
+q1 -> q2: 可短停
+q2 -> s2: 不需要
+q2 -> s3: 需要
+
+s1.class: accent

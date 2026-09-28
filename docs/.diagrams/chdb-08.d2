@@ -1,0 +1,19 @@
+direction: right
+
+A: 迟到数据 INSERT {class: base}
+B: CH 表 {class: base}
+C: TTL 扫描 {shape: diamond; class: base}
+Keep: 保留, 不删 {class: warn}
+Drop: 自动 DROP PARTITION {class: ok}
+D: "下次 export 扫到\n过期未导出" {class: base}
+E: 追加导出到 S3 {class: base}
+F: 回填 exported_at {class: base}
+
+A -> B: exported_at = NULL
+B -> C
+C -> Keep: exported_at IS NULL
+C -> Drop: "exported_at IS NOT NULL\n且超 4 个月"
+Keep -> D
+D -> E
+E -> F
+F -> C

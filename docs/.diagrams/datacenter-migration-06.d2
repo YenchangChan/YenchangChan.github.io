@@ -1,0 +1,28 @@
+direction: down
+title: Colocate Join 优化原理
+
+bad: 不同 sharding key {class: base}
+bad_t1: orders\nsharding = cityHash64(order_id) {class: base}
+bad_t2: order_items\nsharding = cityHash64(item_id) {class: base}
+bad_join: SELECT ... FROM orders\nJOIN order_items USING (order_id) {class: base}
+bad_result: 必须把右表全量\n广播到所有 shard\nO(N × shards) 网络 {class: base}
+
+bad -> bad_t1
+bad -> bad_t2
+bad_t1 -> bad_join
+bad_t2 -> bad_join
+bad_join -> bad_result
+
+good: 相同 sharding key {class: base}
+good_t1: orders\nsharding = cityHash64(order_id) {class: base}
+good_t2: order_items\nsharding = cityHash64(order_id) {class: base}
+good_join: SELECT ... FROM orders\nJOIN order_items USING (order_id) {class: base}
+good_result: 每个 shard 内\n本地 join 即可\nO(N) 网络 {class: base}
+
+good -> good_t1
+good -> good_t2
+good_t1 -> good_join
+good_t2 -> good_join
+good_join -> good_result
+
+good_result.class: accent

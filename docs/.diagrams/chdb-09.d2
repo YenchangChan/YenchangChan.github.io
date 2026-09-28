@@ -1,0 +1,17 @@
+direction: down
+
+Q: 查询请求 {class: base}
+T: 查询时间范围 {shape: diamond; class: base}
+CH: "ClickHouse\n本地 NVMe" {class: cold}
+CD: "chDB 微服务\n→ S3 Parquet" {class: hot}
+U: 业务层拆分 {class: base}
+R: 合并结果返回前端 {class: ok}
+
+Q -> T
+T -> CH: 落在 T-4 月内
+T -> CD: T-3 月以前
+T -> U: 跨越分界线
+U -> CH
+U -> CD
+CH -> R
+CD -> R

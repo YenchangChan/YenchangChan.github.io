@@ -49,20 +49,36 @@
 
 ## 文章
 
-<div class="soon">
+<div class="posts">
 
-这一栏还在写。第一批会是存算分离横评和冷数据方案对比 —— 都带一手压测，测试条件随结论一起给出。
+<a class="post" href="/clickhouse/comparison/clickhouse-vs-doris">
+<span class="post-t">2026 年 ClickHouse 和 Doris 怎么选</span>
+<span class="post-d">CK 的主要对手已经从 Elasticsearch 换成了 Doris。基础属性、性能、运维、生态四个维度，外加一份「过时论调」清单 —— 包括我自己此前判断错的那几条。</span>
+</a>
 
-在那之前，[版本升级避坑清单](/clickhouse/upgrade-gotchas) 和 [生产排障](/clickhouse/troubleshooting/) 里已经有可以直接用的东西。
+<a class="post" href="/clickhouse/comparison/storage-compute-separation">
+<span class="post-t">存算分离横评：谁真的做到了</span>
+<span class="post-d">四个系统用同一把尺子量，结论来自官方原句与源码。以及我的立场：这道题也可以不做 —— 「能力缺失 ≠ 需求无解」最完整的一个案例。</span>
+</a>
+
+<a class="post" href="/clickhouse/comparison/openobserve-internals">
+<span class="post-t">拆解 OpenObserve 的 140x 压缩神话</span>
+<span class="post-d">系列第一篇。源码级深挖 O2 的存储与查询内核，营销话术单独核验，没扛住的标记「已证伪」。</span>
+</a>
+
+<a class="post" href="/clickhouse/comparison/openobserve-benchmark">
+<span class="post-t">OpenObserve 压测实录：27.3 亿行下的真实表现</span>
+<span class="post-d">系列第二篇。同数据、同压缩级别、功能对等、口径一致，已知的公平性缺口一并写在文里。</span>
+</a>
 
 </div>
 
+::: tip 冷数据方案对比在哪
+「S3 冷盘 TTL / BACKUP / Parquet + chDB 怎么选」这个题目单独成栏了，在 [冷热分层](/clickhouse/cold-storage/) —— 因为它展开之后有七篇，塞在横评里装不下。
+:::
+
 <!-- TODO：
-  - 存算分离横评：ClickHouse / OpenObserve / Doris / GreptimeDB
-    （含一手压测；实测发现 OpenObserve 查询静默丢数并已向官方提 issue）
-  - 冷数据方案对比：S3 冷盘 TTL / backup-restore / Parquet + chdb
-    ——「能力缺失 ≠ 需求无解」最完整的案例
   - ClickHouse vs Elasticsearch：日志场景
-  - ClickHouse vs Doris / StarRocks：sharding 所有权的架构假设差异
+  - ClickHouse vs StarRocks：sharding 所有权的架构假设差异
     （内链到 /clickhouse/tooling/why-not-auto-rebalance）
 -->

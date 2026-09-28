@@ -1,0 +1,20 @@
+direction: down
+
+H: {label: "热数据 < 30 天"; class: hot; H1: "本地 NVMe / SSD\nMergeTree 主线"}
+
+W: {label: "温数据 30~90 天"; class: warn; W1: "S3 Disk + 本地 cache\n仍在 ClickHouse 主线"}
+
+C: {label: "冷数据 90 天 ~ 1 年"; class: cold; C1: "S3 Engine + Parquet\n开放格式,跨引擎可读"}
+
+A: {label: "超冷数据 > 1 年"; class: cold; A1: "BACKUP -> Glacier IR/Deep Archive\n合规归档,极少在线查"}
+
+Q: "业务查询" {class: base}
+
+H -> W: "TTL 自动下沉"
+W -> C: "定时 INSERT INTO s3()\n导出 Parquet"
+C -> A: "分区到期 BACKUP\n+ DROP PARTITION"
+
+H -> Q: "实时查询" {style.stroke-dash: 3}
+W -> Q: "温查询(命中 cache)" {style.stroke-dash: 3}
+C -> Q: "冷查询(直查 / Spark / Trino)" {style.stroke-dash: 3}
+A -> Q: "提单 -> RESTORE" {style.stroke-dash: 3}

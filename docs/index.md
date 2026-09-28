@@ -107,6 +107,16 @@ ReplicatedMergeTree 防的是节点故障，防不了误删和逻辑错误。这
 <p>真实事故的完整复盘，包括判断错的地方和走过的弯路。</p>
 </a>
 
+<a class="entry" href="/clickhouse/cold-storage/">
+<h3>冷热分层</h3>
+<p>S3 Disk、BACKUP、Parquet + chDB 四条路线怎么选，以及选错的代价。</p>
+</a>
+
+<a class="entry" href="/clickhouse/deep-dive/">
+<h3>一次讲透</h3>
+<p>挑一个功能，从内部机制讲到生产边界。物化视图、字典、UDF。</p>
+</a>
+
 <a class="entry" href="/clickhouse/tooling/">
 <h3>工具与设计</h3>
 <p>为什么某个能力值得做进产品，以及为什么有些技术上完全做得到的事，我选择不做。</p>

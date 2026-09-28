@@ -1,0 +1,12 @@
+direction: right
+
+s3_jitter: S3 抖动 {class: hot}
+part_unreadable: part 读不到 {class: base}
+query_hang: 查询 hang {class: base}
+merge_stuck: 后台 merge 卡住 {class: base}
+write_bp: 写入背压 {class: base}
+restart: "restart 起不来\n(要重新 stat 所有 S3 part)" {class: hot}
+hot_dead: 热数据查询也跟着挂 {class: hot}
+
+s3_jitter -> part_unreadable -> query_hang -> merge_stuck -> write_bp
+query_hang -> restart -> hot_dead

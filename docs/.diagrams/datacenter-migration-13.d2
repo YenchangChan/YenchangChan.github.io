@@ -1,0 +1,20 @@
+direction: down
+start: 集群迁移规划 {class: base}
+
+q1: 总数据量 +\n迁移窗口期 {class: base}
+q2: 业务能否双写? {class: base}
+q3: 是否需要 reshard? {class: base}
+
+p1: INSERT SELECT 直推\n(默认首选) {class: base}
+p2: BACKUP/RESTORE\n或 clickhouse-backup {class: base}
+p3: 双写 + 全量回填 {class: base}
+p4: 双写 + S3 中转\n+ s3Cluster reshard {class: base}
+
+start -> q1
+q1 -> p1: 窗口期内能灌完\n(通常 < 30 TB)
+q1 -> q2: 灌不完
+q2 -> p3: 业务支持双写
+q2 -> p2: 业务无法双写\n但能停机
+q3 -> p4: 必须 reshard\n且数据量大
+
+p1.class: accent

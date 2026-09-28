@@ -1,0 +1,16 @@
+direction: down
+
+frontend: 前端 {class: base}
+java: Java 业务服务 {class: base}
+
+ck: "ClickHouse (本地 NVMe)\n保留 4 个月\nTTL DELETE WHERE exported_at IS NOT NULL" {shape: cylinder; class: cold}
+
+s3: "S3 Parquet\ndt=.../bucket=.../\n256MB-1GB / 文件\nrow group 128 MB\nZSTD + 排序 + stats" {shape: cylinder; class: warn}
+
+chdb: "chDB 查询微服务\nPython + FastAPI\n限并发 N=4\nquery_id + cancel\nJSON 输出\nsystemd 守护" {class: hot}
+
+frontend -> java: 用户查询
+java -> ck: 热数据
+ck -> s3: "每日 cron-export.py\nINSERT INTO FUNCTION s3(...)\n+ PARTITION BY (dt, hash bucket)\n+ ORDER BY 主过滤列\n+ 验证行数 + 抽样查询\n+ ALTER UPDATE exported_at = now()"
+s3 -> chdb: "s3() + use_hive_partitioning\n+ max_remote_read_network_bandwidth_for_server\n+ max_memory_usage / spill"
+chdb -> java: HTTP (冷数据)

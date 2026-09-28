@@ -1,0 +1,23 @@
+direction: right
+
+W: "Kafka / 业务写入" {class: base}
+Q: "业务查询" {class: base}
+
+Storage: {
+  class: base
+  label: "Storage Policy: tiered"
+
+  Hot: "Hot Volume\nNVMe\n0~7 天" {class: hot}
+  Warm: "Warm Volume\nSSD/HDD\n7~30 天" {class: warn}
+  Cold: "Cold Volume\nS3 + cache\n30 天~1 年" {class: cold}
+  Drop: "超期 DELETE\n1 年+" {class: mute}
+}
+
+W -> Storage.Hot
+Storage.Hot -> Storage.Warm: "TTL TO VOLUME 'warm'"
+Storage.Warm -> Storage.Cold: "TTL TO VOLUME 'cold'"
+Storage.Cold -> Storage.Drop: "TTL DELETE"
+
+Storage.Hot -> Q: "高频查询" {style.stroke-dash: 3}
+Storage.Warm -> Q: "温查询" {style.stroke-dash: 3}
+Storage.Cold -> Q: "冷查询\n(cache 命中率决定体验)" {style.stroke-dash: 3}

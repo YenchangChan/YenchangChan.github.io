@@ -1,0 +1,9 @@
+shape: sequence_diagram
+
+scheduler: 调度机 {class: base}
+ck: CK Shard {class: base}
+s3: S3 {class: base}
+
+scheduler -> ck: SQL 文本 (几百字节)
+ck."服务端执行": {ck -> ck: "本地读 MergeTree\n服务端 pipeline\n生成 Parquet"; ck -> s3: multipart PUT (数据流, 调度机不过)}
+ck -> scheduler: 状态码 (几十字节)

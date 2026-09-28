@@ -1,0 +1,24 @@
+direction: down
+q: 表分区方式 {class: base}
+
+t1: 按时间分区 {class: base}
+t2: 按业务字段分区 {class: base}
+t3: 不分区 {class: base}
+
+t1_size: 数据量随时间线性增长\n累积 TB ~ PB 级 {class: base}
+t2_size: 数据量受业务维度上限约束\n通常 GB ~ 百 GB 级 {class: base}
+t3_size: 数据量本身就有上限\n通常 GB ~ 几十 GB 级 {class: base}
+
+q -> t1 -> t1_size
+q -> t2 -> t2_size
+q -> t3 -> t3_size
+
+t1_plan: 增量迁移\n按分区切片 {class: base}
+t2_plan: 全量重灌\n双写期对账 {class: base}
+t3_plan: 一次性迁移完\n双写直接覆盖 {class: base}
+
+t1_size -> t1_plan
+t2_size -> t2_plan
+t3_size -> t3_plan
+
+t3_plan.class: accent

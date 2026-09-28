@@ -1,0 +1,15 @@
+direction: right
+
+s1: Shard1 {class: base}
+s2: Shard2 {class: base}
+s3: Shard3 {class: base}
+s4: Shard4 {class: base}
+
+init: "Initiator 节点\n(汇聚瓶颈)" {class: hot}
+storage: S3 {shape: cylinder; class: base}
+
+s1 -> init
+s2 -> init
+s3 -> init
+s4 -> init
+init -> storage

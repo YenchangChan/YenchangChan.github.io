@@ -1,0 +1,21 @@
+direction: down
+problem: 错误的 sharding 设计 {class: base}
+
+t: ReplacingMergeTree\nORDER BY (user_id, version)\nDistributed sharding key = rand() {class: base}
+
+ins: 同一个 user_id 的两次写入 {class: base}
+
+s1: shard 1\n(user_id=100, v=1) {class: base}
+s2: shard 2\n(user_id=100, v=2) {class: base}
+
+ins -> s1: 第一次 (rand 落 s1)
+ins -> s2: 第二次 (rand 落 s2)
+
+q: SELECT * FROM dist FINAL\nWHERE user_id = 100 {class: base}
+result: 返回 2 行\n去重失败 {class: base}
+
+s1 -> q
+s2 -> q
+q -> result
+
+result.class: accent

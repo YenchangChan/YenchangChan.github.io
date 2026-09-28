@@ -1,0 +1,19 @@
+direction: down
+
+q: "对老数据的 schema 演化,三种方案怎么处理?" {shape: oval; class: warn}
+
+s3disk: "S3 Disk" {class: hot; m1: "ClickHouse 完全管控 part"; m2: "ADD COLUMN 走元数据 + 读时合成"; m3: "MODIFY type / MATERIALIZE 触发 mutation"; m4: "100T 上 mutation = 几周灾难"; v1: "中等友好"; m1 -> m2; m2 -> m3; m3 -> m4; m4 -> v1}
+
+backup: "BACKUP/RESTORE" {class: warn; b1: "Backup 是自描述快照,只读"; b2: "live ALTER 完全不影响 backup"; b3: "RESTORE 路径 A 总能用老 schema"; b4: "代价转移到\nRESTORE 演练频次"; v2: "高度友好(隔离)"; b1 -> b2; b2 -> b3; b3 -> b4; b4 -> v2}
+
+parquet: "S3 Engine + Parquet" {class: ok; p1: "Parquet 文件自描述"; p2: "列名映射,缺列返回 DEFAULT"; p3: "ClickHouse 端 ALTER 几乎瞬时"; p4: "代价转移到业务管道改造"; v3: "最友好"; p1 -> p2; p2 -> p3; p3 -> p4; p4 -> v3}
+
+q -> s3disk
+q -> backup
+q -> parquet
+
+note: "三种方案都有'代价转移':\nS3 Disk 转移到运维窗口\nBACKUP 转移到演练频次\nParquet 转移到业务管道" {shape: callout; class: warn}
+
+s3disk -> note
+backup -> note
+parquet -> note

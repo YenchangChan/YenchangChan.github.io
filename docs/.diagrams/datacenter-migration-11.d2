@@ -1,0 +1,22 @@
+direction: down
+src: 字典源类型 {class: base}
+
+s1: ClickHouse 表 {class: base}
+s2: MySQL / PG {class: base}
+s3: HTTP / 文件 {class: base}
+s4: Executable {class: base}
+
+src -> s1
+src -> s2
+src -> s3
+src -> s4
+
+s1_plan: 源表跟着迁\n字典 DDL 重建 {class: base}
+s2_plan: 字典 DDL 重建\n确保 B 集群网络可达 {class: base}
+s3_plan: 文件要拷到 B\n或 URL 在 B 可达 {class: base}
+s4_plan: 脚本要部署到\nB 集群所有节点 {class: base}
+
+s1 -> s1_plan
+s2 -> s2_plan
+s3 -> s3_plan
+s4 -> s4_plan

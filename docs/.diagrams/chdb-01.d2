@@ -1,0 +1,16 @@
+direction: down
+
+frontend: 前端 {class: base}
+java: Java 业务服务 {class: base}
+
+ck: "ClickHouse (本地 NVMe)\n保留 4 个月" {shape: cylinder; class: cold}
+
+s3: "S3 Parquet\nHive 风格分区\nZSTD + 排序 + stats" {shape: cylinder; class: warn}
+
+chdb: "chDB 查询微服务\n(Python + FastAPI)\n限并发 + 限带宽 + JSON 输出" {class: hot}
+
+frontend -> java: 用户查询
+java -> ck: 热数据
+ck -> s3: "每日 cron\nINSERT INTO FUNCTION s3(...)\n验证后 ALTER UPDATE exported_at"
+s3 -> chdb: "s3() 表函数\n+ use_hive_partitioning"
+chdb -> java: HTTP (冷数据)

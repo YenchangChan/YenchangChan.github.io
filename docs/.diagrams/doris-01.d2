@@ -1,0 +1,26 @@
+direction: right
+
+CK: "ClickHouse" {
+  class: base
+  direction: down
+  C1: "SHARD 分片" {class: base}
+  C2: "PARTITION 分区" {class: base}
+  C3: "PART 数据块" {class: hot}
+  C4: "GRANULARITY 索引粒度" {class: base}
+  C5: "ROWS" {class: base}
+  C1 -> C2 -> C3 -> C4 -> C5
+}
+
+DR: "Apache Doris" {
+  class: base
+  direction: down
+  D1: "PARTITION 分区" {class: base}
+  D2: "BUCKET 分桶" {class: base}
+  D3: "TABLET\n可迁移的最小单元" {class: ok}
+  D4: "ROWSET 一次导入" {class: base}
+  D5: "ROWS" {class: base}
+  D1 -> D2 -> D3 -> D4 -> D5
+}
+
+CK.C3 -> DR.D3: "归属 shard 由 sharding key 硬绑定\n无法整体搬移" {style.stroke-dash: 3}
+

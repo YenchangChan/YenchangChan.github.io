@@ -1,0 +1,21 @@
+direction: down
+
+Q: 新查询进入 {class: base}
+L1: "max_memory_usage\n单查询硬顶" {shape: diamond; class: base}
+Reject: "主动报错\n进程不死" {class: warn}
+L2: "聚合/排序中间态\n大于 spill 阈值?" {shape: diamond; class: base}
+Spill: "external_group_by/sort\n溢出到磁盘, 慢但不崩" {class: warn}
+Run: 正常执行 {class: base}
+L3: "进程 RSS 仍超 cgroup?" {shape: diamond; class: base}
+Kill: "supervisor 拉起\n兜底, 应极少触发" {class: hot}
+OK: 返回结果 {class: ok}
+
+Q -> L1
+L1 -> Reject: 超限
+L1 -> L2: 未超
+L2 -> Spill: 是
+L2 -> Run: 否
+Spill -> Run
+Run -> L3
+L3 -> Kill: 是
+L3 -> OK: 否

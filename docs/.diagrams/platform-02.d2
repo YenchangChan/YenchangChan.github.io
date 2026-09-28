@@ -1,0 +1,18 @@
+direction: down
+
+ck: "CK reader 进程" {class: base}
+pool: "进程内 HTTP 连接池\n(s3_max_connections)" {class: warn}
+egress: "网络出口\n(VPC endpoint / NAT)" {class: hot; tooltip: "★ 最容易漏的一层"}
+account: "AWS 账号 / region\n(数据平面 quota)" {class: mute}
+bucket: "S3 bucket" {class: base}
+prefix: "S3 prefix\n(5500 GET/s, 3500 PUT/s)" {class: cold}
+
+ck -> pool: "Layer 1"
+pool -> egress: "Layer 2 ★"
+egress -> account: "Layer 3"
+account -> bucket: "Layer 4"
+bucket -> prefix: "Layer 5"
+
+other: "其他业务" {class: ok}
+other -> egress: "如果共享出口就在这里合流"
+other -> prefix: "如果同 prefix 就在这里合流"
