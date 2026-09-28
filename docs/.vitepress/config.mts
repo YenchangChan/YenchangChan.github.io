@@ -134,7 +134,14 @@ export default defineConfig({
       ],
       '/systems/': [
         { text: '概览', link: '/systems/' },
-        { text: '内核问题定位', link: '/systems/kernel/' },
+        {
+          text: '内核问题定位',
+          collapsed: false,
+          items: [
+            { text: '概览', link: '/systems/kernel/' },
+            { text: '采集器被两家客户判了死刑，然后我们翻了案', link: '/systems/kernel/ext3-jbd-memcg-oom-deadlock' },
+          ],
+        },
         { text: '资源与容器', link: '/systems/resources/' },
         { text: '采集器工程', link: '/systems/agent/' },
         { text: 'K8s 与容器采集', link: '/systems/k8s/' },

@@ -1,10 +1,21 @@
 # 内核问题定位
 
+两起金融客户的整机 hang 死 / soft lockup。共同点是：**事故初期，采集器都被认定为元凶。**
+
+方法是一样的 —— `crash` 解析 vmcore 调用栈，比对发行版内核源码 diff，再结合上游同型补丁交叉验证。
+
+<div class="posts">
+
+<a class="post" href="/systems/kernel/ext3-jbd-memcg-oom-deadlock">
+<span class="post-t">采集器被两家客户判了死刑，然后我们翻了案</span>
+<span class="post-d">jbd 事务与 memory cgroup OOM 互锁。根因是 RedHat 在 3.10.0-862.el7 移植补丁时，把 <code>__GFP_NOFAIL</code> 在 <code>__add_to_page_cache_locked()</code> 里按位与掉了。</span>
+</a>
+
+</div>
+
 <div class="soon">
 
-这一栏还没有文章。要写的是两起整机 hang 死的定位过程 —— 事故初期采集器被认定为元凶，最后根因在内核。
-
-在那之前，[Field Notes](/notes/) 里有一些可以直接用的判断方法。
+第二篇还没写：XFS extent 遍历路径缺失 `cond_resched()`，非抢占内核下内核态自旋超过 watchdog 阈值，且持有 `XFS_ILOCK_EXCL`，引发全系统级联 D 状态。
 
 </div>
 
