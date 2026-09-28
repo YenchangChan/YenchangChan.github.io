@@ -11,11 +11,16 @@
 <span class="post-d">jbd 事务与 memory cgroup OOM 互锁。根因是 RedHat 在 3.10.0-862.el7 移植补丁时，把 <code>__GFP_NOFAIL</code> 在 <code>__add_to_page_cache_locked()</code> 里按位与掉了。</span>
 </a>
 
+<a class="post" href="/systems/kernel/xfs-soft-lockup-cond-resched">
+<span class="post-t">限了 CPU 配额，它还是把整机卡死了 22 秒</span>
+<span class="post-d">XFS 在 extent 遍历路径上缺 <code>cond_resched()</code>，非抢占内核下单次调用自旋 22 秒；持有 <code>XFS_ILOCK_EXCL</code> 把单核故障放大成整机夯死。附证据边界说明：这次没拿到栈级实锤。</span>
+</a>
+
 </div>
 
 <div class="soon">
 
-第二篇还没写：XFS extent 遍历路径缺失 `cond_resched()`，非抢占内核下内核态自旋超过 watchdog 阈值，且持有 `XFS_ILOCK_EXCL`，引发全系统级联 D 状态。
+两起都写完了。这一栏接下来会补资源与容器方向的内容。
 
 </div>
 

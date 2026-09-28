@@ -140,6 +140,7 @@ export default defineConfig({
           items: [
             { text: '概览', link: '/systems/kernel/' },
             { text: '采集器被两家客户判了死刑，然后我们翻了案', link: '/systems/kernel/ext3-jbd-memcg-oom-deadlock' },
+            { text: '限了 CPU 配额，它还是把整机卡死了 22 秒', link: '/systems/kernel/xfs-soft-lockup-cond-resched' },
           ],
         },
         { text: '资源与容器', link: '/systems/resources/' },
