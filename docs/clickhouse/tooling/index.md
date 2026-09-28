@@ -33,12 +33,16 @@
 <span class="post-d">难的不是技术，是数据迁移、shard 拓扑、元数据对象、业务双写、对账验证要同时成立。任何一环漏了，都在切流当天翻车。</span>
 </a>
 
+<a class="post" href="/clickhouse/tooling/metric-schema-evolution">
+<span class="post-t">一个会让指标悄悄断流的设计，和我们改了三次的 schema</span>
+<span class="post-d">业务标签参与了 <code>__series_id</code> 计算，有人改了个标签，监控就断流了 —— 而每个系统都在正常工作。</span>
+</a>
+
 </div>
 
 <!-- TODO：
   - 线程池监控与合并指标：起点是我自己因为看不见而给了错误建议
   - 为什么工具该替用户记住版本差异
-  - sinker 的多租户路由：为什么在写入时分流
   - 备份与归档：三阶段论证为什么落在 Parquet + chdb
   - AI 运维助手：哪些运维场景适合交给 Agent，哪些不适合
 -->

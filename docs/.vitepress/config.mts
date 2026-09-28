@@ -107,6 +107,7 @@ export default defineConfig({
           items: [
             { text: '概览', link: '/clickhouse/tooling/' },
             { text: '扩容后为什么不自动均衡', link: '/clickhouse/tooling/why-not-auto-rebalance' },
+            { text: '指标 schema 改了三次', link: '/clickhouse/tooling/metric-schema-evolution' },
             { text: '集群机房搬迁实战', link: '/clickhouse/tooling/datacenter-migration' },
           ],
         },
@@ -125,6 +126,7 @@ export default defineConfig({
           collapsed: false,
           items: [
             { text: '概览与立场', link: '/clickhouse/comparison/' },
+            { text: '为什么不用 Kafka engine', link: '/clickhouse/comparison/why-not-kafka-engine' },
             { text: 'ClickHouse 和 Doris 怎么选', link: '/clickhouse/comparison/clickhouse-vs-doris' },
             { text: '存算分离横评', link: '/clickhouse/comparison/storage-compute-separation' },
             { text: 'OpenObserve：源码深挖', link: '/clickhouse/comparison/openobserve-internals' },

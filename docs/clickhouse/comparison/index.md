@@ -71,6 +71,11 @@
 <span class="post-d">系列第二篇。同数据、同压缩级别、功能对等、口径一致，已知的公平性缺口一并写在文里。</span>
 </a>
 
+<a class="post" href="/clickhouse/comparison/why-not-kafka-engine">
+<span class="post-t">为什么不用 Kafka engine，也不写分布式表</span>
+<span class="post-d">两个问题其实是一个：Kafka → ClickHouse 这条写入路径该由谁控制。含我推荐方案自己的四条代价。</span>
+</a>
+
 </div>
 
 ::: tip 冷数据方案对比在哪
