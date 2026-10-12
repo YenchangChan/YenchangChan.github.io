@@ -19,12 +19,17 @@
 <span class="post-d">默认配置内存无上界；offset 记的是「已读取」不是「已投递」；轮转和删除放弃未读数据，丢了多少没有指标。逐条对照上游 master 与在途 PR。</span>
 </a>
 
+<a class="post" href="/systems/agent/fluent-bit-million-files">
+<span class="post-t">百万个只写一次的文件：Fluent Bit 的规模天花板，和另一种采集模型</span>
+<span class="post-d"><code>ignore_older</code> 只看 mtime 不看读完没有；淘汰记录表永不淘汰。长期持有 fd 是架构取舍，fd 无上限是实现缺失。以及轮询 + 有界 fd 池的三层退出，连同它自己的边界问题。</span>
+</a>
+
 </div>
 
 <!-- TODO：
   · 海量小文件：AIX(POWER5) 扫 100 万文件 288 秒 vs Linux 1.4 秒
-    「文件过期」与「目录遗忘」——把监控全量降为监控活跃量
-    （发明专利 CN120541047A）
+    （「文件过期」与专利 CN120541047A 已写进 fluent-bit-million-files，
+      AIX 实测数据待补测试条件后再用）
   · 多平台移植：AIX / HP-UX / ARM 鲲鹏 / PowerPC
   · 长连接下的负载倾斜：为什么水平扩容没有转化成有效吞吐
   · Go → Java/Netty → Rust 三轮重构：20万 → 120万 ops，内存 7GB → 400MB
