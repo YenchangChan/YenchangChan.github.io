@@ -149,7 +149,6 @@ export default defineConfig({
             { text: '限了 CPU 配额，它还是把整机卡死了 22 秒', link: '/systems/kernel/xfs-soft-lockup-cond-resched' },
           ],
         },
-        { text: '资源与容器', link: '/systems/resources/' },
         {
           text: '采集器工程',
           collapsed: false,
@@ -159,7 +158,6 @@ export default defineConfig({
             { text: '明明加了 -gdwarf-4，core 里还是没有行号', link: '/systems/agent/dwarf-version-mismatch' },
           ],
         },
-        { text: 'K8s 与容器采集', link: '/systems/k8s/' },
       ],
       '/notes/': [{ text: 'Field Notes', link: '/notes/' }],
     },
