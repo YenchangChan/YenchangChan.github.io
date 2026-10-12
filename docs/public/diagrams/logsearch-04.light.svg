@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 330" width="760" height="330" font-family='-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif'>
+<rect x="56" y="13" width="10" height="10" rx="2" fill="#2a78d6"/>
+<text x="71.0" y="22.0" font-size="12" fill="#0b0b0b" text-anchor="start">ClickHouse</text>
+<rect x="158.0" y="13" width="10" height="10" rx="2" fill="#eb6834"/>
+<text x="173.0" y="22.0" font-size="12" fill="#0b0b0b" text-anchor="start">Doris</text>
+<rect x="224.0" y="13" width="10" height="10" rx="2" fill="#1baf7a"/>
+<text x="239.0" y="22.0" font-size="12" fill="#0b0b0b" text-anchor="start">Elasticsearch</text>
+<line x1="56.0" y1="280.0" x2="740.0" y2="280.0" stroke="#e5e4e0" stroke-width="1"/>
+<text x="48.0" y="284.0" font-size="11" fill="#52514e" text-anchor="end">1 ms</text>
+<line x1="56.0" y1="201.3" x2="740.0" y2="201.3" stroke="#e5e4e0" stroke-width="1"/>
+<text x="48.0" y="205.3" font-size="11" fill="#52514e" text-anchor="end">10</text>
+<line x1="56.0" y1="122.7" x2="740.0" y2="122.7" stroke="#e5e4e0" stroke-width="1"/>
+<text x="48.0" y="126.7" font-size="11" fill="#52514e" text-anchor="end">100</text>
+<line x1="56.0" y1="44.0" x2="740.0" y2="44.0" stroke="#e5e4e0" stroke-width="1"/>
+<text x="48.0" y="48.0" font-size="11" fill="#52514e" text-anchor="end">1000</text>
+<path d="M68.0,280.0 V161.1 Q68.0,157.1 72.0,157.1 H80.0 Q84.0,157.1 84.0,161.1 V280.0 Z" fill="#2a78d6"/>
+<path d="M86.0,280.0 V166.9 Q86.0,162.9 90.0,162.9 H98.0 Q102.0,162.9 102.0,166.9 V280.0 Z" fill="#eb6834"/>
+<path d="M104.0,280.0 V221.2 Q104.0,217.2 108.0,217.2 H116.0 Q120.0,217.2 120.0,221.2 V280.0 Z" fill="#1baf7a"/>
+<text x="94.0" y="298.0" font-size="11" fill="#52514e" text-anchor="middle">单词</text>
+<path d="M144.0,280.0 V157.8 Q144.0,153.8 148.0,153.8 H156.0 Q160.0,153.8 160.0,157.8 V280.0 Z" fill="#2a78d6"/>
+<path d="M162.0,280.0 V174.4 Q162.0,170.4 166.0,170.4 H174.0 Q178.0,170.4 178.0,174.4 V280.0 Z" fill="#eb6834"/>
+<path d="M180.0,280.0 V231.6 Q180.0,227.6 184.0,227.6 H192.0 Q196.0,227.6 196.0,231.6 V280.0 Z" fill="#1baf7a"/>
+<text x="170.0" y="298.0" font-size="11" fill="#52514e" text-anchor="middle">英文短语</text>
+<path d="M220.0,280.0 V160.7 Q220.0,156.7 224.0,156.7 H232.0 Q236.0,156.7 236.0,160.7 V280.0 Z" fill="#2a78d6"/>
+<path d="M238.0,280.0 V178.3 Q238.0,174.3 242.0,174.3 H250.0 Q254.0,174.3 254.0,178.3 V280.0 Z" fill="#eb6834"/>
+<path d="M256.0,280.0 V238.4 Q256.0,234.4 260.0,234.4 H268.0 Q272.0,234.4 272.0,238.4 V280.0 Z" fill="#1baf7a"/>
+<text x="246.0" y="298.0" font-size="11" fill="#52514e" text-anchor="middle">中文短语</text>
+<path d="M296.0,280.0 V156.9 Q296.0,152.9 300.0,152.9 H308.0 Q312.0,152.9 312.0,156.9 V280.0 Z" fill="#2a78d6"/>
+<path d="M314.0,280.0 V183.3 Q314.0,179.3 318.0,179.3 H326.0 Q330.0,179.3 330.0,183.3 V280.0 Z" fill="#eb6834"/>
+<path d="M332.0,280.0 V241.7 Q332.0,237.7 336.0,237.7 H344.0 Q348.0,237.7 348.0,241.7 V280.0 Z" fill="#1baf7a"/>
+<text x="322.0" y="298.0" font-size="11" fill="#52514e" text-anchor="middle">多词 AND</text>
+<path d="M372.0,280.0 V186.3 Q372.0,182.3 376.0,182.3 H384.0 Q388.0,182.3 388.0,186.3 V280.0 Z" fill="#2a78d6"/>
+<path d="M390.0,280.0 V184.8 Q390.0,180.8 394.0,180.8 H402.0 Q406.0,180.8 406.0,184.8 V280.0 Z" fill="#eb6834"/>
+<path d="M408.0,280.0 V243.1 Q408.0,239.1 412.0,239.1 H420.0 Q424.0,239.1 424.0,243.1 V280.0 Z" fill="#1baf7a"/>
+<text x="398.0" y="298.0" font-size="11" fill="#52514e" text-anchor="middle">极稀有词</text>
+<path d="M448.0,280.0 V186.5 Q448.0,182.5 452.0,182.5 H460.0 Q464.0,182.5 464.0,186.5 V280.0 Z" fill="#2a78d6"/>
+<path d="M466.0,280.0 V186.5 Q466.0,182.5 470.0,182.5 H478.0 Q482.0,182.5 482.0,186.5 V280.0 Z" fill="#eb6834"/>
+<path d="M484.0,280.0 V246.1 Q484.0,242.1 488.0,242.1 H496.0 Q500.0,242.1 500.0,246.1 V280.0 Z" fill="#1baf7a"/>
+<text x="474.0" y="298.0" font-size="11" fill="#52514e" text-anchor="middle">高选择率</text>
+<path d="M524.0,280.0 V166.3 Q524.0,162.3 528.0,162.3 H536.0 Q540.0,162.3 540.0,166.3 V280.0 Z" fill="#2a78d6"/>
+<path d="M542.0,280.0 V87.3 Q542.0,83.3 546.0,83.3 H554.0 Q558.0,83.3 558.0,87.3 V280.0 Z" fill="#eb6834"/>
+<path d="M560.0,280.0 V253.0 Q560.0,249.0 564.0,249.0 H572.0 Q576.0,249.0 576.0,253.0 V280.0 Z" fill="#1baf7a"/>
+<text x="550.0" y="298.0" font-size="11" fill="#52514e" text-anchor="middle">索引取反</text>
+<path d="M600.0,280.0 V160.3 Q600.0,156.3 604.0,156.3 H612.0 Q616.0,156.3 616.0,160.3 V280.0 Z" fill="#2a78d6"/>
+<path d="M618.0,280.0 V85.9 Q618.0,81.9 622.0,81.9 H630.0 Q634.0,81.9 634.0,85.9 V280.0 Z" fill="#eb6834"/>
+<path d="M636.0,280.0 V253.2 Q636.0,249.2 640.0,249.2 H648.0 Q652.0,249.2 652.0,253.2 V280.0 Z" fill="#1baf7a"/>
+<text x="626.0" y="298.0" font-size="11" fill="#52514e" text-anchor="middle">中文取反</text>
+<path d="M676.0,280.0 V167.9 Q676.0,163.9 680.0,163.9 H688.0 Q692.0,163.9 692.0,167.9 V280.0 Z" fill="#2a78d6"/>
+<path d="M694.0,280.0 V87.8 Q694.0,83.8 698.0,83.8 H706.0 Q710.0,83.8 710.0,87.8 V280.0 Z" fill="#eb6834"/>
+<path d="M712.0,280.0 V261.4 Q712.0,257.4 716.0,257.4 H724.0 Q728.0,257.4 728.0,261.4 V280.0 Z" fill="#1baf7a"/>
+<text x="702.0" y="298.0" font-size="11" fill="#52514e" text-anchor="middle">多词取反</text>
+<line x1="56.0" y1="280.0" x2="740.0" y2="280.0" stroke="#b8b7b0" stroke-width="1"/>
+<line x1="512.0" y1="40.0" x2="512.0" y2="280.0" stroke="#52514e" stroke-width="1" stroke-dasharray="3 3"/>
+<text x="518.0" y="50.0" font-size="11" fill="#52514e" text-anchor="start">取反类 →</text>
+<text x="56.0" y="318.0" font-size="11" fill="#52514e" text-anchor="start">p50 中位延迟（毫秒，对数刻度）；hot 模式，跨 5 档 × 2 数据集</text>
+</svg>

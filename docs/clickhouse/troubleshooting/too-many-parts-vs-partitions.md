@@ -80,7 +80,16 @@ GROUP BY partition ORDER BY cnt DESC LIMIT 10;
 - **客户端把数据切成了多个 block 发送** —— 每个 block 单独成 part；HTTP 写入时还受服务端 `max_insert_block_size` 切分
 - **`INSERT ... SELECT` 开了 `max_insert_threads`** —— 每个线程各自产出 part（默认是单线程）
 
-那条 INSERT 当时具体属于哪一种，原始截图已经丢了，我无法回头确认。排查时用 `system.part_log` 按 `query_id` 看 `NewPart` 事件落在哪些分区，就能分清。
+要分清是哪一种，用 `system.part_log` 按 `query_id` 看这次 INSERT 产生的 `NewPart` 事件：
+
+```sql
+SELECT partition_id, count() AS parts, sum(rows) AS rows
+FROM system.part_log
+WHERE query_id = '<query_id>' AND event_type = 'NewPart'
+GROUP BY partition_id ORDER BY parts DESC;
+```
+
+part 分散在多个 `partition_id` 上，是跨分区；集中在同一个分区里却有多个，是多个 block 或多线程写入。
 
 如果写入端没法攒批（大量小客户端、每条都要实时写），交给服务端攒：`async_insert=1`，由服务端把多个小 INSERT 合成一个 part。
 

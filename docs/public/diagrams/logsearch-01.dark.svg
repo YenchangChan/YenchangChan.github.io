@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 340" width="760" height="340" font-family='-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif'>
+<rect x="56" y="13" width="10" height="10" rx="2" fill="#3987e5"/>
+<text x="71.0" y="22.0" font-size="12" fill="#f0efec" text-anchor="start">ClickHouse</text>
+<rect x="158.0" y="13" width="10" height="10" rx="2" fill="#d95926"/>
+<text x="173.0" y="22.0" font-size="12" fill="#f0efec" text-anchor="start">Doris</text>
+<rect x="224.0" y="13" width="10" height="10" rx="2" fill="#199e70"/>
+<text x="239.0" y="22.0" font-size="12" fill="#f0efec" text-anchor="start">Elasticsearch</text>
+<text x="56.0" y="52.0" font-size="13" fill="#f0efec" text-anchor="start" font-weight="600">nginx（原始 25.587 GiB）</text>
+<line x1="56.0" y1="290.0" x2="386.0" y2="290.0" stroke="#33332f" stroke-width="1"/>
+<text x="48.0" y="294.0" font-size="11" fill="#c3c2b7" text-anchor="end">0%</text>
+<line x1="56.0" y1="257.1" x2="386.0" y2="257.1" stroke="#33332f" stroke-width="1"/>
+<text x="48.0" y="261.1" font-size="11" fill="#c3c2b7" text-anchor="end">20%</text>
+<line x1="56.0" y1="224.3" x2="386.0" y2="224.3" stroke="#33332f" stroke-width="1"/>
+<text x="48.0" y="228.3" font-size="11" fill="#c3c2b7" text-anchor="end">40%</text>
+<line x1="56.0" y1="191.4" x2="386.0" y2="191.4" stroke="#33332f" stroke-width="1"/>
+<text x="48.0" y="195.4" font-size="11" fill="#c3c2b7" text-anchor="end">60%</text>
+<line x1="56.0" y1="158.6" x2="386.0" y2="158.6" stroke="#33332f" stroke-width="1"/>
+<text x="48.0" y="162.6" font-size="11" fill="#c3c2b7" text-anchor="end">80%</text>
+<line x1="56.0" y1="125.7" x2="386.0" y2="125.7" stroke="#33332f" stroke-width="1"/>
+<text x="48.0" y="129.7" font-size="11" fill="#c3c2b7" text-anchor="end">100%</text>
+<line x1="56.0" y1="92.9" x2="386.0" y2="92.9" stroke="#33332f" stroke-width="1"/>
+<text x="48.0" y="96.9" font-size="11" fill="#c3c2b7" text-anchor="end">120%</text>
+<line x1="56.0" y1="60.0" x2="386.0" y2="60.0" stroke="#33332f" stroke-width="1"/>
+<text x="48.0" y="64.0" font-size="11" fill="#c3c2b7" text-anchor="end">140%</text>
+<path d="M63.0,290.0 V249.2 Q63.0,245.2 67.0,245.2 H75.0 Q79.0,245.2 79.0,249.2 V290.0 Z" fill="#3987e5"/>
+<path d="M81.0,290.0 V222.6 Q81.0,218.6 85.0,218.6 H93.0 Q97.0,218.6 97.0,222.6 V290.0 Z" fill="#d95926"/>
+<path d="M99.0,290.0 V177.2 Q99.0,173.2 103.0,173.2 H111.0 Q115.0,173.2 115.0,177.2 V290.0 Z" fill="#199e70"/>
+<text x="89.0" y="308.0" font-size="12" fill="#c3c2b7" text-anchor="middle">d0</text>
+<path d="M129.0,290.0 V252.9 Q129.0,248.9 133.0,248.9 H141.0 Q145.0,248.9 145.0,252.9 V290.0 Z" fill="#3987e5"/>
+<path d="M147.0,290.0 V224.0 Q147.0,220.0 151.0,220.0 H159.0 Q163.0,220.0 163.0,224.0 V290.0 Z" fill="#d95926"/>
+<path d="M165.0,290.0 V216.6 Q165.0,212.6 169.0,212.6 H177.0 Q181.0,212.6 181.0,216.6 V290.0 Z" fill="#199e70"/>
+<text x="155.0" y="308.0" font-size="12" fill="#c3c2b7" text-anchor="middle">t1</text>
+<path d="M195.0,290.0 V255.8 Q195.0,251.8 199.0,251.8 H207.0 Q211.0,251.8 211.0,255.8 V290.0 Z" fill="#3987e5"/>
+<path d="M213.0,290.0 V233.1 Q213.0,229.1 217.0,229.1 H225.0 Q229.0,229.1 229.0,233.1 V290.0 Z" fill="#d95926"/>
+<path d="M231.0,290.0 V216.9 Q231.0,212.9 235.0,212.9 H243.0 Q247.0,212.9 247.0,216.9 V290.0 Z" fill="#199e70"/>
+<text x="221.0" y="308.0" font-size="12" fill="#c3c2b7" text-anchor="middle">t2a</text>
+<path d="M261.0,290.0 V145.9 Q261.0,141.9 265.0,141.9 H273.0 Q277.0,141.9 277.0,145.9 V290.0 Z" fill="#3987e5"/>
+<path d="M279.0,290.0 V230.8 Q279.0,226.8 283.0,226.8 H291.0 Q295.0,226.8 295.0,230.8 V290.0 Z" fill="#d95926"/>
+<path d="M297.0,290.0 V216.8 Q297.0,212.8 301.0,212.8 H309.0 Q313.0,212.8 313.0,216.8 V290.0 Z" fill="#199e70"/>
+<text x="287.0" y="308.0" font-size="12" fill="#c3c2b7" text-anchor="middle">t2b</text>
+<path d="M327.0,290.0 V255.9 Q327.0,251.9 331.0,251.9 H339.0 Q343.0,251.9 343.0,255.9 V290.0 Z" fill="#3987e5"/>
+<path d="M345.0,290.0 V243.4 Q345.0,239.4 349.0,239.4 H357.0 Q361.0,239.4 361.0,243.4 V290.0 Z" fill="#d95926"/>
+<path d="M363.0,290.0 V253.7 Q363.0,249.7 367.0,249.7 H375.0 Q379.0,249.7 379.0,253.7 V290.0 Z" fill="#199e70"/>
+<text x="353.0" y="308.0" font-size="12" fill="#c3c2b7" text-anchor="middle">t3</text>
+<line x1="56.0" y1="125.7" x2="386.0" y2="125.7" stroke="#c3c2b7" stroke-width="1.2" stroke-dasharray="5 4"/>
+<line x1="56.0" y1="290.0" x2="386.0" y2="290.0" stroke="#5a5954" stroke-width="1"/>
+<text x="416.0" y="52.0" font-size="13" fill="#f0efec" text-anchor="start" font-weight="600">messages（原始 12.586 GiB）</text>
+<line x1="416.0" y1="290.0" x2="746.0" y2="290.0" stroke="#33332f" stroke-width="1"/>
+<line x1="416.0" y1="257.1" x2="746.0" y2="257.1" stroke="#33332f" stroke-width="1"/>
+<line x1="416.0" y1="224.3" x2="746.0" y2="224.3" stroke="#33332f" stroke-width="1"/>
+<line x1="416.0" y1="191.4" x2="746.0" y2="191.4" stroke="#33332f" stroke-width="1"/>
+<line x1="416.0" y1="158.6" x2="746.0" y2="158.6" stroke="#33332f" stroke-width="1"/>
+<line x1="416.0" y1="125.7" x2="746.0" y2="125.7" stroke="#33332f" stroke-width="1"/>
+<line x1="416.0" y1="92.9" x2="746.0" y2="92.9" stroke="#33332f" stroke-width="1"/>
+<line x1="416.0" y1="60.0" x2="746.0" y2="60.0" stroke="#33332f" stroke-width="1"/>
+<path d="M423.0,290.0 V179.6 Q423.0,175.6 427.0,175.6 H435.0 Q439.0,175.6 439.0,179.6 V290.0 Z" fill="#3987e5"/>
+<path d="M441.0,290.0 V202.2 Q441.0,198.2 445.0,198.2 H453.0 Q457.0,198.2 457.0,202.2 V290.0 Z" fill="#d95926"/>
+<path d="M459.0,290.0 V102.0 Q459.0,98.0 463.0,98.0 H471.0 Q475.0,98.0 475.0,102.0 V290.0 Z" fill="#199e70"/>
+<text x="467.0" y="93.0" font-size="11" fill="#f0efec" text-anchor="middle" font-weight="600">117%</text>
+<text x="449.0" y="308.0" font-size="12" fill="#c3c2b7" text-anchor="middle">d0</text>
+<path d="M489.0,290.0 V215.5 Q489.0,211.5 493.0,211.5 H501.0 Q505.0,211.5 505.0,215.5 V290.0 Z" fill="#3987e5"/>
+<path d="M507.0,290.0 V206.1 Q507.0,202.1 511.0,202.1 H519.0 Q523.0,202.1 523.0,206.1 V290.0 Z" fill="#d95926"/>
+<path d="M525.0,290.0 V164.2 Q525.0,160.2 529.0,160.2 H537.0 Q541.0,160.2 541.0,164.2 V290.0 Z" fill="#199e70"/>
+<text x="515.0" y="308.0" font-size="12" fill="#c3c2b7" text-anchor="middle">t1</text>
+<path d="M555.0,290.0 V210.3 Q555.0,206.3 559.0,206.3 H567.0 Q571.0,206.3 571.0,210.3 V290.0 Z" fill="#3987e5"/>
+<path d="M573.0,290.0 V200.4 Q573.0,196.4 577.0,196.4 H585.0 Q589.0,196.4 589.0,200.4 V290.0 Z" fill="#d95926"/>
+<path d="M591.0,290.0 V164.2 Q591.0,160.2 595.0,160.2 H603.0 Q607.0,160.2 607.0,164.2 V290.0 Z" fill="#199e70"/>
+<text x="581.0" y="308.0" font-size="12" fill="#c3c2b7" text-anchor="middle">t2a</text>
+<path d="M621.0,290.0 V73.7 Q621.0,69.7 625.0,69.7 H633.0 Q637.0,69.7 637.0,73.7 V290.0 Z" fill="#3987e5"/>
+<text x="629.0" y="64.7" font-size="11" fill="#f0efec" text-anchor="middle" font-weight="600">134%</text>
+<path d="M639.0,290.0 V199.9 Q639.0,195.9 643.0,195.9 H651.0 Q655.0,195.9 655.0,199.9 V290.0 Z" fill="#d95926"/>
+<path d="M657.0,290.0 V165.2 Q657.0,161.2 661.0,161.2 H669.0 Q673.0,161.2 673.0,165.2 V290.0 Z" fill="#199e70"/>
+<text x="647.0" y="308.0" font-size="12" fill="#c3c2b7" text-anchor="middle">t2b</text>
+<path d="M687.0,290.0 V220.2 Q687.0,216.2 691.0,216.2 H699.0 Q703.0,216.2 703.0,220.2 V290.0 Z" fill="#3987e5"/>
+<path d="M705.0,290.0 V222.6 Q705.0,218.6 709.0,218.6 H717.0 Q721.0,218.6 721.0,222.6 V290.0 Z" fill="#d95926"/>
+<path d="M723.0,290.0 V215.7 Q723.0,211.7 727.0,211.7 H735.0 Q739.0,211.7 739.0,215.7 V290.0 Z" fill="#199e70"/>
+<text x="713.0" y="308.0" font-size="12" fill="#c3c2b7" text-anchor="middle">t3</text>
+<line x1="416.0" y1="125.7" x2="746.0" y2="125.7" stroke="#c3c2b7" stroke-width="1.2" stroke-dasharray="5 4"/>
+<line x1="416.0" y1="290.0" x2="746.0" y2="290.0" stroke="#5a5954" stroke-width="1"/>
+<text x="746.0" y="119.7" font-size="11" fill="#c3c2b7" text-anchor="end">落盘 = 原始</text>
+<text x="56.0" y="332.0" font-size="11" fill="#c3c2b7" text-anchor="start">落盘 ÷ 原始，越低越省</text>
+</svg>

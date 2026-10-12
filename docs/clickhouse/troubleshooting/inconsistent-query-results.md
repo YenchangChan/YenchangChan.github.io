@@ -28,11 +28,10 @@ title: 同一条 SQL 每次查出来不一样：先看它是怎么变的
 
 假设 2 分片、每分片 2 副本，副本之间**没有同步**，某张表的数据分布如下：
 
-```
-          分片 1                     分片 2
-   副本 1      副本 2         副本 1      副本 2
-   [1, 3]      [2]            [6]         [4, 5]
-```
+<figure class="dfig">
+<img class="dfig-l" src="/diagrams/inconsistent-01.light.svg" alt="2 分片 2 副本，副本之间没有同步，各副本数据不同">
+<img class="dfig-d" src="/diagrams/inconsistent-01.dark.svg" alt="2 分片 2 副本，副本之间没有同步，各副本数据不同">
+</figure>
 
 分布式表查询时，在每个分片上选一个副本。于是查询结果有四种可能：
 
@@ -88,11 +87,10 @@ GROUP BY host ORDER BY host;
 
 同样 2 分片 2 副本，数据都写进副本 1，两个分片的副本 2 都落后：
 
-```
-          分片 1                     分片 2
-   副本 1      副本 2         副本 1      副本 2
-   [1, 2, 3]   [1, 2]         [4, 5, 6]   [4]
-```
+<figure class="dfig">
+<img class="dfig-l" src="/diagrams/inconsistent-02.light.svg" alt="2 分片 2 副本，数据写入副本 1，两个分片的副本 2 同步落后">
+<img class="dfig-d" src="/diagrams/inconsistent-02.dark.svg" alt="2 分片 2 副本，数据写入副本 1，两个分片的副本 2 同步落后">
+</figure>
 
 四种组合查出来是 `1–6`、`1,2,3,4`、`1,2,4,5,6`、`1,2,4` —— 也在跳，但副本 2 追上来之后，四种组合会收敛成同一个结果。
 

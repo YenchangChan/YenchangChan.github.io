@@ -80,6 +80,11 @@ d0 不是「开箱默认」：三家在 d0 都已经显式配好索引、分片�
 | t2b | **134.07%（0.75×）** | 57.28%（1.75×） | 78.38%（1.28×） |
 | t3 | 44.95%（2.22×） | 43.44%（2.30×） | 47.64%（2.10×） |
 
+<figure class="dfig">
+<img class="dfig-l" src="/diagrams/logsearch-01.light.svg" alt="压缩比对比：nginx 与 messages，五个档位，虚线为落盘等于原始">
+<img class="dfig-d" src="/diagrams/logsearch-01.dark.svg" alt="压缩比对比：nginx 与 messages，五个档位，虚线为落盘等于原始">
+</figure>
+
 ES 另有一档 `t1_trial`（nginx 37.62%）：用 synthetic `_source` 把原文改成按需重建、不直接存，索引总量比 t1 再省 20.14%，但需要企业版或试用许可证。
 
 ### 两处超过 100%
@@ -95,6 +100,11 @@ ES 另有一档 `t1_trial`（nginx 37.62%）：用 synthetic `_source` 把原文
 | messages_t3 | 已禁用 | 19.02% | 61.09% | 19.90% |
 | nginx_d0 | 64.20% | 7.39% | 21.71% | 6.69% |
 | nginx_t1 | 54.64% | 8.20% | 32.35% | 4.81% |
+
+<figure class="dfig">
+<img class="dfig-l" src="/diagrams/logsearch-02.light.svg" alt="ES 落盘构成拆解，占 engine 总字节的比例">
+<img class="dfig-d" src="/diagrams/logsearch-02.dark.svg" alt="ES 落盘构成拆解，占 engine 总字节的比例">
+</figure>
 
 这不是可以简单优化掉的浪费：`_source` 换来的是整条取回原文、`_reindex`、`_update` 的能力，`_id` 换来的是按 ID 精确更新和删除单条文档。CK 和 Doris 的列存路线原生不提供这两项能力，也就没有对应开销。日志是只追加、从不按 ID 改写的场景，这两项确实用不上 —— **但那是场景用不上，不是能力没价值。**
 
@@ -116,6 +126,11 @@ ES 另有一档 `t1_trial`（nginx 37.62%）：用 synthetic `_source` 把原文
 | ES nginx_t1 | 47.11% | 33.39% | **29.11%** |
 | ES messages_d0 | 116.89% | 91.99% | 21.31% |
 | ES messages_t1 | 79.03% | 56.09% | **29.03%** |
+
+<figure class="dfig">
+<img class="dfig-l" src="/diagrams/logsearch-03.light.svg" alt="元数据字段占落盘的比例：CK 与 Doris 调优后接近零，ES 调优后升到 29%">
+<img class="dfig-d" src="/diagrams/logsearch-03.dark.svg" alt="元数据字段占落盘的比例：CK 与 Doris 调优后接近零，ES 调优后升到 29%">
+</figure>
 
 三家差了两个数量级，而且方向相反：**CK 和 Doris 调优后元数据占比下降**（编码把时间戳和序号列压到接近于零），**ES 调优后反而升到 29%** —— `best_compression` 把倒排索引压小了，而 `_source` 里那份元数据是按 JSON 整体存的，压缩收益小得多，相对分量就变重了。
 
@@ -174,6 +189,11 @@ hot 模式、仅等价查询、跨 5 档 × 2 数据集，取**首次触达 / �
 | 中文索引取反（`c5_cjk_not_index`） | 144.5 / 37.34 | 674.3 / 329.56 | 364.1 / 2.46 |
 | 多词索引取反（`c7_multi_not_index`） | 164.6 / 29.88 | 416.1 / 311.88 | 16.6 / 1.94 |
 
+<figure class="dfig">
+<img class="dfig-l" src="/diagrams/logsearch-04.light.svg" alt="各用例 p50 中位延迟，对数刻度">
+<img class="dfig-d" src="/diagrams/logsearch-04.dark.svg" alt="各用例 p50 中位延迟，对数刻度">
+</figure>
+
 每行是该用例跨 5 档 2 数据集的中位数（n=10）。Doris 的 `c2_phrase`（n=8）、`c3_cjk` 与 `c5_cjk_not_index`（n=4）是剔除不可执行 / 不可比档位后剩下的样本数。
 
 **ES 在正向索引查询上全面领先，中位数是个位数毫秒；CK 与 Doris 量级接近。**
@@ -216,6 +236,11 @@ CK 的 text 索引不存 token 位置，所以短语查询只能确认「这些�
 | messages_d0 · 英文短语 | 12.71 GiB | 0.091 GiB | 140× |
 | nginx_d0 · 中文短语 | 25.51 GiB | 0.091 GiB | 280× |
 | messages_d0 · 中文短语 | 12.59 GiB | 0.091 GiB | 138× |
+
+<figure class="dfig">
+<img class="dfig-l" src="/diagrams/logsearch-05.light.svg" alt="CK 全表覆盖查询的读取量：LIKE 与索引谓词，对数刻度">
+<img class="dfig-d" src="/diagrams/logsearch-05.dark.svg" alt="CK 全表覆盖查询的读取量：LIKE 与索引谓词，对数刻度">
+</figure>
 
 ### 这一项 ClickHouse 正在补
 

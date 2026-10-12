@@ -34,15 +34,14 @@ title: metadata 明明在本地，为什么 ClickHouse 说 S3 上找不到
 要理解为什么某个参数失效，先要理解 ClickHouse 启动时的完整流程。按顺序经过这几个阶段：
 
 <div class="flow">
-<div class="flow-step"><span class="flow-n">1</span><span class="flow-t">读取并解析配置</span></div>
-<div class="flow-step hl-a"><span class="flow-n">2</span><span class="flow-t">初始化 disk，做 <strong>access check</strong>（写一个测试文件再删掉）<em>← <code>skip_access_check</code> 作用于此</em></span></div>
-<div class="flow-step"><span class="flow-n">3</span><span class="flow-t"><!-- TODO --></span></div>
-<div class="flow-step"><span class="flow-n">4</span><span class="flow-t">加载 <code>metadata/</code> 下的表定义 SQL</span></div>
-<div class="flow-step hl-b"><span class="flow-n">5</span><span class="flow-t"><strong>Part attach</strong> —— 校验 active part 的完整性<em>← 生产中真正卡住的地方</em></span></div>
-<div class="flow-step"><span class="flow-n">6</span><span class="flow-t">对外提供服务</span></div>
+<div class="flow-step"><span class="flow-n">1</span><span class="flow-t">加载 <code>config.xml</code>：disks / policies / users</span></div>
+<div class="flow-step hl-a"><span class="flow-n">2</span><span class="flow-t">创建 disk，做 <strong>access check</strong>（写一个测试文件再删掉，确认可写）<em>← <code>skip_access_check</code> 作用于此</em></span></div>
+<div class="flow-step"><span class="flow-n">3</span><span class="flow-t">加载 database：扫描 <code>/var/lib/clickhouse/metadata/</code> 目录</span></div>
+<div class="flow-step"><span class="flow-n">4</span><span class="flow-t">Table attach：执行每张表的 <code>ATTACH TABLE</code></span></div>
+<div class="flow-step hl-b"><span class="flow-n">5</span><span class="flow-t"><strong>Part attach</strong> —— 读 part 的自描述文件，包括 S3 上的 <code>checksums.txt</code> 等<em>← 生产中真正卡住的地方</em></span></div>
+<div class="flow-step"><span class="flow-n">6</span><span class="flow-t">ZK 同步：<code>ReplicatedMergeTree</code> 的副本协调</span></div>
+<div class="flow-step"><span class="flow-n">7</span><span class="flow-t">监听端口，对外提供服务</span></div>
 </div>
-
-<!-- TODO: 第 3 步和第 6 步我不知道你原图里写的是什么，按你的图补准确 -->
 
 任何一步失败都可能让启动卡住。`skip_access_check` 影响的是**第 2 步**，但实际生产中启动卡住更常见的是**第 5 步 —— part attach 阶段**。
 

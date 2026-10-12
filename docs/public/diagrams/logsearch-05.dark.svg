@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 320" width="760" height="320" font-family='-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif'>
+<rect x="56" y="13" width="10" height="10" rx="2" fill="#77766f"/>
+<text x="71.0" y="22.0" font-size="12" fill="#f0efec" text-anchor="start">LIKE</text>
+<rect x="114.8" y="13" width="10" height="10" rx="2" fill="#3987e5"/>
+<text x="129.8" y="22.0" font-size="12" fill="#f0efec" text-anchor="start">索引谓词</text>
+<line x1="56.0" y1="270.0" x2="740.0" y2="270.0" stroke="#33332f" stroke-width="1"/>
+<text x="48.0" y="274.0" font-size="11" fill="#c3c2b7" text-anchor="end">0.01</text>
+<line x1="56.0" y1="216.5" x2="740.0" y2="216.5" stroke="#33332f" stroke-width="1"/>
+<text x="48.0" y="220.5" font-size="11" fill="#c3c2b7" text-anchor="end">0.1</text>
+<line x1="56.0" y1="163.0" x2="740.0" y2="163.0" stroke="#33332f" stroke-width="1"/>
+<text x="48.0" y="167.0" font-size="11" fill="#c3c2b7" text-anchor="end">1</text>
+<line x1="56.0" y1="109.5" x2="740.0" y2="109.5" stroke="#33332f" stroke-width="1"/>
+<text x="48.0" y="113.5" font-size="11" fill="#c3c2b7" text-anchor="end">10</text>
+<line x1="56.0" y1="56.0" x2="740.0" y2="56.0" stroke="#33332f" stroke-width="1"/>
+<text x="48.0" y="60.0" font-size="11" fill="#c3c2b7" text-anchor="end">100 GiB</text>
+<path d="M89.4,270.0 V91.8 Q89.4,87.8 93.4,87.8 H119.4 Q123.4,87.8 123.4,91.8 V270.0 Z" fill="#77766f"/>
+<path d="M125.4,270.0 V222.7 Q125.4,218.7 129.4,218.7 H155.4 Q159.4,218.7 159.4,222.7 V270.0 Z" fill="#3987e5"/>
+<text x="124.4" y="79.8" font-size="12" fill="#f0efec" text-anchor="middle" font-weight="600">280×</text>
+<text x="124.4" y="288.0" font-size="11" fill="#c3c2b7" text-anchor="middle">nginx_d0 英文短语</text>
+<path d="M226.2,270.0 V91.8 Q226.2,87.8 230.2,87.8 H256.2 Q260.2,87.8 260.2,91.8 V270.0 Z" fill="#77766f"/>
+<path d="M262.2,270.0 V151.8 Q262.2,147.8 266.2,147.8 H292.2 Q296.2,147.8 296.2,151.8 V270.0 Z" fill="#3987e5"/>
+<text x="261.2" y="79.8" font-size="12" fill="#f0efec" text-anchor="middle" font-weight="600">13.3×</text>
+<text x="261.2" y="288.0" font-size="11" fill="#c3c2b7" text-anchor="middle">nginx_t2b 英文短语</text>
+<path d="M363.0,270.0 V107.9 Q363.0,103.9 367.0,103.9 H393.0 Q397.0,103.9 397.0,107.9 V270.0 Z" fill="#77766f"/>
+<path d="M399.0,270.0 V222.7 Q399.0,218.7 403.0,218.7 H429.0 Q433.0,218.7 433.0,222.7 V270.0 Z" fill="#3987e5"/>
+<text x="398.0" y="95.9" font-size="12" fill="#f0efec" text-anchor="middle" font-weight="600">140×</text>
+<text x="398.0" y="288.0" font-size="11" fill="#c3c2b7" text-anchor="middle">messages_d0 英文短语</text>
+<path d="M499.8,270.0 V91.7 Q499.8,87.7 503.8,87.7 H529.8 Q533.8,87.7 533.8,91.7 V270.0 Z" fill="#77766f"/>
+<path d="M535.8,270.0 V222.7 Q535.8,218.7 539.8,218.7 H565.8 Q569.8,218.7 569.8,222.7 V270.0 Z" fill="#3987e5"/>
+<text x="534.8" y="79.7" font-size="12" fill="#f0efec" text-anchor="middle" font-weight="600">280×</text>
+<text x="534.8" y="288.0" font-size="11" fill="#c3c2b7" text-anchor="middle">nginx_d0 中文短语</text>
+<path d="M636.6,270.0 V108.1 Q636.6,104.1 640.6,104.1 H666.6 Q670.6,104.1 670.6,108.1 V270.0 Z" fill="#77766f"/>
+<path d="M672.6,270.0 V222.7 Q672.6,218.7 676.6,218.7 H702.6 Q706.6,218.7 706.6,222.7 V270.0 Z" fill="#3987e5"/>
+<text x="671.6" y="96.1" font-size="12" fill="#f0efec" text-anchor="middle" font-weight="600">138×</text>
+<text x="671.6" y="288.0" font-size="11" fill="#c3c2b7" text-anchor="middle">messages_d0 中文短语</text>
+<line x1="56.0" y1="270.0" x2="740.0" y2="270.0" stroke="#5a5954" stroke-width="1"/>
+<text x="56.0" y="310.0" font-size="11" fill="#c3c2b7" text-anchor="start">ClickHouse 全表覆盖查询的 read_bytes；柱顶为读取量倍数</text>
+</svg>

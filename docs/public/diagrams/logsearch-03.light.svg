@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 420" width="760" height="420" font-family='-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif'>
+<rect x="200" y="13" width="10" height="10" rx="2" fill="#2a78d6"/>
+<text x="215.0" y="22.0" font-size="12" fill="#0b0b0b" text-anchor="start">ClickHouse</text>
+<rect x="302.0" y="13" width="10" height="10" rx="2" fill="#eb6834"/>
+<text x="317.0" y="22.0" font-size="12" fill="#0b0b0b" text-anchor="start">Doris</text>
+<rect x="368.0" y="13" width="10" height="10" rx="2" fill="#1baf7a"/>
+<text x="383.0" y="22.0" font-size="12" fill="#0b0b0b" text-anchor="start">Elasticsearch</text>
+<line x1="200.0" y1="40.0" x2="200.0" y2="378.0" stroke="#e5e4e0" stroke-width="1"/>
+<text x="200.0" y="396.0" font-size="11" fill="#52514e" text-anchor="middle">0%</text>
+<line x1="356.2" y1="40.0" x2="356.2" y2="378.0" stroke="#e5e4e0" stroke-width="1"/>
+<text x="356.2" y="396.0" font-size="11" fill="#52514e" text-anchor="middle">10%</text>
+<line x1="512.5" y1="40.0" x2="512.5" y2="378.0" stroke="#e5e4e0" stroke-width="1"/>
+<text x="512.5" y="396.0" font-size="11" fill="#52514e" text-anchor="middle">20%</text>
+<line x1="668.8" y1="40.0" x2="668.8" y2="378.0" stroke="#e5e4e0" stroke-width="1"/>
+<text x="668.8" y="396.0" font-size="11" fill="#52514e" text-anchor="middle">30%</text>
+<text x="190.0" y="57.0" font-size="12" fill="#0b0b0b" text-anchor="end">CK · nginx_d0</text>
+<path d="M200.0,42.0 H267.4 Q271.4,42.0 271.4,46.0 V58.0 Q271.4,62.0 267.4,62.0 H200.0 Z" fill="#2a78d6"/>
+<text x="277.4" y="57.0" font-size="11" fill="#0b0b0b" text-anchor="start">4.57%</text>
+<text x="190.0" y="83.0" font-size="12" fill="#0b0b0b" text-anchor="end">CK · nginx_t1</text>
+<path d="M200.0,68.0 H200.0 Q202.5,68.0 202.5,70.5 V85.5 Q202.5,88.0 200.0,88.0 H200.0 Z" fill="#2a78d6"/>
+<text x="208.5" y="83.0" font-size="11" fill="#0b0b0b" text-anchor="start">0.16%</text>
+<text x="190.0" y="109.0" font-size="12" fill="#0b0b0b" text-anchor="end">CK · messages_d0</text>
+<path d="M200.0,94.0 H341.5 Q345.5,94.0 345.5,98.0 V110.0 Q345.5,114.0 341.5,114.0 H200.0 Z" fill="#2a78d6"/>
+<text x="351.5" y="109.0" font-size="11" fill="#0b0b0b" text-anchor="start">9.31%</text>
+<text x="190.0" y="135.0" font-size="12" fill="#0b0b0b" text-anchor="end">CK · messages_t1</text>
+<path d="M200.0,120.0 H200.0 Q202.7,120.0 202.7,122.7 V137.3 Q202.7,140.0 200.0,140.0 H200.0 Z" fill="#2a78d6"/>
+<text x="208.7" y="135.0" font-size="11" fill="#0b0b0b" text-anchor="start">0.17%</text>
+<text x="190.0" y="173.0" font-size="12" fill="#0b0b0b" text-anchor="end">Doris · nginx_d0</text>
+<path d="M200.0,158.0 H251.8 Q255.8,158.0 255.8,162.0 V174.0 Q255.8,178.0 251.8,178.0 H200.0 Z" fill="#eb6834"/>
+<text x="261.8" y="173.0" font-size="11" fill="#0b0b0b" text-anchor="start">3.57%</text>
+<text x="190.0" y="199.0" font-size="12" fill="#0b0b0b" text-anchor="end">Doris · nginx_t1</text>
+<path d="M200.0,184.0 H219.9 Q223.9,184.0 223.9,188.0 V200.0 Q223.9,204.0 219.9,204.0 H200.0 Z" fill="#eb6834"/>
+<text x="229.9" y="199.0" font-size="11" fill="#0b0b0b" text-anchor="start">1.53%</text>
+<text x="190.0" y="225.0" font-size="12" fill="#0b0b0b" text-anchor="end">Doris · messages_d0</text>
+<path d="M200.0,210.0 H295.7 Q299.7,210.0 299.7,214.0 V226.0 Q299.7,230.0 295.7,230.0 H200.0 Z" fill="#eb6834"/>
+<text x="305.7" y="225.0" font-size="11" fill="#0b0b0b" text-anchor="start">6.38%</text>
+<text x="190.0" y="251.0" font-size="12" fill="#0b0b0b" text-anchor="end">Doris · messages_t1</text>
+<path d="M200.0,236.0 H238.5 Q242.5,236.0 242.5,240.0 V252.0 Q242.5,256.0 238.5,256.0 H200.0 Z" fill="#eb6834"/>
+<text x="248.5" y="251.0" font-size="11" fill="#0b0b0b" text-anchor="start">2.72%</text>
+<text x="190.0" y="289.0" font-size="12" fill="#0b0b0b" text-anchor="end">ES · nginx_d0</text>
+<path d="M200.0,274.0 H467.2 Q471.2,274.0 471.2,278.0 V290.0 Q471.2,294.0 467.2,294.0 H200.0 Z" fill="#1baf7a"/>
+<text x="477.2" y="289.0" font-size="11" fill="#0b0b0b" text-anchor="start">17.36%</text>
+<text x="190.0" y="315.0" font-size="12" fill="#0b0b0b" text-anchor="end">ES · nginx_t1</text>
+<path d="M200.0,300.0 H650.8 Q654.8,300.0 654.8,304.0 V316.0 Q654.8,320.0 650.8,320.0 H200.0 Z" fill="#1baf7a"/>
+<text x="660.8" y="315.0" font-size="11" fill="#0b0b0b" text-anchor="start">29.11%</text>
+<text x="190.0" y="341.0" font-size="12" fill="#0b0b0b" text-anchor="end">ES · messages_d0</text>
+<path d="M200.0,326.0 H529.0 Q533.0,326.0 533.0,330.0 V342.0 Q533.0,346.0 529.0,346.0 H200.0 Z" fill="#1baf7a"/>
+<text x="539.0" y="341.0" font-size="11" fill="#0b0b0b" text-anchor="start">21.31%</text>
+<text x="190.0" y="367.0" font-size="12" fill="#0b0b0b" text-anchor="end">ES · messages_t1</text>
+<path d="M200.0,352.0 H649.6 Q653.6,352.0 653.6,356.0 V368.0 Q653.6,372.0 649.6,372.0 H200.0 Z" fill="#1baf7a"/>
+<text x="659.6" y="367.0" font-size="11" fill="#0b0b0b" text-anchor="start">29.03%</text>
+<line x1="200.0" y1="40.0" x2="200.0" y2="378.0" stroke="#b8b7b0" stroke-width="1"/>
+</svg>
