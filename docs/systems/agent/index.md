@@ -14,6 +14,11 @@
 <span class="post-d">gcc 11 默认 DWARF 5，客户机的 gdb 7.6 只认到 4。全局设了 <code>CC</code>，bzip2 的 Makefile 把它覆盖了 —— 7 个编译单元，让整个静态链接二进制的调试信息作废。</span>
 </a>
 
+<a class="post" href="/systems/agent/fluent-bit-backpressure-delivery">
+<span class="post-t">先不伤害宿主，再谈不丢数据：读 Fluent Bit 背压与投递路径</span>
+<span class="post-d">默认配置内存无上界；offset 记的是「已读取」不是「已投递」；轮转和删除放弃未读数据，丢了多少没有指标。逐条对照上游 master 与在途 PR。</span>
+</a>
+
 </div>
 
 <!-- TODO：

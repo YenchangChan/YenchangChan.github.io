@@ -156,6 +156,7 @@ export default defineConfig({
             { text: '概览', link: '/systems/agent/' },
             { text: '进程退出时一个字节都没漏，跑起来却一直在涨', link: '/systems/agent/memory-leak-tool-blind-spots' },
             { text: '明明加了 -gdwarf-4，core 里还是没有行号', link: '/systems/agent/dwarf-version-mismatch' },
+            { text: '读 Fluent Bit 背压与投递路径', link: '/systems/agent/fluent-bit-backpressure-delivery' },
           ],
         },
       ],
