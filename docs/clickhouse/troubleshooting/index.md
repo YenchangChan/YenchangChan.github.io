@@ -25,6 +25,16 @@
 <span class="post-d">ZK 扩容重启引爆 2700 万 znode，以及我远程给错的那条建议。</span>
 </a>
 
+<a class="post" href="/clickhouse/troubleshooting/too-many-parts-vs-partitions">
+<span class="post-t">Too many parts 和 Too many partitions：一词之差，方向相反</span>
+<span class="post-d">一个调大 batch，一个调小 batch。以及两者之间的因果：为绕过 partitions 而调高的上限，在常态写入下变成了 10 万个 part。</span>
+</a>
+
+<a class="post" href="/clickhouse/troubleshooting/inconsistent-query-results">
+<span class="post-t">同一条 SQL 每次查出来不一样：先看它是怎么变的</span>
+<span class="post-d">固定值来回跳、跳了会收敛、单调变少、先有后无 —— 四种变化方式对应四种互不相干的原因。附 <code>internal_replication</code> 的常见误解。</span>
+</a>
+
 </div>
 
 <!-- TODO：

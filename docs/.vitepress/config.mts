@@ -76,6 +76,8 @@ export default defineConfig({
             { text: '126 万 znode 是怎么长出来的', link: '/clickhouse/troubleshooting/keeper-async-blocks' },
             { text: 'S3 不可达时起不来', link: '/clickhouse/troubleshooting/s3-unreachable-startup' },
             { text: 'znode 爆炸与线程池', link: '/clickhouse/troubleshooting/znode-explosion' },
+            { text: 'Too many parts 与 partitions', link: '/clickhouse/troubleshooting/too-many-parts-vs-partitions' },
+            { text: '同一条 SQL 结果不一样', link: '/clickhouse/troubleshooting/inconsistent-query-results' },
           ],
         },
         {
@@ -117,6 +119,7 @@ export default defineConfig({
           items: [
             { text: '概览', link: '/clickhouse/vendor/' },
             { text: 'ARM 上一跑就 SIGILL', link: '/clickhouse/vendor/kylin-arm-instruction-baseline' },
+            { text: '一台起得来一台起不来', link: '/clickhouse/vendor/systemd-ambient-capabilities' },
             { text: '华为 MRS 的连接协议陷阱', link: '/clickhouse/vendor/huawei-mrs-protocol-trap' },
             { text: '并发 INSERT 串表', link: '/clickhouse/vendor/mrs-http-prepare-cache' },
           ],
@@ -128,6 +131,7 @@ export default defineConfig({
             { text: '概览与立场', link: '/clickhouse/comparison/' },
             { text: '为什么不用 Kafka engine', link: '/clickhouse/comparison/why-not-kafka-engine' },
             { text: 'ClickHouse 和 Doris 怎么选', link: '/clickhouse/comparison/clickhouse-vs-doris' },
+            { text: '日志检索三家实测', link: '/clickhouse/comparison/log-search-ck-doris-es' },
             { text: '存算分离横评', link: '/clickhouse/comparison/storage-compute-separation' },
             { text: 'OpenObserve：源码深挖', link: '/clickhouse/comparison/openobserve-internals' },
             { text: 'OpenObserve：压测实录', link: '/clickhouse/comparison/openobserve-benchmark' },

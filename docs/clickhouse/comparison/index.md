@@ -56,6 +56,11 @@
 <span class="post-d">CK 的主要对手已经从 Elasticsearch 换成了 Doris。基础属性、性能、运维、生态四个维度，外加一份「过时论调」清单 —— 包括我自己此前判断错的那几条。</span>
 </a>
 
+<a class="post" href="/clickhouse/comparison/log-search-ck-doris-es">
+<span class="post-t">日志检索三家实测：压缩比差距有一半不是日志本身</span>
+<span class="post-d">CK / Doris / ES，2 亿行、558 条等价查询、三批中位数。ES 正向检索快一个数量级，但取反和全扫上排名会翻转；CK 与 ES 的压缩比差距只存正文时从 1.88 倍缩到 1.34 倍。</span>
+</a>
+
 <a class="post" href="/clickhouse/comparison/storage-compute-separation">
 <span class="post-t">存算分离横评：谁真的做到了</span>
 <span class="post-d">四个系统用同一把尺子量，结论来自官方原句与源码。以及我的立场：这道题也可以不做 —— 「能力缺失 ≠ 需求无解」最完整的一个案例。</span>
@@ -83,7 +88,6 @@
 :::
 
 <!-- TODO：
-  - ClickHouse vs Elasticsearch：日志场景
   - ClickHouse vs StarRocks：sharding 所有权的架构假设差异
     （内链到 /clickhouse/tooling/why-not-auto-rebalance）
 -->
