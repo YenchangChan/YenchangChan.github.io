@@ -21,8 +21,8 @@ title: 明明加了 -gdwarf-4，core 里还是没有行号
 gdb 加载时的原话：
 
 ```
-Reading symbols from ./flow...Dwarf Error: wrong version in compilation unit header
-(is 5, should be 2, 3, or 4) [in module ./flow]
+Reading symbols from ./collector...Dwarf Error: wrong version in compilation unit header
+(is 5, should be 2, 3, or 4) [in module ./collector]
 (no debugging symbols found)...done.
 
 (gdb) bt
@@ -74,7 +74,7 @@ ENV CC="gcc -gdwarf-4 -gstrict-dwarf -fvar-tracking-assignments" \
 没问题。那就不该只看第一个 CU，而是把整个二进制里的版本号全部数一遍：
 
 ```
-$ objdump --dwarf=info ./flow | grep -n 'Version: *5'
+$ objdump --dwarf=info ./collector | grep -n 'Version: *5'
 754527:   Version:       5
 760323:   Version:       5
 760406:   Version:       5
@@ -153,7 +153,7 @@ make CC="$CC"        # 不改源码：从命令行传，优先级最高
 
 回头看第一节的 `bt`：`nxlog_worker_thread` 在 `src/core/nxlog.c` 里，是 v4 编译的，**它的行号也没了。**
 
-出问题的只是 bzip2 那 7 个编译单元，可 gdb 7.6 读到第一个不认识的 CU 头就报 `Dwarf Error`，然后放弃了**整个模块**的 DWARF 信息 —— 输出里那句 `(no debugging symbols found)` 说的是整个 `./flow`，不是 bzlib.c。
+出问题的只是 bzip2 那 7 个编译单元，可 gdb 7.6 读到第一个不认识的 CU 头就报 `Dwarf Error`，然后放弃了**整个模块**的 DWARF 信息 —— 输出里那句 `(no debugging symbols found)` 说的是整个 `./collector`，不是 bzlib.c。
 
 ::: warning
 **静态链接时，调试信息的可用性取决于最差的那个编译单元。**
@@ -170,7 +170,7 @@ core 是在客户那里出的，发现调试信息没用的时候，现场往往
 
 ```bash
 # 二进制里不允许出现 DWARF 5 的编译单元
-n=$(readelf --debug-dump=info ./flow 2>/dev/null | grep -c 'Version: *5')
+n=$(readelf --debug-dump=info ./collector 2>/dev/null | grep -c 'Version: *5')
 [ "$n" -eq 0 ] || { echo "found $n DWARF5 CUs"; exit 1; }
 ```
 
