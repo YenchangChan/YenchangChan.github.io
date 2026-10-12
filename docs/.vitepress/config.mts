@@ -158,6 +158,7 @@ export default defineConfig({
             { text: '明明加了 -gdwarf-4，core 里还是没有行号', link: '/systems/agent/dwarf-version-mismatch' },
             { text: '读 Fluent Bit 背压与投递路径', link: '/systems/agent/fluent-bit-backpressure-delivery' },
             { text: '百万个只写一次的文件', link: '/systems/agent/fluent-bit-million-files' },
+            { text: '读 Fluent Bit 的 offset 存储', link: '/systems/agent/fluent-bit-offset-identity' },
           ],
         },
       ],

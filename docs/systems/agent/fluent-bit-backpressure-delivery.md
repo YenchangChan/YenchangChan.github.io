@@ -238,4 +238,4 @@ Grace              略小于容器的 terminationGracePeriodSeconds
 
 ---
 
-**相关**：[采集器工程](/systems/agent/) · [百万个只写一次的文件](/systems/agent/fluent-bit-million-files)（系列第二篇） · [限了 CPU 配额，它还是把整机卡死了 22 秒](/systems/kernel/xfs-soft-lockup-cond-resched)（另一种「限额保护不了什么」）
+**相关**：[采集器工程](/systems/agent/) · [百万个只写一次的文件](/systems/agent/fluent-bit-million-files)（系列第二篇） · [offset 存储](/systems/agent/fluent-bit-offset-identity)（系列第三篇） · [限了 CPU 配额，它还是把整机卡死了 22 秒](/systems/kernel/xfs-soft-lockup-cond-resched)（另一种「限额保护不了什么」）

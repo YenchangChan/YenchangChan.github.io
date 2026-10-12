@@ -206,4 +206,4 @@ ctx->aged_out_file_inodes = flb_hash_table_create(FLB_HASH_TABLE_EVICT_NONE, 100
 
 ---
 
-**相关**：[采集器工程](/systems/agent/) · [先不伤害宿主，再谈不丢数据](/systems/agent/fluent-bit-backpressure-delivery)（fd 耗尽的连锁停摆）
+**相关**：[采集器工程](/systems/agent/) · [offset 存储](/systems/agent/fluent-bit-offset-identity)（系列第三篇） · [先不伤害宿主，再谈不丢数据](/systems/agent/fluent-bit-backpressure-delivery)（fd 耗尽的连锁停摆）
