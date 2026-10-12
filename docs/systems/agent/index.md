@@ -14,19 +14,32 @@
 <span class="post-d">gcc 11 默认 DWARF 5，客户机的 gdb 7.6 只认到 4。全局设了 <code>CC</code>，bzip2 的 Makefile 把它覆盖了 —— 7 个编译单元，让整个静态链接二进制的调试信息作废。</span>
 </a>
 
+</div>
+
+## Fluent Bit 源码笔记
+
+读 Fluent Bit `in_tail` 与引擎源码的四篇笔记。它是我们的同类产品，所以只写有代码位置和实测支撑的东西，每篇都对照上游 master 和在途 PR 复核过，并单独写「哪些不算缺陷」。
+
+<div class="posts">
+
 <a class="post" href="/systems/agent/fluent-bit-backpressure-delivery">
-<span class="post-t">先不伤害宿主，再谈不丢数据：读 Fluent Bit 背压与投递路径</span>
-<span class="post-d">默认配置内存无上界；offset 记的是「已读取」不是「已投递」；轮转和删除放弃未读数据，丢了多少没有指标。逐条对照上游 master 与在途 PR。</span>
+<span class="post-t">（一）先不伤害宿主，再谈不丢数据</span>
+<span class="post-d">默认配置内存无上界；offset 记的是「已读取」不是「已投递」；轮转和删除放弃未读数据，丢了多少没有指标。</span>
 </a>
 
 <a class="post" href="/systems/agent/fluent-bit-million-files">
-<span class="post-t">百万个只写一次的文件：Fluent Bit 的规模天花板，和另一种采集模型</span>
-<span class="post-d"><code>ignore_older</code> 只看 mtime 不看读完没有；淘汰记录表永不淘汰。长期持有 fd 是架构取舍，fd 无上限是实现缺失。以及轮询 + 有界 fd 池的三层退出，连同它自己的边界问题。</span>
+<span class="post-t">（二）百万个只写一次的文件</span>
+<span class="post-d"><code>ignore_older</code> 只看 mtime 不看读完没有；淘汰记录表永不淘汰。长期持有 fd 是架构取舍，fd 无上限是实现缺失。附「文件过期」的另一种模型。</span>
 </a>
 
 <a class="post" href="/systems/agent/fluent-bit-offset-identity">
-<span class="post-t">采集器怎么记住自己读到了哪里：读 Fluent Bit 的 offset 存储</span>
-<span class="post-d">内存层用 <code>dev:inode</code>、持久层只用 inode，多挂载点重启后读错位置；多个 input 共用一个库时互删记录 —— 上游在途的修复和我最初的建议方向相反。</span>
+<span class="post-t">（三）采集器怎么记住自己读到了哪里</span>
+<span class="post-d">内存层用 <code>dev:inode</code>、持久层只用 inode；多个 input 共用一个库时互删记录 —— 上游在途的修复和我最初的建议方向相反。</span>
+</a>
+
+<a class="post" href="/systems/agent/fluent-bit-read-boundary">
+<span class="post-t">（四）GBK 日志丢了 27.4%，读取边界上的数据丢失</span>
+<span class="post-d">物理位置与逻辑位置混用：GBK 实测丢 27.4%、UTF-16 每个边界丢一行、<code>.gz</code> 中断后永远读不出来。三个预测都被实测推翻过。</span>
 </a>
 
 </div>

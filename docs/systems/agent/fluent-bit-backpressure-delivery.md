@@ -1,14 +1,23 @@
 ---
-title: 先不伤害宿主，再谈不丢数据：读 Fluent Bit 背压与投递路径
+title: Fluent Bit 源码笔记（一）：先不伤害宿主，再谈不丢数据
 ---
 
-# 先不伤害宿主，再谈不丢数据：读 Fluent Bit 背压与投递路径
+# Fluent Bit 源码笔记（一）：先不伤害宿主，再谈不丢数据
 
 > 读 Fluent Bit `in_tail` 和引擎的源码，顺着「下游堵住之后会发生什么」这一条线往下走，得出一组结论：**默认配置下内存没有上界；限了内存，进程一被杀就丢掉全部积压；日志轮转或被删除时，没读完的数据会被放弃 —— 而这几种丢失，大多不会留下 warn 以上的日志，也没有对应的指标。**
 >
 > 这篇不是缺陷清单。它想回答的是一个所有采集器都绕不开的问题：**下游出问题的时候，采集器该把代价留给自己，还是转嫁给宿主？**
 >
 > **我的立场**：我们自己做采集器，和 Fluent Bit 是同类产品。所以这篇只写有代码位置和实测支撑的东西，并单独写一节「哪些不算缺陷」。
+
+::: info Fluent Bit 源码笔记
+读 `in_tail` 与引擎源码的四篇笔记。源码基线 v5.1.1，发布前复核至上游 master `a92d414c1`。
+
+- **（一）先不伤害宿主，再谈不丢数据**　·　背压与投递
+- （二）[百万个只写一次的文件](/systems/agent/fluent-bit-million-files)　·　规模天花板
+- （三）[采集器怎么记住自己读到了哪里](/systems/agent/fluent-bit-offset-identity)　·　offset 存储
+- （四）[GBK 日志丢了 27.4%，读取边界上的数据丢失](/systems/agent/fluent-bit-read-boundary)　·　编码与压缩
+:::
 
 ---
 
@@ -238,4 +247,4 @@ Grace              略小于容器的 terminationGracePeriodSeconds
 
 ---
 
-**相关**：[采集器工程](/systems/agent/) · [百万个只写一次的文件](/systems/agent/fluent-bit-million-files)（系列第二篇） · [offset 存储](/systems/agent/fluent-bit-offset-identity)（系列第三篇） · [限了 CPU 配额，它还是把整机卡死了 22 秒](/systems/kernel/xfs-soft-lockup-cond-resched)（另一种「限额保护不了什么」）
+**相关**：[采集器工程](/systems/agent/) · [限了 CPU 配额，它还是把整机卡死了 22 秒](/systems/kernel/xfs-soft-lockup-cond-resched)（另一种「限额保护不了什么」）

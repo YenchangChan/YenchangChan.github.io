@@ -1,8 +1,8 @@
 ---
-title: 百万个只写一次的文件：Fluent Bit 的规模天花板，和另一种采集模型
+title: Fluent Bit 源码笔记（二）：百万个只写一次的文件
 ---
 
-# 百万个只写一次的文件：Fluent Bit 的规模天花板，和另一种采集模型
+# Fluent Bit 源码笔记（二）：百万个只写一次的文件
 
 > 银行一笔交易一个日志文件，证券每天落一批 dbf —— 这类系统的日志是**只写一次**的：写完就是终态，再也不变。一个目录一天两三万个文件，保留一年，就是几百万。
 >
@@ -10,7 +10,16 @@ title: 百万个只写一次的文件：Fluent Bit 的规模天花板，和另�
 >
 > **我的立场**：我们自己做采集器，正是为这个场景做的。所以第五节写我们的模型时，它自己的边界问题和踩过的 bug 也一并写出来。
 
-本文是 Fluent Bit 源码系列的第二篇。上一篇：[先不伤害宿主，再谈不丢数据](/systems/agent/fluent-bit-backpressure-delivery)。源码基线 v5.1.1（`a31cf11a2`），发布前在上游 master `a92d414c1`（2026-10-09）上复核过。
+::: info Fluent Bit 源码笔记
+读 `in_tail` 与引擎源码的四篇笔记。源码基线 v5.1.1，发布前复核至上游 master `a92d414c1`。
+
+- （一）[先不伤害宿主，再谈不丢数据](/systems/agent/fluent-bit-backpressure-delivery)　·　背压与投递
+- **（二）百万个只写一次的文件**　·　规模天花板
+- （三）[采集器怎么记住自己读到了哪里](/systems/agent/fluent-bit-offset-identity)　·　offset 存储
+- （四）[GBK 日志丢了 27.4%，读取边界上的数据丢失](/systems/agent/fluent-bit-read-boundary)　·　编码与压缩
+:::
+
+源码基线 v5.1.1（`a31cf11a2`），发布前在上游 master `a92d414c1`（2026-10-09）上复核过。
 
 ---
 
@@ -206,4 +215,4 @@ ctx->aged_out_file_inodes = flb_hash_table_create(FLB_HASH_TABLE_EVICT_NONE, 100
 
 ---
 
-**相关**：[采集器工程](/systems/agent/) · [offset 存储](/systems/agent/fluent-bit-offset-identity)（系列第三篇） · [先不伤害宿主，再谈不丢数据](/systems/agent/fluent-bit-backpressure-delivery)（fd 耗尽的连锁停摆）
+**相关**：[采集器工程](/systems/agent/) · [先不伤害宿主，再谈不丢数据](/systems/agent/fluent-bit-backpressure-delivery)（fd 耗尽的连锁停摆）

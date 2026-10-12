@@ -1,8 +1,8 @@
 ---
-title: 采集器怎么记住自己读到了哪里：读 Fluent Bit 的 offset 存储
+title: Fluent Bit 源码笔记（三）：采集器怎么记住自己读到了哪里
 ---
 
-# 采集器怎么记住自己读到了哪里：读 Fluent Bit 的 offset 存储
+# Fluent Bit 源码笔记（三）：采集器怎么记住自己读到了哪里
 
 > 采集器重启之后能接着读，靠的是一张 offset 表。这张表要回答两个问题：**这条记录是哪个文件的**（身份），以及 **这条记录属于谁、什么时候可以删**（归属与生命周期）。
 >
@@ -10,7 +10,16 @@ title: 采集器怎么记住自己读到了哪里：读 Fluent Bit 的 offset �
 >
 > 第二个漏洞上游两年前就有人报过，被 stale 机器人关掉；现在有一个在途的修复 PR，**修的方向和我最初建议的正好相反** —— 这一节值得单独看。
 
-本文是 Fluent Bit 源码系列的第三篇。源码基线 v5.1.1（`a31cf11a2`），发布前在上游 master `a92d414c1`（2026-10-09）上复核过，下文涉及的代码均未改动。判定标准和立场见[第一篇](/systems/agent/fluent-bit-backpressure-delivery)。
+::: info Fluent Bit 源码笔记
+读 `in_tail` 与引擎源码的四篇笔记。源码基线 v5.1.1，发布前复核至上游 master `a92d414c1`。
+
+- （一）[先不伤害宿主，再谈不丢数据](/systems/agent/fluent-bit-backpressure-delivery)　·　背压与投递
+- （二）[百万个只写一次的文件](/systems/agent/fluent-bit-million-files)　·　规模天花板
+- **（三）采集器怎么记住自己读到了哪里**　·　offset 存储
+- （四）[GBK 日志丢了 27.4%，读取边界上的数据丢失](/systems/agent/fluent-bit-read-boundary)　·　编码与压缩
+:::
+
+源码基线 v5.1.1（`a31cf11a2`），发布前在上游 master `a92d414c1`（2026-10-09）上复核过，下文涉及的代码均未改动。判定标准和立场见[第一篇](/systems/agent/fluent-bit-backpressure-delivery)。
 
 ---
 
@@ -228,4 +237,4 @@ PR #12242 选的是**支持**：清理不再按「当前 input 扫到了哪些�
 
 ---
 
-**相关**：[采集器工程](/systems/agent/) · 系列：[① 背压与投递](/systems/agent/fluent-bit-backpressure-delivery) · [② 百万个只写一次的文件](/systems/agent/fluent-bit-million-files)
+**相关**：[采集器工程](/systems/agent/)
