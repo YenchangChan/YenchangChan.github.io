@@ -14,66 +14,8 @@ function readingStats(src: string) {
   return { words, minutes: Math.max(1, Math.round(cjk / 450 + latin / 200)) }
 }
 
-export default defineConfig({
-  lang: 'zh-CN',
-  title: '禹鼎侯',
-  description: 'ClickHouse 与系统底层：生产环境里的排障、设计与取舍',
-  cleanUrls: true,
-  lastUpdated: true,
-  ignoreDeadLinks: true,
-
-  sitemap: { hostname: SITE },
-
-  markdown: {
-    config(md) {
-      // 在 h1 之后插一行「字数 · 阅读时长」。
-      // 概览页和短页不插：一眼能看完的页面，标时长不是信息。
-      md.core.ruler.push('reading_time', (state: any) => {
-        const env = state.env || {}
-        if (env.frontmatter?.readingTime === false) return false
-        if (/(^|\/)index\.md$/.test(env.relativePath || '')) return false
-
-        const stats = readingStats(state.src || '')
-        if (stats.words < 800) return false
-
-        const i = state.tokens.findIndex(
-          (t: any) => t.type === 'heading_close' && t.tag === 'h1'
-        )
-        if (i === -1) return false
-
-        const tok = new state.Token('html_block', '', 0)
-        tok.content = `<p class="reading-time">${stats.words} 字 · 约 ${stats.minutes} 分钟</p>\n`
-        state.tokens.splice(i + 1, 0, tok)
-        return true
-      })
-
-      // 表格套一层可横向滚动的壳。站点 CSS 把表格改回了 display:table + width:100%
-      // （默认样式太松散），代价是宽表不再能自己滚动，会一路顶到右侧目录上。
-      // 壳负责滚动，表格照旧撑满正文列。
-      md.renderer.rules.table_open = (tokens, idx, options, _env, self) =>
-        '<div class="table-wrap">\n' + self.renderToken(tokens, idx, options)
-      md.renderer.rules.table_close = (tokens, idx, options, _env, self) =>
-        self.renderToken(tokens, idx, options) + '</div>'
-    },
-  },
-
-  head: [
-    ['meta', { name: 'author', content: '陈衍长 / 禹鼎侯' }],
-    ['meta', { property: 'og:type', content: 'website' }],
-    ['meta', { property: 'og:site_name', content: '禹鼎侯' }],
-    ['meta', { name: 'keywords', content: 'ClickHouse,ckman,clickhouse_sinker,OLAP,可观测性,Linux内核,排障' }],
-  ],
-
-  themeConfig: {
-    nav: [
-      { text: 'ClickHouse', link: '/clickhouse/', activeMatch: '/clickhouse/' },
-      { text: '系统底层', link: '/systems/', activeMatch: '/systems/' },
-      { text: 'Field Notes', link: '/notes/', activeMatch: '/notes/' },
-      { text: '关于', link: '/about/' },
-    ],
-
-    sidebar: {
-      '/clickhouse/': [
+// ClickHouse 与 Doris 共用这一套侧边栏，Doris 栏就挂在里面
+const CH_SIDEBAR = [
         { text: '版本升级避坑清单', link: '/clickhouse/upgrade-gotchas' },
         { text: '23.8 → 26.3 升级路径评估', link: '/clickhouse/upgrade-23-8-to-26-3' },
         {
@@ -147,7 +89,79 @@ export default defineConfig({
             { text: 'OpenObserve：压测实录', link: '/clickhouse/comparison/openobserve-benchmark' },
           ],
         },
-      ],
+        {
+          text: 'Doris',
+          collapsed: false,
+          items: [
+            { text: '概览', link: '/doris/' },
+            { text: '存储策略与 S3', link: '/doris/storage-policy-s3' },
+            { text: '跨数据中心查询', link: '/doris/cross-datacenter-query' },
+          ],
+        },
+]
+
+export default defineConfig({
+  lang: 'zh-CN',
+  title: '禹鼎侯',
+  description: 'ClickHouse 与系统底层：生产环境里的排障、设计与取舍',
+  cleanUrls: true,
+  lastUpdated: true,
+  ignoreDeadLinks: true,
+
+  sitemap: { hostname: SITE },
+
+  markdown: {
+    config(md) {
+      // 在 h1 之后插一行「字数 · 阅读时长」。
+      // 概览页和短页不插：一眼能看完的页面，标时长不是信息。
+      md.core.ruler.push('reading_time', (state: any) => {
+        const env = state.env || {}
+        if (env.frontmatter?.readingTime === false) return false
+        if (/(^|\/)index\.md$/.test(env.relativePath || '')) return false
+
+        const stats = readingStats(state.src || '')
+        if (stats.words < 800) return false
+
+        const i = state.tokens.findIndex(
+          (t: any) => t.type === 'heading_close' && t.tag === 'h1'
+        )
+        if (i === -1) return false
+
+        const tok = new state.Token('html_block', '', 0)
+        tok.content = `<p class="reading-time">${stats.words} 字 · 约 ${stats.minutes} 分钟</p>\n`
+        state.tokens.splice(i + 1, 0, tok)
+        return true
+      })
+
+      // 表格套一层可横向滚动的壳。站点 CSS 把表格改回了 display:table + width:100%
+      // （默认样式太松散），代价是宽表不再能自己滚动，会一路顶到右侧目录上。
+      // 壳负责滚动，表格照旧撑满正文列。
+      md.renderer.rules.table_open = (tokens, idx, options, _env, self) =>
+        '<div class="table-wrap">\n' + self.renderToken(tokens, idx, options)
+      md.renderer.rules.table_close = (tokens, idx, options, _env, self) =>
+        self.renderToken(tokens, idx, options) + '</div>'
+    },
+  },
+
+  head: [
+    ['meta', { name: 'author', content: '陈衍长 / 禹鼎侯' }],
+    ['meta', { property: 'og:type', content: 'website' }],
+    ['meta', { property: 'og:site_name', content: '禹鼎侯' }],
+    ['meta', { name: 'keywords', content: 'ClickHouse,ckman,clickhouse_sinker,OLAP,可观测性,Linux内核,排障' }],
+  ],
+
+  themeConfig: {
+    nav: [
+      { text: 'ClickHouse', link: '/clickhouse/', activeMatch: '/(clickhouse|doris)/' },
+      { text: '系统底层', link: '/systems/', activeMatch: '/systems/' },
+      { text: 'Field Notes', link: '/notes/', activeMatch: '/notes/' },
+      { text: '关于', link: '/about/' },
+    ],
+
+    sidebar: {
+      // Doris 栏挂在 ClickHouse 这套侧边栏里，所以 /doris/ 复用同一份（见文件末尾）
+      '/clickhouse/': CH_SIDEBAR,
+      '/doris/': CH_SIDEBAR,
       '/systems/': [
         { text: '概览', link: '/systems/' },
         {
