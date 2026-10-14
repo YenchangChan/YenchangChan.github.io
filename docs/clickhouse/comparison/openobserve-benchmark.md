@@ -73,7 +73,7 @@ O2 的索引效率不差，差在数据列。功能对等下索引几乎一样�
 
 精确子串匹配是最贵的能力，`ngrams(5)` 的索引 417.81 GiB，是数据的 3.9 倍。想省空间，要么退回概率型（12.23 GiB，接受假阳性），要么退回 token 语义（46.80 GiB，放弃子串）。这几档 CK 让你自己挑，O2 只有一个固定的点。
 
-压缩率倍数别拿来比。O2 报的是 3.08 TB 压到 174.64 GiB，约 16x；CK 报的是 792.69 GiB 压到 105.58 GiB，约 7.5x。看着 O2 赢了，可落盘是 CK 更小。分母的口径完全不同，O2 的 `original_size` 是打平以后重新序列化的 JSON 文本，每行都把所有字段名重复一遍；CK 的是列式二进制的未压缩值。只比落盘的绝对字节数。
+压缩率倍数别拿来比。O2 报的是 3.08 TiB 压到 174.64 GiB，约 18x；CK 报的是 792.69 GiB 压到 105.58 GiB，约 7.5x。看着 O2 赢了，可落盘是 CK 更小。分母的口径完全不同，O2 的 `original_size` 是打平以后重新序列化的 JSON 文本，每行都把所有字段名重复一遍；CK 的是列式二进制的未压缩值。只比落盘的绝对字节数。
 
 ### 写入：功能对等下 CK 快 18 倍
 
@@ -85,7 +85,7 @@ O2 的索引效率不差，差在数据列。功能对等下索引几乎一样�
 
 行吞吐差 18 倍，字节吞吐只差 4.7 倍，因为两边每行要传的字节根本不一样：O2 走 JSON bulk，每行 1,359 字节；CK 列式写入，每行约 355 字节。
 
-O2 一共发了 3.72 TB（3.38 TiB）的 JSON 请求体，比它内部记的 `original_size` 3.08 TB 多出约两成，多出来的应该主要是 bulk API 每条记录前面那行 action metadata。
+O2 一共发了 3.38 TiB 的 JSON 请求体，比它内部记的 `original_size` 3.08 TiB 多出约一成，多出来的应该主要是 bulk API 每条记录前面那行 action metadata。
 
 字节吞吐差得不多，替 O2 开脱不了，只是把瓶颈看清楚了：O2 处理字节的能力不弱，是协议本身低效，同样的信息量要多传 3.8 倍的字节。而且这由不得使用者，JSON bulk 就是 O2 主要的摄入方式，没有更省的协议可选；CK 这边可以走 Native 二进制、列式批量、直接读 Parquet。协议低效也是架构的一部分，不能摘出去算。
 
@@ -375,7 +375,7 @@ O2 也有该选它的时候：机器内存很紧，或者是边缘部署；主�
 
 压缩率的口径是原始未压缩大小除以落盘大小，含索引的地方会注明。
 
-O2 用 `compressed_size` 加 `index_size`，也就是 UI 上的「实际存储」加「索引大小」。千万别用 `storage_size`，这个字段名非常误导人，源码里是 `self.storage_size += meta.original_size`，累加的是 `original_size`，也就是打平以后的记录重新 `serde_json::to_vec()` 得到的 JSON 文本字节数，UI 上显示为「采集数据 / Ingested Data」，跟落盘大小没关系。用错这个字段，会把 174.64 GiB 看成 3.08 TB。
+O2 用 `compressed_size` 加 `index_size`，也就是 UI 上的「实际存储」加「索引大小」。千万别用 `storage_size`，这个字段名非常误导人，源码里是 `self.storage_size += meta.original_size`，累加的是 `original_size`，也就是打平以后的记录重新 `serde_json::to_vec()` 得到的 JSON 文本字节数，UI 上显示为「采集数据 / Ingested Data」，跟落盘大小没关系。用错这个字段，会把 174.64 GiB 看成 3.08 TiB。
 
 CK 用 `SELECT sum(bytes_on_disk) FROM system.parts WHERE active`，含二级索引。只看 `system.columns` 的 `data_compressed_bytes` 会漏掉全文索引的体积，这个坑我这次也踩了，一度得出完全相反的结论。
 

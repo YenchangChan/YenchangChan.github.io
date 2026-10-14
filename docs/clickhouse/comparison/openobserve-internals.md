@@ -174,7 +174,7 @@ O2 的数据部分 80 KB，跟命令行敲一句 `zstd -1` 得到的 79.3 KiB �
 | CK 无二级索引 | 105.58 GiB | 0 | 105.58 GiB | 小 52%（但无全文检索） |
 | CK `text(ngrams(5))`（子串匹配） | 106.05 GiB | 417.81 GiB | 523.86 GiB | 大 138% |
 
-先说一个坑：压缩率倍数没法比，只能比落盘的绝对字节数。同一份数据，O2 报的是 3.08 TB 压到 174.64 GiB，约 16x；CK 报的是 792.69 GiB 压到 105.58 GiB，约 7.5x。看着 O2 的压缩率是 CK 的两倍多，可落盘是 CK 更小，差别全在分母上。
+先说一个坑：压缩率倍数没法比，只能比落盘的绝对字节数。同一份数据，O2 报的是 3.08 TiB 压到 174.64 GiB，约 18x；CK 报的是 792.69 GiB 压到 105.58 GiB，约 7.5x。看着 O2 的压缩率是 CK 的 2.4 倍，可落盘是 CK 更小，差别全在分母上。
 
 O2 这个分母，翻源码看相当微妙。UI 上的「采集数据 / Ingested Data」对应的是 `StreamStats.storage_size`，名字叫 storage，其实跟存储没关系，`add_file_meta()` 里是 `self.storage_size += meta.original_size`，真正的落盘字节在 `compressed_size`。而 `original_size` 是对打平以后的记录调 `serde_json::to_vec()` 得到的 JSON 文本字节数，链路是 `flatten_with_level()` → `Entry.data_size` → `RecordBatchEntry.data_json_size` → `FileMeta.original_size` → `StreamStats.storage_size`。
 

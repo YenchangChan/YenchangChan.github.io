@@ -46,8 +46,8 @@
 
 <!-- TODO：
   · 海量小文件：AIX(POWER5) 扫 100 万文件 288 秒 vs Linux 1.4 秒
-    （「文件过期」与专利 CN120541047A 已写进 fluent-bit-million-files，
-      AIX 实测数据待补测试条件后再用）
+    （「文件过期」、专利 CN120541047A 和这组数据都已写进 fluent-bit-million-files，
+      测试条件：POWER5 / AIX 6.1 / 2c4G / 100G HDD）
   · 多平台移植：AIX / HP-UX / ARM 鲲鹏 / PowerPC
   · 长连接下的负载倾斜：为什么水平扩容没有转化成有效吞吐
   · Go → Java/Netty → Rust 三轮重构：20万 → 120万 ops，内存 7GB → 400MB
