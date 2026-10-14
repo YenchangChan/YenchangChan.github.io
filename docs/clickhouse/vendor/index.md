@@ -22,7 +22,7 @@
 <div class="posts">
 
 <a class="post" href="/clickhouse/vendor/systemd-ambient-capabilities">
-<span class="post-t">同一个 rpm 包、同一个 systemd 219，一台起得来一台起不来</span>
+<span class="post-t">systemd AmbientCapabilities：同一个 rpm，一台起得来一台起不来</span>
 <span class="post-d">23.7 起官方 unit 加了 <code>AmbientCapabilities=</code>，依赖上游 4.3 的 <code>PR_CAP_AMBIENT</code>；RHEL 7 到 <code>3.10.0-514</code> 才 backport。版本号相同，功能集不同。</span>
 </a>
 

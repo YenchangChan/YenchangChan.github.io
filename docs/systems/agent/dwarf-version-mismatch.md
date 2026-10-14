@@ -4,21 +4,7 @@ title: 明明加了 -gdwarf-4，core 里还是没有行号
 
 # 明明加了 -gdwarf-4，core 里还是没有行号
 
-> 采集器在生产环境 coredump 了。把 core 拿到手，`bt` 只有函数名，没有参数，没有行号。
->
-> 第一层原因很快就找到了：**编译机的 gcc 太新，客户机上的 gdb 太老。** 按官方文档加上 `-gdwarf-4`，demo 立刻好了。正式程序没好。
->
-> 第二层原因藏在一个第三方库的 Makefile 里，而且只占全部编译单元里的 7 个。这篇主要讲第二层：**为什么 7 个编译单元能让整个二进制的调试信息作废**，以及怎么在出厂前就发现它。
-
-## 一、现场
-
-| | |
-|---|---|
-| 编译环境 | 容器内 gcc 11.3（为了同时编译另一个 C++17 项目，编译环境整体容器化） |
-| 调试环境 | CentOS 7，系统自带 gdb `7.6.1-120.el7` |
-| 依赖 | openssl、apr、bzip2 等，全部在容器内从源码编译成静态库，链接进二进制 |
-
-gdb 加载时的原话：
+我有一个C语言写的采集器程序，生产环境 coredump 了。coredump本身并不可怕，它反而更好的留存了现场快照，调试就是了。但是core 拿回来，用 gdb 一打开，第一屏就是一行报错，`bt` 出来只有光秃秃的函数名，参数、行号一概没有：
 
 ```
 Reading symbols from ./collector...Dwarf Error: wrong version in compilation unit header
@@ -31,38 +17,40 @@ Reading symbols from ./collector...Dwarf Error: wrong version in compilation uni
 #2  0x000000000040cdd5 in _thread_helper ()
 ```
 
-注意 `bt` 里**还有函数名**。函数名来自 ELF 的符号表 `.symtab`，它没丢；丢的是 DWARF 调试信息 —— 参数、局部变量、文件和行号。「符号表丢了」是常见的说法，但不准确，排查方向会因此偏掉：这时候该查的不是有没有 strip，而是 DWARF 本身。
+我第一反应是符号表丢了。这种情况一般就两个原因：编译时没加 `-g`，或者 DWARF 版本不对。编译脚本是我自己写的，`-g` 肯定有，那就只剩 DWARF 版本了。
 
-## 二、第一层：DWARF 版本对不上
+事后回头看，「符号表丢了」这个说法其实不太准。函数名还在，说明 ELF 的符号表 `.symtab` 好好的，丢的是 DWARF 里的参数、局部变量和行号，它更像是程序被strip过。这次因为 `-g` 是我自己加的，整个编译流程我全盘掌控，就没往 strip 那边绕；如果换个人接手，很可能先去查是不是被 strip 了。
 
-DWARF 是 ELF 上的调试信息格式，从 v2 到 v5 每一版的编码都有变化，老的调试器不认识新版本。gcc 11 开始，**大多数目标的默认版本从 4 改成了 5**；而 GCC 文档写明 v5 需要 GDB 8.0 以上。CentOS 7 的 gdb 是 7.6。
+## 原因不难猜
 
-两条路都走不通：降级编译器，另一个 C++17 项目就编不了；让客户升级 gdb，不现实 —— 采集器跑在别人的业务机上，那台机器上有什么调试工具，我们决定不了。
+为了顺带编译另一个 C++17 的项目，我把整个编译环境做成了容器，里面装的是 gcc 11.3。可生产环境是 CentOS 7，自带的 gdb 是 `7.6.1-120.el7`。
 
-剩下的办法是让编译器迁就调试器：
+gcc 11 开始，大多数目标的默认 DWARF 版本从 4 变成了 5，而 GCC 文档里写得明明白白：v5 需要 GDB 8.0 以上。报错里那句 `is 5, should be 2, 3, or 4` 说的就是这个。
+
+那怎么办？难不成把 gcc 降回去？那个 C++17 项目就编不了了。总不能逼着客户去升级生产环境的 gdb 吧？采集器跑在人家的业务机上，那台机器装什么调试工具，轮不到我们说了算。
+
+好在 gcc 可以指定 DWARF 版本，让编译器去迁就调试器：
 
 ```bash
 gcc -g -gdwarf-4 -gstrict-dwarf -fvar-tracking-assignments ...
 ```
 
 - `-gdwarf-4`：输出 DWARF 4
-- `-gstrict-dwarf`：不在 v4 里夹带 v5 的扩展，否则老 gdb 仍可能读不懂
-- `-fvar-tracking-assignments`：GCC 文档对 v4 的建议，改善优化代码里变量的调试信息（带 `-O -g` 时其实默认就开着）
+- `-gstrict-dwarf`：不要在 v4 里夹带 v5 的扩展，不然老 gdb 照样可能读不懂
+- `-fvar-tracking-assignments`：GCC 文档对 v4 的建议，改善优化后代码里变量的调试信息（带 `-O -g` 时其实默认就开着）
 
-用一个最小程序验证，容器里编译、宿主机上调试，问题消失。
-
-于是在 Dockerfile 里全局设上：
+我写了个往字符串常量里写字节、必然 core 的小 demo，容器里编译、宿主机上调试，`bt` 正常了。于是在 Dockerfile 里把这几个参数全局设上：
 
 ```dockerfile
 ENV CC="gcc -gdwarf-4 -gstrict-dwarf -fvar-tracking-assignments" \
     CXX="g++ -gdwarf-4 -gstrict-dwarf -fvar-tracking-assignments"
 ```
 
-**正式程序重新编译，gdb 报的还是同一句话：`is 5`。**
+如果事情到这里就结束了，这篇文章也就没必要写了。正式程序重新编译，gdb 报的还是那句 `is 5`。
 
-## 三、第二层：二进制里不止一种版本
+## 玄之又玄
 
-先确认自己的代码确实是 v4。DWARF 里每个编译单元（CU）都带一个 `DW_AT_producer` 属性，**原样记录了编译它时的命令行参数**：
+先用objdump确认参数到底生没生效。DWARF 里每个编译单元（CU）都带一个 `DW_AT_producer` 属性，把编译它时的命令行原样记了下来：
 
 ```
  Compilation Unit @ offset 0x0:
@@ -71,7 +59,9 @@ ENV CC="gcc -gdwarf-4 -gstrict-dwarf -fvar-tracking-assignments" \
    DW_AT_name     : src/core/protocol.c
 ```
 
-没问题。那就不该只看第一个 CU，而是把整个二进制里的版本号全部数一遍：
+是 4，没毛病。那 gdb 嘴里的 5 是从哪来的？
+
+我的代码都是 4，那会不会是链接进来的第三方库？带着这个疑问，我把整个二进制里所有 CU 的版本号都数了一遍：
 
 ```
 $ objdump --dwarf=info ./collector | grep -n 'Version: *5'
@@ -84,7 +74,7 @@ $ objdump --dwarf=info ./collector | grep -n 'Version: *5'
 769783:   Version:       5
 ```
 
-7 个 v5 的编译单元。跳到第一处：
+果然有 7 个是 5。跳到第一处看看：
 
 ```
  Compilation Unit @ offset 0x1807e4:
@@ -94,18 +84,18 @@ $ objdump --dwarf=info ./collector | grep -n 'Version: *5'
    DW_AT_comp_dir : /tmp/bzip2-1.0.8
 ```
 
-`DW_AT_producer` 里**没有 `-gdwarf-4`**。是静态链接进来的 bzip2，环境变量 `CC` 对它没生效。
-
-到容器里对照依赖库：
+`DW_AT_producer` 里根本没有 `-gdwarf-4`，是静态链接进来的 bzip2。到容器里对一下依赖库，它果然就是罪魁祸首：
 
 ```
 $ objdump --dwarf=info libssl.a | grep Version   →  全是 4
 $ objdump --dwarf=info libbz2.a | grep Version   →  全是 5
 ```
 
-### 为什么偏偏是 bzip2
+那问题又来了：Dockerfile 里是先设的 `CC`，再依次编 openssl、apr、bzip2，为什么别人都好好的，偏偏 bzip2 不认？
 
-openssl、apr 走的是 `configure`，会读环境变量里的 `CC`。bzip2 没有 `configure`，只有一个手写的 Makefile：
+## 为什么偏偏是 bzip2
+
+openssl 和 apr 走的是 `configure`，会去读环境变量里的 `CC`。我重新解开 bzip2 的源码包，发现它压根没有 `configure`，只有一个手写的 Makefile，一打开就看出了端倪：
 
 ```makefile
 # To assist in cross-compiling
@@ -117,15 +107,15 @@ LDFLAGS=
 CFLAGS=-Wall -Winline -O2 -g $(BIGFILES)
 ```
 
-这是 make 的变量优先级：
+make 的变量优先级是这样的：
 
 ```
 命令行  make CC=...   >   Makefile 里的赋值  CC=gcc   >   环境变量  CC=...
 ```
 
-**Makefile 里的普通赋值会覆盖同名的环境变量。** Dockerfile 里设的 `CC` 一进 bzip2 的 Makefile 就被换回了 `gcc`，带的是 gcc 11 的默认值 —— DWARF 5。
+Makefile 里一句普通赋值，就把我在外面设的 `CC` 盖掉了，换回了光秃秃的 `gcc`，用的自然是 gcc 11 的默认值 DWARF 5。
 
-注释写的是 "To assist in cross-compiling"：作者设想的用法是 `make CC=xxx` 从命令行传进来，而不是靠环境变量。所以有两种改法：
+一开始我觉得是 bzip2 的作者偷了个懒，稳妥的写法应该是 `CC ?= gcc`。不过再看一眼上面那行注释 "To assist in cross-compiling"，人家设想的用法其实是 `make CC=xxx` 从命令行传进去，只是没想到有人会靠环境变量。所以两种改法都行：
 
 ```makefile
 CC ?= gcc            # 改 Makefile：只在没设置时才用默认值
@@ -135,9 +125,9 @@ CC ?= gcc            # 改 Makefile：只在没设置时才用默认值
 make CC="$CC"        # 不改源码：从命令行传，优先级最高
 ```
 
-第二种更好 —— 不用给第三方源码打补丁，升级 bzip2 时也不会忘。
+我当时是直接改的 Makefile。现在回头看，第二种更好：不用给第三方源码打补丁，以后升级 bzip2 也不会忘了再打一遍。
 
-改完重编，`libbz2.a` 全部变成 v4，gdb 加载不再报错，`bt` 拿到了完整的参数和行号：
+重新编译，`libbz2.a` 全变成了 4，gdb 加载不再报错，`bt` 终于拿到了完整的参数和行号：
 
 ```
 #1  0x000000000049b731 in apr_file_open (new=0x7f7034003320, fname=0x7f7034002ad0 "...",
@@ -149,24 +139,17 @@ make CC="$CC"        # 不改源码：从命令行传，优先级最高
     at src/core/nxlog.c:552
 ```
 
-## 四、为什么 7 个 CU 能毁掉整个二进制
+## 7 个 CU，拖垮了整个二进制
 
-回头看第一节的 `bt`：`nxlog_worker_thread` 在 `src/core/nxlog.c` 里，是 v4 编译的，**它的行号也没了。**
+问题解决以后再回头看开头那个 `bt`，有个地方当时没注意：`nxlog_worker_thread` 在 `src/core/nxlog.c` 里，是我自己的代码，明明是按 v4 编的，可它的行号也没了。
 
-出问题的只是 bzip2 那 7 个编译单元，可 gdb 7.6 读到第一个不认识的 CU 头就报 `Dwarf Error`，然后放弃了**整个模块**的 DWARF 信息 —— 输出里那句 `(no debugging symbols found)` 说的是整个 `./collector`，不是 bzlib.c。
+出问题的只是 bzip2 那 7 个 CU，可 gdb 7.6 读到第一个不认识的 CU 头就报 `Dwarf Error`，然后把整个模块的 DWARF 信息全扔了。输出里那句 `(no debugging symbols found)` 说的是整个 `./collector`，不是 bzlib.c。
 
-::: warning
-**静态链接时，调试信息的可用性取决于最差的那个编译单元。**
+也就是说，静态链接的时候，调试信息能不能用，取决于最差的那一个编译单元。自己的代码写得再规矩也没用，只要哪个 `.a` 里混进一个老 gdb 不认识的 CU，整个二进制的调试信息就跟着陪葬，而且报错里不会告诉你是哪一个。所以只看第一个 CU 是 4 不够，得全量数一遍才算数。
 
-你自己的代码全对没用，只要链接进来的任何一个 `.a` 里混了一个老 gdb 不认识的 CU，
-老 gdb 就会把整个二进制的调试信息丢掉。而且它报错时不会告诉你是哪个 CU。
-:::
+## 出厂前就拦住它
 
-这也是为什么验证「第一个 CU 是 v4」不够，必须全量数一遍。
-
-## 五、出厂前就拦住它
-
-core 是在客户那里出的，发现调试信息没用的时候，现场往往已经没了。所以这个检查要放在构建流水线里，而不是等出事以后：
+core 是在客户那边出的，等发现调试信息没法用，现场往往早就没了。所以这个检查应该放进构建流水线，而不是等出了事再查：
 
 ```bash
 # 二进制里不允许出现 DWARF 5 的编译单元
@@ -174,14 +157,10 @@ n=$(readelf --debug-dump=info ./collector 2>/dev/null | grep -c 'Version: *5')
 [ "$n" -eq 0 ] || { echo "found $n DWARF5 CUs"; exit 1; }
 ```
 
-报错之后，用 `DW_AT_producer` 和 `DW_AT_comp_dir` 定位是哪个库、用什么参数编的 —— **二进制自己记着每个编译单元的编译命令**，这比翻构建日志可靠。
+真报了错，就用 `DW_AT_producer` 和 `DW_AT_comp_dir` 去找是哪个库、用什么参数编的。二进制自己把每个编译单元的编译命令都记着，比翻构建日志靠谱多了。
 
-第三方依赖的构建方式也要统一：**不要假设环境变量能传进去。** `configure` 系的会读，手写 Makefile 的不一定。对这类库，统一用 `make CC="$CC" CFLAGS="..."` 从命令行显式传参。
+第三方依赖也别指望环境变量一定传得进去。`configure` 那一类会读，手写 Makefile 的就不好说了，对这类库，稳妥的做法是统一用 `make CC="$CC" CFLAGS="..."` 从命令行显式传。
 
-::: tip
-**调试信息是写给客户机上那个调试器看的，不是写给编译机看的。**
+DWARF Error 这个问题，网上很多资料说得都比较含糊，大多停在「gcc 和 gdb 版本不匹配，加 `-gdwarf-4`」这一步。这一步当然没错，可它只管得了你自己的代码。编译环境可以随便升级，客户机上的 gdb 是什么版本，是客户说了算。core 出在别人的机器上，能用的往往只有那台机器上原本就装着的工具，所以产物得按调试器能接受的最低版本来编，而且出厂前要把所有编译单元都过一遍，光看一个不够。
 
-编译环境可以随便升级，部署环境里的 gdb 版本由客户决定。
-在别人的机器上出了 core，能用的往往只有那台机器上原本就有的工具 ——
-所以产物要按调试器能接受的**最低**版本来编，并且在出厂前验证全部编译单元，而不是只看一个。
-:::
+**相关**：[内存泄漏排查：为什么 valgrind 查不出内存池里的泄漏](/systems/agent/memory-leak-tool-blind-spots)

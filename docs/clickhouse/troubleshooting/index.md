@@ -25,9 +25,14 @@
 <span class="post-d">ZK 扩容重启引爆 2700 万 znode，以及我远程给错的那条建议。</span>
 </a>
 
-<a class="post" href="/clickhouse/troubleshooting/too-many-parts-vs-partitions">
-<span class="post-t">Too many parts 和 Too many partitions：一词之差，方向相反</span>
-<span class="post-d">一个调大 batch，一个调小 batch。以及两者之间的因果：为绕过 partitions 而调高的上限，在常态写入下变成了 10 万个 part。</span>
+<a class="post" href="/clickhouse/troubleshooting/too-many-parts">
+<span class="post-t">Too many parts：merge 追不上写入的时候</span>
+<span class="post-d">改上限是自欺欺人，OPTIMIZE 是饮鸩止渴。能做的只有两件事：少产生 part，让 merge 跑得动。</span>
+</a>
+
+<a class="post" href="/clickhouse/troubleshooting/too-many-partitions">
+<span class="post-t">Too many partitions：和 Too many parts 一词之差，处理方式截然相反</span>
+<span class="post-d">一个要把 batch 调大，一个要把 batch 调小。临时导入可以放宽上限，常态写入不行。</span>
 </a>
 
 <a class="post" href="/clickhouse/troubleshooting/inconsistent-query-results">

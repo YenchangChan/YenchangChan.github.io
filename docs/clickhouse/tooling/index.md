@@ -23,6 +23,11 @@
 
 <div class="posts">
 
+<a class="post" href="/clickhouse/tooling/deployment-topology">
+<span class="post-t">ClickHouse 集群部署拓扑对比：为什么推荐「一机一副本」</span>
+<span class="post-d">环形部署、轮转多集群技术上都走得通。可同样的机器，双机故障时分片不可用的概率翻倍，写本地表的工具还会静默写错分片。这也是 ckman 只支持一机一副本的原因。</span>
+</a>
+
 <a class="post" href="/clickhouse/tooling/why-not-auto-rebalance">
 <span class="post-t">扩容之后为什么不自动做数据均衡</span>
 <span class="post-d">技术上完全做得到，但 sharding 的所有权假设决定了它不该由工具替你决定。</span>

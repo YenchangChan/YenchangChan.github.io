@@ -156,4 +156,4 @@ ClickHouse 的设置散在三张表里 —— `system.settings`、`system.server
 
 ---
 
-**相关**：[生产排障](/clickhouse/troubleshooting/) · [Too many parts 和 Too many partitions](/clickhouse/troubleshooting/too-many-parts-vs-partitions) · [同一条 SQL 每次查出来不一样](/clickhouse/troubleshooting/inconsistent-query-results)（副本同步延迟一节）
+**相关**：[生产排障](/clickhouse/troubleshooting/) · [Too many parts：merge 追不上写入的时候](/clickhouse/troubleshooting/too-many-parts) · [同一条 SQL 每次查出来不一样](/clickhouse/troubleshooting/inconsistent-query-results)（副本同步延迟一节）

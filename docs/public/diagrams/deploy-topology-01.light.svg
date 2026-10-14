@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 260" width="640" height="260" font-family='-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif'>
+<line x1="120" y1="55" x2="120" y2="205" stroke="#1f6feb" stroke-width="3.5" stroke-linecap="round"/>
+<rect x="104.5" y="118.0" width="31.0" height="24" rx="12" fill="#ffffff" stroke="#1f6feb" stroke-width="1.6"/>
+<text x="120.0" y="135.0" text-anchor="middle" font-size="13" font-weight="600" fill="#1f1f23">S1</text>
+<circle cx="120" cy="55" r="34" fill="#fbfbfc" stroke="#52525b" stroke-width="1.6"/>
+<text x="120" y="60" text-anchor="middle" font-size="15" font-weight="600" fill="#1f1f23">ck1</text>
+<circle cx="120" cy="205" r="34" fill="#fbfbfc" stroke="#52525b" stroke-width="1.6"/>
+<text x="120" y="210" text-anchor="middle" font-size="15" font-weight="600" fill="#1f1f23">ck2</text>
+<line x1="320" y1="55" x2="320" y2="205" stroke="#2da44e" stroke-width="3.5" stroke-linecap="round"/>
+<rect x="304.5" y="118.0" width="31.0" height="24" rx="12" fill="#ffffff" stroke="#2da44e" stroke-width="1.6"/>
+<text x="320.0" y="135.0" text-anchor="middle" font-size="13" font-weight="600" fill="#1f1f23">S2</text>
+<circle cx="320" cy="55" r="34" fill="#fbfbfc" stroke="#52525b" stroke-width="1.6"/>
+<text x="320" y="60" text-anchor="middle" font-size="15" font-weight="600" fill="#1f1f23">ck3</text>
+<circle cx="320" cy="205" r="34" fill="#fbfbfc" stroke="#52525b" stroke-width="1.6"/>
+<text x="320" y="210" text-anchor="middle" font-size="15" font-weight="600" fill="#1f1f23">ck4</text>
+<line x1="520" y1="55" x2="520" y2="205" stroke="#d4740f" stroke-width="3.5" stroke-linecap="round"/>
+<rect x="504.5" y="118.0" width="31.0" height="24" rx="12" fill="#ffffff" stroke="#d4740f" stroke-width="1.6"/>
+<text x="520.0" y="135.0" text-anchor="middle" font-size="13" font-weight="600" fill="#1f1f23">S3</text>
+<circle cx="520" cy="55" r="34" fill="#fbfbfc" stroke="#52525b" stroke-width="1.6"/>
+<text x="520" y="60" text-anchor="middle" font-size="15" font-weight="600" fill="#1f1f23">ck5</text>
+<circle cx="520" cy="205" r="34" fill="#fbfbfc" stroke="#52525b" stroke-width="1.6"/>
+<text x="520" y="210" text-anchor="middle" font-size="15" font-weight="600" fill="#1f1f23">ck6</text>
+</svg>

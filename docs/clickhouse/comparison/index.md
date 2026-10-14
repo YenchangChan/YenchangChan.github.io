@@ -53,7 +53,7 @@
 
 <a class="post" href="/clickhouse/comparison/clickhouse-vs-doris">
 <span class="post-t">2026 年 ClickHouse 和 Doris 怎么选</span>
-<span class="post-d">CK 的主要对手已经从 Elasticsearch 换成了 Doris。基础属性、性能、运维、生态四个维度，外加一份「过时论调」清单 —— 包括我自己此前判断错的那几条。</span>
+<span class="post-d">从出身、查询、存储、运维到生态一项项比下来，最后给出我的选择：推 ClickHouse，以及哪几种情况该直接上 Doris。</span>
 </a>
 
 <a class="post" href="/clickhouse/comparison/log-search-ck-doris-es">

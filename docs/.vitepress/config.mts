@@ -76,7 +76,8 @@ export default defineConfig({
             { text: '126 万 znode 是怎么长出来的', link: '/clickhouse/troubleshooting/keeper-async-blocks' },
             { text: 'S3 不可达时起不来', link: '/clickhouse/troubleshooting/s3-unreachable-startup' },
             { text: 'znode 爆炸与线程池', link: '/clickhouse/troubleshooting/znode-explosion' },
-            { text: 'Too many parts 与 partitions', link: '/clickhouse/troubleshooting/too-many-parts-vs-partitions' },
+            { text: 'Too many parts', link: '/clickhouse/troubleshooting/too-many-parts' },
+            { text: 'Too many partitions', link: '/clickhouse/troubleshooting/too-many-partitions' },
             { text: '同一条 SQL 结果不一样', link: '/clickhouse/troubleshooting/inconsistent-query-results' },
           ],
         },
@@ -108,6 +109,7 @@ export default defineConfig({
           collapsed: false,
           items: [
             { text: '概览', link: '/clickhouse/tooling/' },
+            { text: '为什么推荐一机一副本', link: '/clickhouse/tooling/deployment-topology' },
             { text: '扩容后为什么不自动均衡', link: '/clickhouse/tooling/why-not-auto-rebalance' },
             { text: '指标 schema 改了三次', link: '/clickhouse/tooling/metric-schema-evolution' },
             { text: '集群机房搬迁实战', link: '/clickhouse/tooling/datacenter-migration' },
@@ -119,7 +121,7 @@ export default defineConfig({
           items: [
             { text: '概览', link: '/clickhouse/vendor/' },
             { text: 'ARM 上一跑就 SIGILL', link: '/clickhouse/vendor/kylin-arm-instruction-baseline' },
-            { text: '一台起得来一台起不来', link: '/clickhouse/vendor/systemd-ambient-capabilities' },
+            { text: 'systemd AmbientCapabilities', link: '/clickhouse/vendor/systemd-ambient-capabilities' },
             { text: '华为 MRS 的连接协议陷阱', link: '/clickhouse/vendor/huawei-mrs-protocol-trap' },
             { text: '并发 INSERT 串表', link: '/clickhouse/vendor/mrs-http-prepare-cache' },
           ],
@@ -154,7 +156,7 @@ export default defineConfig({
           collapsed: false,
           items: [
             { text: '概览', link: '/systems/agent/' },
-            { text: '进程退出时一个字节都没漏，跑起来却一直在涨', link: '/systems/agent/memory-leak-tool-blind-spots' },
+            { text: '内存泄漏排查：为什么 valgrind 查不出内存池里的泄漏', link: '/systems/agent/memory-leak-tool-blind-spots' },
             { text: '明明加了 -gdwarf-4，core 里还是没有行号', link: '/systems/agent/dwarf-version-mismatch' },
             {
               text: 'Fluent Bit 源码笔记',

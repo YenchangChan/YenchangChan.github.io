@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 390" width="560" height="390" font-family='-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif'>
+<line x1="280" y1="70" x2="450" y2="320" stroke="#6ea8fe" stroke-width="3.5" stroke-linecap="round"/>
+<rect x="349.5" y="183.0" width="31.0" height="24" rx="12" fill="#1b1b1f" stroke="#6ea8fe" stroke-width="1.6"/>
+<text x="365.0" y="200.0" text-anchor="middle" font-size="13" font-weight="600" fill="#e8e8ea">S1</text>
+<line x1="450" y1="320" x2="110" y2="320" stroke="#56d364" stroke-width="3.5" stroke-linecap="round"/>
+<rect x="264.5" y="308.0" width="31.0" height="24" rx="12" fill="#1b1b1f" stroke="#56d364" stroke-width="1.6"/>
+<text x="280.0" y="325.0" text-anchor="middle" font-size="13" font-weight="600" fill="#e8e8ea">S2</text>
+<line x1="280" y1="70" x2="110" y2="320" stroke="#f0a35a" stroke-width="3.5" stroke-linecap="round"/>
+<rect x="179.5" y="183.0" width="31.0" height="24" rx="12" fill="#1b1b1f" stroke="#f0a35a" stroke-width="1.6"/>
+<text x="195.0" y="200.0" text-anchor="middle" font-size="13" font-weight="600" fill="#e8e8ea">S3</text>
+<circle cx="280" cy="70" r="50" fill="#242428" stroke="#a1a1aa" stroke-width="1.6"/>
+<text x="280" y="66" text-anchor="middle" font-size="15" font-weight="600" fill="#e8e8ea">ck1</text>
+<text x="280" y="85" text-anchor="middle" font-size="12" fill="#BAC2DE">S1R1, S3R2</text>
+<circle cx="450" cy="320" r="50" fill="#242428" stroke="#a1a1aa" stroke-width="1.6"/>
+<text x="450" y="316" text-anchor="middle" font-size="15" font-weight="600" fill="#e8e8ea">ck2</text>
+<text x="450" y="335" text-anchor="middle" font-size="12" fill="#BAC2DE">S2R1, S1R2</text>
+<circle cx="110" cy="320" r="50" fill="#242428" stroke="#a1a1aa" stroke-width="1.6"/>
+<text x="110" y="316" text-anchor="middle" font-size="15" font-weight="600" fill="#e8e8ea">ck3</text>
+<text x="110" y="335" text-anchor="middle" font-size="12" fill="#BAC2DE">S3R1, S2R2</text>
+</svg>

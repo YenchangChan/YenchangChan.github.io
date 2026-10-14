@@ -4,557 +4,282 @@ title: 2026 年 ClickHouse 和 Doris 怎么选
 
 # 2026 年 ClickHouse 和 Doris 怎么选
 
-> CK 的主要对手已经从 Elasticsearch 变成了 Doris。两者覆盖的场景大量重合，但相似的功能背后往往是不同的实现路径。从基础属性、性能、运维到生态四个维度展开，事实、实测与个人判断分开写。
->
-> **阅读对象**：在 ClickHouse 和 Doris 之间做选型，或者手里还攥着三年前结论的人。
+前些年人们说起日志存储，不自觉会拿 Elasticsearch 和 ClickHouse 对比。这几年大家不大提 ES 了，ClickHouse 更多时候成了 Doris 的对标对象。ClickHouse 也终于从一位屠龙者，长成了别人眼里的巨龙。
 
----
+很多朋友让我出一期 ClickHouse 和 Doris 的全面对比。随着 Apache Doris 在国内火起来，不管是可观测、实时分析，还是 AI 相关的数据场景，这两个数据库总是一起出现在候选名单里。做选型的人难免纠结：到底该选 ClickHouse（以下简称 CK），还是 Doris？
 
-前些年讨论日志存储，大家习惯把 Elasticsearch 和 ClickHouse 放在一起比较。近几年，Apache Doris 在国内快速普及，CK 的主要对手也逐渐从 ES 变成了 Doris。无论是实时分析、可观测性，还是正在兴起的 AI 数据场景，这两款数据库经常同时出现在候选名单里。
+我做了六年多 ClickHouse 的开发和运维，是 ClickHouse、clickhouse-go 的 contributor，也是 ckman 和 clickhouse_sinker 的作者，Doris 也深度用过、调过。CK 这边我熟得多，生产上的案例也多，这一点先交代清楚。下面尽量把事实、我自己测过的和我个人的看法分开说，一项一项比下来。
 
-本文不准备只比较查询速度。查询模式、写入语义、运维成本和团队能力都会影响最后的选择。CK 和 Doris 覆盖的场景有大量重合，但相似的功能背后，往往采用了不同的实现路径。
+## 先看出身
 
-笔者有六年以上的 ClickHouse 开发和运维经验，是 ClickHouse、clickhouse-go 的 contributor，也是 ckman 和 clickhouse_sinker 的作者；同时也对 Doris 做过使用和优化。受经历所限，本文对 CK 的理解和生产案例会更深入一些。下面尽量把事实、实测经验和个人判断分开，讨论两者各自适合什么场景。
+### 开源协议
 
-## 1. 基础属性对比
+Doris 是 Apache 顶级项目，Apache License 2.0。CK 早年由 Yandex 主导，后来因为众所周知的原因独立出去，搬到了大漂亮的西雅图，协议同样是 Apache 2.0。两边都允许商用和二次开发。
 
-### 1.1 开源协议
+协议一样，事情却颇具戏剧性：基于 CK 魔改的二开版本数不胜数，Doris 却几乎没有，唯一分出去的 StarRocks 今天已经是两个独立演进的项目了。这事后面讲二开的时候再展开。
 
-Doris 是 Apache 顶级项目，采用 Apache License 2.0。ClickHouse 早期由 Yandex 主导，后来成立独立公司，总部位于西雅图，同样采用 Apache License 2.0。两者的开源协议都允许商业使用和二次开发。
+商业版这块，Doris 有社区版，也有 SelectDB 的商业产品，内核能力基本共享，差别主要在交付、配套工具和技术支持。CK 也分开源版和 Cloud，但这两个差别就大了：存算分离、更完整的写入查询监控运维能力，有一部分只在 Cloud 里，要想体验只能花钱。而 Cloud 在国内又不怎么流行，国内用户更习惯用阿里、华为这些云厂商的托管 CK。
 
-虽然协议相同，两边的二次开发生态并不一样。CK 衍生出了不少公开或内部版本；Doris 的改动更多回流主干，公开的独立分支较少。StarRocks 与 Doris 存在历史渊源，但今天已经是两个独立演进的项目。
+### 编程语言和安装包
 
-Doris 有社区版，也有 SelectDB 提供的商业产品和服务。两者共享主要内核能力，差异更多体现在交付形态、配套工具和技术支持。
+CK 是纯 C++，这几年开始实验性地引入 Rust。Doris 的 BE 是 C++，FE 和 UDF 用 Java。两边的 C++ 都已经用上了 C++20。
 
-ClickHouse 则同时维护开源版和 Cloud 产品。Cloud 提供存算分离以及更完整的写入、查询、监控和运维能力，其中一部分没有进入开源版。国内用户更多通过本地云厂商使用托管 CK，ClickHouse Cloud 在国内的可获得性和服务覆盖相对有限。
+从产物看，CK 的安装包两百多兆，Doris 足足 2.8 个 G，多出来的大头是 jar 包依赖。安装方式上 CK 有 rpm、deb、tgz，有 yum 源、apt 源和 docker 镜像，Doris 只有一个 tar.gz。
 
-### 1.2  编程语言
+### 信创
 
-ClickHouse 使用纯 C++实现，近些年也在开始实验性引入 Rust。Doris 的 BE 采用 C++，FE 和 UDF 则使用 Java。二者的 C++都已经使用到了比较新的 C++20 标准。
+Doris 最早是百度一批人开发并开源的，后来独立成公司，在信创这一块，血脉上就天生优人一等，信创认证、本地化适配、项目交付都占便宜。
 
-从编译产物来看，ClickHouse 安装包仅 200 多 M，而 Doris 则足足有 2.8 个 G，这大约也是因为多了很多 jar 包依赖的缘故。ClickHouse 提供了 rpm、deb、tgz 等多种安装方式，也提供了对应的 yum 源，apt 源，以及 docker 镜像。Doris 仅提供了 tar.gz 一种安装方式。
+CK 是外国人主导开发的，虽然在信创过程中没有因为非国产被直接排除，但在 Kylin ARM 上吃过不少苦头：直接跑官方安装包，一运行就 coredump。原因是官方构建的指令集基线比目标 CPU 新，用 `-DNO_ARMV81_OR_HIGHER=1` 重新编译就能正常跑。所以 CK 在 Kylin ARM 上不是不能用，是不能开箱即用，编译、验证、维护安装包的活得落地团队自己扛。这个坑我单独写过一篇：[ARM 上一跑就 SIGILL](/clickhouse/vendor/kylin-arm-instruction-baseline)。
 
-### 1.3 信创适配
+### 安全漏洞扫描
 
-Doris 最早由百度团队开发并开源，国内厂商主导的研发和服务体系，使它在信创认证、本地化适配和项目交付方面更有优势。
+国内有很多傻乎乎的安全扫描软件，它并不关心你代码怎么实现的，只看你用的依赖库版本是不是低于它知识库里的漏洞版本。政企、银行、证券这些行业，上线前要过漏洞扫描，有的还是强制准入条件。Doris 用了大量 Java，每次都能扫出一大堆漏洞，一点都不奇怪。
 
-ClickHouse 在部分 Kylin ARM 环境中直接运行官方安装包会出现 coredump，但这并不意味着它在技术上无法适配，问题主要来自官方构建所采用的指令集基线与目标 CPU 不一致。使用`-DNO_ARMV81_OR_HIGHER=1`重新编译后，CK 可以正常运行。
+说得专业一点，这类扫描大多是 SCA（软件成分分析）：解析构建产物，列出依赖清单，拿版本号去比 CVE 库。它判断的是「你用了某个有已知漏洞的版本」，不是「有漏洞的代码会不会被执行到」。Java 在这套规则下天然吃亏：一个 FE 模块直接依赖几十个，展开传递依赖就是几百个 jar；Log4j2、Fastjson、Jackson、Netty 这些几乎是标配，又恰好是 CVE 最密集的几个库；jar 包里的 `MANIFEST.MF`、`pom.properties` 把版本号写得清清楚楚，扫描器连推断都不用。
 
-因此，CK 在 Kylin ARM 上能用，但不一定开箱即用：落地团队需要识别软硬件差异，并承担编译、验证和维护安装包的工作。两者在这一场景中的差别主要是构建门槛和本地支持，并非 CK 本身不能运行。
+CK 的待遇完全不同，但原因不是它更安全。CK 主干仓库的 `.gitmodules` 里有 139 个 submodule，`contrib/` 下近 300 个目录，openssl、curl、protobuf、boost、libxml2、krb5、icu，个个都是 CVE 常客。区别只在于这些库是源码 vendor 进来、静态链接进那个两百多兆的二进制里的，没有版本清单，也没有独立的 so。SCA 工具面对一个静态链接的 C++ 二进制，基本什么都列不出来，报告干干净净，只是因为工具看不见。
 
-### 1.4 安全漏洞
+扫出来以后修起来更麻烦。开源组件的依赖版本是上游定的，你单独升一个 jar，很可能撞上 API 不兼容；有的组件已经 EOL，上游根本不会再发版；等社区合并修复再发版，估计要等到猴年马月去，项目上线窗口可不等人。强合规的场景下，还可以准备 SBOM、可达性说明和豁免材料，能不能被接受就看各家机构的规矩了。
 
-国内不少安全扫描工具以依赖版本和漏洞知识库做静态匹配，并不会进一步判断漏洞代码是否真正进入执行路径。Java 项目依赖数量通常较多，因此更容易产生大量需要逐项解释或整改的扫描结果。
+PS：我并不认为 C++ 写出来的代码就没有安全漏洞，只是扫描软件太傻，识别不了而已。Java 只要比对 jar 包版本，简单粗暴。可很多企业就认这个，没办法。所以这里比的是过安全准入的成本，不是谁更安全。
 
-对于一些要求比较严格的政企、银行、证券等行业，对安全这一块把控得又特别严，需要上线前做应用的安全漏洞扫描，甚至作为一个能否上线的强制准入条件。Doris 由于使用了大量的 Java 代码开发，自然不可避免地每次都能扫描出特别多的安全漏洞。
+## 查询
 
-开源组件的漏洞修复最为麻烦，因为你不能指望官方给你去修，这个效率，估计要等到猴年马月去，而有些东西，并不是简单替换 jar 包就能完全修好的。而纯 C++系的 CK 则避免了这个困扰。（PS：我并不认为 C++写出的代码就一定没有安全漏洞，只是因为扫描软件太傻，没办法识别而已，而 java 代码只用比对 jar 包版本就行，简单粗暴。但很多企业就认这个，所以没办法。）
+### 聚合查询
 
-这类扫描会直接增加上线前的解释和整改工作，下面拆开来看。
+聚合查询这一项，说 CK 断档式领先也不为过（这里不是单单针对 Doris，是在座的各位）。十亿级的数据做个最简单的 count，CK 基本秒出，Doris 在我当时的测试里要十秒开外。当然这类数字受表模型、数据分布、缓存、并行度和机器配置影响很大，换个环境数字会变，但量级上的差距我是认的。
 
-先说扫描工具的工作方式。市面上大多数准入扫描走的是 SCA（软件成分分析）：解析构建产物，列出依赖清单，再拿版本号去比对 CVE 知识库。它判断的是「你用了某个存在已知漏洞的版本」，而不是「这段有漏洞的代码会不会被执行到」。这两件事的差距非常大，绝大部分扫出来的条目属于前者。
+为什么？两边虽然都是列存，磁盘上的组织方式差别很大。CK 的数据层级是 SHARD → PARTITION → PART → GRANULARITY → ROWS，数据在磁盘上按排序键排好了放，这决定了它压缩比更高，按指定列查的时候也能快到极致。
 
-Java 在这套规则下天然吃亏，原因有三条：
-
-1. **依赖树深**。一个 FE 模块直接声明几十个依赖，传递依赖展开后往往是几百个 jar。你并不知道它们从哪来，但扫描器全都算在你头上
-2. **重灾区集中**。Log4j2、Fastjson、Jackson、Netty、Guava、commons-collections 这些几乎是每个 Java 项目的标配，也恰好是 CVE 披露最密集的几个库
-3. **版本号一目了然**。jar 包的`MANIFEST.MF`、`pom.properties`把版本写得清清楚楚，扫描器不需要任何推断能力
-
-而 CK 享受的「待遇」完全不同，但原因不是它更安全。笔者本地拉的 ClickHouse 主干仓库里，`.gitmodules`记录了**139 个 git submodule**，`contrib/`目录下有近 300 个子目录，里面包括 openssl、curl、google-protobuf、boost、libxml2、krb5、icu、libarchive、c-ares、avro——每一个都是 CVE 历史上的常客。
-
-区别只在于：这些库以源码形式 vendor 进仓库，编译期静态链接进那个 200 多 M 的二进制里，成品既没有版本清单，也没有独立的 so 文件。SCA 工具面对一个静态链接的 C++二进制，基本什么都列不出来。所以扫描报告干干净净，不代表这些 CVE 不存在，只代表**工具看不见**。
-
-进入修复环节后，常见问题有三类：
-
-- **升不动**。开源项目的依赖版本是上游定的。你把某个 jar 单独升上去，很可能撞上 API 不兼容或行为变更；要保证正确，就得自己维护一个补丁分支，长期跟着上游 rebase
-- **修不了**。有些 CVE 的所属组件已经 EOL，上游根本不会再发版；有些漏洞的修复需要改调用方式，不是换个版本号能解决的
-- **等不起**。等上游社区合并修复再发版，周期完全不可控，而项目上线窗口是死的
-
-在强合规场景下，除了升级依赖，还可以提前准备完整的 SBOM、逐条的可达性说明，以及不可达项的豁免材料。这些材料能否被接受，取决于具体机构的准入规则。
-
-这里比较的是**通过安全准入的成本**，不是两款数据库真实的安全水平。C++静态链接让 CK 较少暴露在基于依赖清单的扫描中，但 C++本身也存在内存安全风险。因此，扫描结果的数量不能直接代表产品安全性。
-
-## 2. 性能与资源
-
-### 2.1 查询能力
-
-#### 2.1.1 聚合查询
-
-在大规模扫描和聚合查询上，ClickHouse 通常更有优势，尤其适合数据追加写入、查询集中在排序键和聚合指标上的场景。笔者的部分生产测试中，同样是十亿级数据量的计数或聚合，CK 可以在秒级返回，而 Doris 需要更长时间。不过这类数字受表模型、数据分布、缓存状态、并行度和机器配置影响很大，不能脱离测试条件直接当作通用结论。
-
-究其原因，ClickHouse 虽然和 Doris 都是列存，但是磁盘底层逻辑上还是有很大差别。
-
-CK 的数据层级是 SHARD->PARTITION->PART->GRANULARITY->ROWS， 其数据在磁盘中是排序存放的，这决定了它拥有更高的压缩比之外，对于指定列的查询，也能达到极致查询速度。
-
-Doris 的数据层级是 PARTITION->BUCKET->TABLET->ROWSET->ROWS。它先按分桶规则把数据拆成适合并行处理的 tablet，tablet 内部再按 Key 列排序并建立前缀索引。与 CK 相比，Doris 的数据分布更强调并行执行、更新语义和可迁移性；CK 则把排序键、稀疏索引和物理布局结合得更紧密，在符合排序键的数据裁剪和压缩上通常更占优势。
-
-把两边的层级并排放，差异会更直观。注意 Doris 比 CK 多出的 BUCKET/TABLET 这一层，它在 3.2 节讨论数据均衡时还会再出现。
+Doris 的层级是 PARTITION → BUCKET → TABLET → ROWSET → ROWS。它先按分桶规则把数据拆成适合并行处理的 tablet，tablet 内部再按 Key 列排序、建前缀索引。它更强调并行执行、更新语义和数据能挪来挪去；CK 则把排序键、稀疏索引和物理布局绑得更紧，在按排序键裁剪数据和压缩上更占便宜。两边并排放一起看会更直观，Doris 多出来的 BUCKET/TABLET 这一层，后面讲数据均衡的时候还会再碰到。
 
 <figure class="dfig">
-<img class="dfig-l" src="/diagrams/doris-01.light.svg" alt="2.1.1 聚合查询">
-<img class="dfig-d" src="/diagrams/doris-01.dark.svg" alt="2.1.1 聚合查询">
+<img class="dfig-l" src="/diagrams/doris-01.light.svg" alt="ClickHouse 与 Doris 的数据层级对比">
+<img class="dfig-d" src="/diagrams/doris-01.dark.svg" alt="ClickHouse 与 Doris 的数据层级对比">
 </figure>
 
-#### 2.1.2 join 查询
+### JOIN
 
-在过往很多介绍 Doris 的文章中，经常会拿 JOIN 查询能力来打 ClickHouse。
+在过往很多介绍 Doris 的文章里，经常拿 JOIN 来打 CK。先说说 Doris 的 JOIN 为什么强。
 
-Doris 的 JOIN 优势首先来自分布式执行策略和优化器。
+Doris 的 FE 规划分布式 JOIN 时，优先级是 Colocate Join → Bucket Shuffle Join → Broadcast Join → Shuffle Join。Colocate Join 是本地 join，要求参与 join 的 hash key 落在相同节点上，建表时用 `colocate_with` 指定。Bucket Shuffle Join 用于等值 hash，左表已经按 JOIN 键分桶时，左表不动，只按同样的规则重新分发右表，网络开销约等于右表的数据量。Broadcast Join 简单粗暴，右表全量发给每个节点，网络和内存开销都是 N × B（N 是节点数，B 是右表数据量）。Shuffle Join 是左右两表都按 hash 打散到各节点，网络开销 A + B，内存开销 B。
 
-Doris 的 FE 节点在规划分布式 join 查询计划时，其优先级顺序如下：
-    Colocate Join -> Bucket Shuffle Join -> Broadcast Join -> Shuffle Join
+Doris 还有 runtime filter：扫左表和加载右表同时进行，右表一般先完成，这时根据 JOIN ON 条件动态生成过滤条件，广播给正在扫左表的各个节点，左表少扫很多数据。左表很大、右表很小的时候特别管用。再加上 Nereids 优化器能按统计信息调整 JOIN 顺序，把小的输入放到构建侧，多表 JOIN 也不太需要人操心。
 
-colocate join 的原理是本地 join，它要求参与 join 的 hash key 分布在相同的节点上（可以在建表时通过 colocate_with 属性来指定）。
+CK 的分布式 JOIN 分带 global 和不带 global，不带 global 的有严重的读放大，基本不会用。global join 是汇总节点先把右表查出来，广播给各节点和左表的本地表 join，再把结果收回来，执行过程更接近 Broadcast Join。
 
-bucket shuffle join 主要用于等值 HASH 场景。当左表已经按 JOIN 键分桶时，左表数据可以留在原节点，只需按照相同的分桶规则重新分发右表，网络开销约为右表数据量。
+CK 没有原生的 colocate join，但这东西本身没什么技术难度。我们在 clickhouse_sinker 里支持按某个 sharding key 做路由，相同的数据写到固定节点，轻而易举就有了 colocate join 的效果。实际生产里，事实表 300 亿、维度表 5000 万的 JOIN，基本两三秒内返回。当然这是在这种数据布局下的效果，不能代表 CK 的 JOIN 普遍都这么快。
 
-broadcast join 简单粗暴，直接将右表全量数据发送给各个节点。网络开销和内存开销均是 N * B（N 为节点数，B 为 B 表数据）
+CK 一直被人诟病的是大表 JOIN 大表、多表 JOIN 不行。原因还是右表太大，构建 hash 表吃内存，容易 OOM，性能也奇差。不过 24.7 以来 CK 一直在优化 parallel hash join，到 25.7 趋于稳定，官方压测里 9 张表的 JOIN 也不在话下。优化器这块，CK 从 23.x 开始重写 analyzer，25.x 之后陆续加了 join reorder，早年那种复杂 JOIN 要靠手动调嵌套顺序的日子也在过去。runtime filter 也有了，25.10 引入 `enable_join_runtime_filters`（PR #84772），原理和 Doris 一样，从右表的 JOIN key 建 bloom filter，作为 PREWHERE 下推到左表扫描。2026 年 2 月起默认开启，26.4/26.5 又做了增强。所以过往文章里「Doris 有 runtime filter，CK 没有」这一条，现在已经作废了。
 
-shuffle join 是将左表和右表的数据经过 hash 计算分散到各个节点中，网络开销为 A+ B,内存开销为 B。
+CK 还有个很好用的功能：可以拿 CK 的表和 MySQL 的表直接 JOIN。CK 的数据适合插入和查询，不适合改和删，那就把需要频繁修改的维度数据放 MySQL，大量的事实数据放 CK，用 MySQL 引擎把两边 JOIN 起来。这个玩法 Doris 用不了。
 
-除此之外，Doris 为了加速 join 查询，还提供了 runtime filter 机制。当扫描左表和加载右表同时进行时，右表一般会率先完成，此时根据 join on cause 动态生成一些过滤条件，并广播给正在各个节点扫描的左表，使得左表扫描的数据量减少，从而加速整个查询，避免不必要的网络开销。它主要适用于左表很大，右表很小时的场景。
+JOIN 这一项，Doris 的执行策略和优化器确实更成熟，这个我认。但差距没有很多文章说的那么大，而且在缩小。
 
-ClickHouse 的分布式 JOIN，分为带 global 和不带 global，不带 globa 的 join 存在严重的读放大问题，基本上不会使用。常规的 global join 流程如下：
+### 并发查询
 
-1. 汇总节点将右表改成子查询，先在汇总节点将右表的数据结果集查询出来
-2. 将右表的结果集广播给各个节点，与各个节点的左表本地表进行 join 查询
-3. 各个节点将查询结果发送给汇总节点
+CK 官方默认配置里，`max_concurrent_queries` 是 100。这其实释放出一个信息：CK 的并发能力可能并不是很强。准确地说，`max_connections` 默认 4096，连接能建很多，但同时跑的查询只有 100 个，进来了也得排队，排不上的在队列里等 `queue_max_wait_ms`（默认 5 秒），等不到就抛 `Too many simultaneous queries`。
 
-它的执行过程更接近 Broadcast Join。ClickHouse 没有直接提供 Doris 式的 colocate group，但可以在写入端按 sharding key 固定路由，让关联数据落到相同节点，获得本地 JOIN 的条件。我们在 clickhouse_sinker 中采用了这一做法；一组生产数据中，事实表约 300 亿行、维度表约 5000 万行，相关 JOIN 可以在两三秒内返回。这个数字仅说明该数据布局下的效果，不能单独代表通用 JOIN 性能。
+为什么这么设？因为 CK 的单个查询默认就要吃掉半台机器。`max_threads` 默认是 CPU 核数的一半，一条 SELECT 下去几十个线程一起扫。CK 能把十亿行 count 做到秒出靠的是这个，并发上不去也是因为这个。你不可能既让每个查询独占大半台机器，又让几百个查询同时跑。
 
-ClickHouse 一直被人诟病的是大表与大表 JOIN 能力弱，多张表之间的 JOIN 性能差。原因还是在于右表太大，构建 hash 表会占用太多内存，不仅容易出现 OOM，而且性能奇差。然而在 24.7 版本以来，ClickHouse 对 parallel hash join 做了持续优化，至 25.7 版本趋于稳定。在资源占用、查询性能方面已经有了非常大的提升。在官方压测报告中，9 张表的 JOIN 查询也不在话下。
+高并发场景我一般这么调。先降单条查询的资源占用，短查询试试 `max_threads=1`，在我的负载里，上下文切换和线程汇合的开销少了，总 QPS 反而上去了，当然重扫描的查询不能这么干。小结果集的短查询，可以对比一下 HTTP 和 Native 协议，我测过不带 keepalive 的 HTTP 请求，2000 并发下延迟还能在 50ms 以内。然后才是调大 `max_concurrent_queries`，同时把 `queue_max_wait_ms` 调小，排不上的快速失败，别把连接池拖死。最后是架构手段：单分片、每个节点全量数据，QPS 不够就横向加节点，单分片不走网络，JOIN 反而更快。
 
-ClickHouse 还有一个非常好用的功能是可以拿 CK 的数据与 Mysql 表的数据进行 JOIN。由于 CK 的特性，数据易于插入和查询，不易于修改和删除。我们便可以将那些需要频繁修改的维度数据存储到 MySQL 中，而涉及到大数量的事实表数据存储于 CK 中。然后通过 MySQL 引擎将 mysql 表中的数据与 CK 中的表进行 JOIN。这则是 Doris 不具备的新场景了。
+即便这么调，CK 的并发上限也得重点压测。网易云音乐公开过一组数据：他们的 CK 集群并发超过 200 就频繁 `Too many simultaneous queries`，同一个案例里 Doris 能撑 500 以上。这是特定业务下的数字，但方向是对的。Doris 的 BE 按 tablet 并行执行，再用 Workload Group 限制不同负载，这套模型天生更适合大量短查询同时打进来。
 
-Doris 的多表 JOIN 能力不只来自执行策略，也依赖 Nereids 优化器。它可以根据统计信息调整 JOIN 顺序，把较小的输入放到构建侧，并提前执行选择性较强的过滤。早期 CK 更依赖 SQL 书写顺序和人工改写，复杂 JOIN 往往需要手动调整嵌套关系。CK 从 23.x 开始重写 analyzer，25.x 之后陆续加入 join reorder，两者在优化器成熟度上的差距正在缩小。
+这一项我给 Doris。几百人同时看报表，Doris 更合适；并发不高、但单条查询要尽快出结果，CK 的并行扫描更能发挥。
 
-ClickHouse 在 25.10 版本引入了`enable_join_runtime_filters`（PR #84772），原理与 Doris 完全一致，从右表的 JOIN key 构建 bloom filter，在 JOIN 执行前作为 PREWHERE 下推到左表扫描，跳过无关行。该特性在 2026 年 2 月起已默认开启，26.4/26.5 又做了增强：ON 子句中即便同时包含非等值谓词，也仍会基于等值 key 构建 filter；并且能利用首次执行收集的 runtime 统计信息，在后续执行中自动切换到 parallel hash 算法。所以过往文章里「Doris 有 runtime filter 而 CK 没有」这条对比，现在已经作废了。
+### 全文检索
 
-#### 2.1.3 并发查询
+全文检索是两边这几年变化最快的一块，很多旧结论都失效了。
 
-CK 的官方默认配置里，单节点最大连接数为 100， 它其实释放出一个信息：CK 的并发查询能力可能并不是很强。这是由它的执行模型决定的，而不是某个参数没调好。
+Doris 从 2.0 开始内置倒排索引，到 2.x 已经相当成熟，4.0 又加了 `search()` 函数，把检索语法直接嵌进 SQL。网易云音乐的案例里，倒排索引把全文检索性能提了 7 倍，撑住了 50 台机器、2PB 数据、峰值 6GB/s 的写入。可以说，Doris 是真把「当 ES 用」这件事做成了。
 
-准确地说，CK 的`max_connections`默认是 4096，能建的连接并不少；但`max_concurrent_queries`默认只有 100，连接进得来，查询得排队。排不上的请求在队列里等`queue_max_wait_ms`（默认 5 秒），等不到就抛`Too many simultaneous queries`。
-
-为什么要这么设？因为 CK 的单个查询默认就要吃掉半台机器。`max_threads`默认取 CPU 核数的一半，一条 SELECT 下去，几十个线程一起并行扫数据。这正是 CK 能把十亿行 count 做到秒出的原因，也正是它并发上不去的原因，这是同一件事情的两面。你不可能既要每个查询独占大半台机器，又要几百个查询同时跑。
-
-笔者在高并发场景中的调优思路，是先降低单条查询的资源占用：
-
-1. 对短查询尝试`max_threads=1`。在笔者的负载中，这减少了上下文切换和线程汇合开销，提高了总体 QPS；重扫描查询不适合直接套用这一配置
-2. 对小结果集短查询比较 HTTP 与 Native 协议。笔者的测试中，不带 keepalive 的 HTTP 请求在 2000 并发下仍能保持 50ms 以内延迟；连接建立成本和网络环境不同，结果也会变化
-3. 然后才是调大`max_concurrent_queries`，同时把`queue_max_wait_ms`调小，让排不上的查询快速失败而不是把连接池拖死
-4. 最后是架构手段：单分片、每节点全量数据，QPS 不够就横向加节点。这个方案还有个副作用好处——单分片不走网络，JOIN 性能反而更好
-
-即便采用上述配置，CK 的并发上限仍需要重点验证。网易云音乐公开过一组数据：其 CK 集群在并发查询数超过 200 后频繁出现`Too many simultaneous queries`，而同一案例中的 Doris 可以支撑 500 以上并发。这是特定业务和集群配置下的结果，不能直接换算成两款产品的固定上限。
-
-Doris 的 BE 按 tablet 粒度并行执行查询，并可通过 Workload Group 限制不同负载的资源占用。这套模型更偏向同时处理大量短查询，但可达到的并发数仍取决于查询复杂度、数据裁剪效果和单节点资源。
-
-Doris 在高并发服务上更有优势，但这更多是执行模型的取舍，而不是简单的技术高下。大量用户同时发起短查询时，Doris 通常更合适；并发不高、但单条查询需要尽快完成时，CK 更容易发挥并行扫描能力。具体分界仍应以实际查询集压测为准。
-
-#### 2.1.4 全文检索
-
-全文检索是两边近几年变化最快的能力之一，很多旧的对比结论已经失效。
-
-Doris 从 2.0 版本开始内置倒排索引，支持任意维度快速检索和文本分词全文检索。到 2.x 已经相当成熟，4.0 又引入了`search()`函数，把检索语法直接嵌进 SQL 里。网易云音乐的案例中，倒排索引把全文检索性能提升了 7 倍，支撑 50 台服务器、2PB 数据、峰值 6GB/s 的写入吞吐。可以说，Doris 是把「当 ES 用」这件事真正做成了。
-
-而 ClickHouse 这边，过去几年一直被打的就是「不支持全文检索」。现在情况变了，但变得没有宣传的那么好。
-
-CK 的 text index 确实 GA 了。从源码里的`SettingsChangesHistory.cpp`可以拉出完整的时间线：
+CK 这边，过去几年一直被打的就是「不支持全文检索」。现在情况变了，但没有宣传的那么好。text index 确实 GA 了，从源码的 `SettingsChangesHistory.cpp` 里能拉出完整的时间线：
 
 | 版本 | 事件 |
 | --- | --- |
 | 24.6 | `allow_experimental_full_text_index` 引入 |
 | 25.9 | text index 第三次重写，仍是 experimental |
-| 25.12 | 转 beta，`default`分词器名被废弃，必须显式指定分词器 |
-| **26.2** | `{"allow_experimental_full_text_index", true, true, "The text index is now GA"}`，**正式 GA** |
-| **26.6** | 新增`allow_experimental_text_index_lazy_apply` |
-| **26.7** | 上述开关被标记为 obsolete，改用`text_index_posting_list_apply_mode='lazy'` |
+| 25.12 | 转 beta，`default` 分词器名被废弃，必须显式指定分词器 |
+| 26.2 | `"The text index is now GA"`，正式 GA |
+| 26.6 | 新增 `allow_experimental_text_index_lazy_apply` |
+| 26.7 | 上面这个开关被标记 obsolete，改用 `text_index_posting_list_apply_mode='lazy'` |
 
-GA 之后的第四个版本又塞进来一个新的 experimental 开关，而这个开关只活了一个版本就被废弃改名。与此同时，短语搜索所依赖的`allow_experimental_text_index_phrase_search`至今仍挂着 experimental 的牌子，官方明说磁盘格式还不稳定。
+GA 之后第四个版本又塞进来一个 experimental 开关，这个开关只活了一个版本就被废弃改名。短语搜索依赖的 `allow_experimental_text_index_phrase_search` 至今还挂着 experimental 的牌子，官方说磁盘格式还不稳定。
 
-分词器的命名混乱更是一目了然。`TokenizerFactory.cpp`里有这么一行：
+分词器的命名更乱。`TokenizerFactory.cpp` 里有这么一行：
 
 ```cpp
 factory.registerTokenizer("unicode_word", ITokenizer::Type::AsciiCJK, ascii_cjk_creator);
 ```
 
-注册名叫`unicode_word`，枚举类型却是`AsciiCJK`。同一个分词器现在挂着`asciiCJK`、`unicodeWord`、`unicode_word`三个名字；默认分词器`SplitByNonAlphaTokenizer`还得靠`getName()`和`getExternalName()`两套名字来兼容历史。
+注册名叫 `unicode_word`，枚举类型却是 `AsciiCJK`，同一个分词器挂着 `asciiCJK`、`unicodeWord`、`unicode_word` 三个名字。提交历史上也是反反复复：6 月 23 日一天之内 `rename one field` → `Revert "rename one field"` → `rename one field`；6 月 25 日有一条 `Reapply "Text index postprocessor"`，说明这个特性被整个 revert 过一次；7 月 7 日还有一条 `Don't use the text index for hasToken with non-splitByNonAlpha tokenizer`。
 
-再看提交历史上的反复：短语搜索的`positions`参数在 2026-07-09 才改名为语义明确的`support_phrase_search`；6 月 23 日一天之内出现了`rename one field` → `Revert "rename one field"` → `rename one field`；6 月 18 日有一条`remove settings from mergetreesettings until positions are ready`；6 月 25 日的`Reapply "Text index postprocessor"`说明这个特性被整个 revert 过一次；7 月 7 日还有一条`Don't use the text index for hasToken with non-splitByNonAlpha tokenizer`，`hasToken`配非默认分词器被直接判定为坏组合，禁止走索引。
+功能上也有明确的限制。它不支持 BM25，没有相关性打分，官方自己的定位就是「加速引擎而非相关性引擎」，能帮你快速过滤出包含关键词的行，没法告诉你哪一行更相关。`LIKE '%term%'` 用不上索引，模糊匹配还是全表扫。`hasToken` 用的是默认分词器而不是索引的分词器，这个坑大到官方不得不新加 `searchAny`/`searchAll` 两个函数来绕。
 
-除了接口和实现仍在变化，CK 的 text index 还有三个明确的功能限制：
+所以 CK 的 text index 现阶段更适合理解成关键词过滤加速，而不是搜索引擎。要拿它直接接管 ES 的负载，我不建议。如果目标真是全文检索，而不只是日志分析，Doris 更稳。
 
-1. **不支持 BM25**，没有相关性打分。官方自己的定位是「加速引擎而非相关性引擎」——它能帮你快速过滤出包含关键词的行，但没法告诉你哪一行更相关
-2. `LIKE '%term%'`用不上索引。索引只在能切出完整 token 时才激活，模糊匹配依然是全表扫
-3. `hasToken`用的是默认分词器而不是索引的分词器，这个坑大到官方不得不新增`searchAny`/`searchAll`两个函数来绕开
+### 跨集群和跨机房
 
-因此，CK 目前更适合把 text index 理解为关键词过滤加速，而不是完整的搜索引擎。GA 之后接口仍在频繁调整，短语检索等能力也尚未完全稳定，不宜仅凭「已经 GA」就直接接管 ES 负载。Doris 的倒排索引在分词、相关性和生产成熟度方面更完整，如果目标是全文检索而不仅是日志分析，现阶段更稳妥。
+CK 开源版没有原生的跨集群持续复制。它能做的是跨集群查询，`remote()`/`remoteSecure()` 可以直接查另一个集群，但那只是查询时临时拉数据。真要做异地灾备或者多机房同步，官方给不出答案，以前有个 `clickhouse-copier`，现在也废弃了。
 
-#### 2.1.5 跨集群与跨机房
+所以 CK 的跨集群方案都在数据库外面。一种是写入端双写，一份数据同时投递到两个集群；另一种是在管理层把多个物理集群抽象成一个逻辑集群，ckman 的逻辑集群就是这个思路，上层看到的是一个统一视图，底下是几个独立的物理集群，坏了一个不影响另一个。
 
-ClickHouse 目前没有面向开源版的原生跨集群持续复制方案。
+Doris 有原生方案 CCR（Cross Cluster Replication）。2.0 引入了 Binlog，靠一个叫 Syncer 的外部组件读 binlog，回放到下游集群，底层是 Backup/Restore 做全量，再按 CommitSeq 做增量。库级、表级、全量、增量，连 DDL 都能同步，能力上确实完整。
 
-CK 能做的是跨集群「查询」，`remote()`/`remoteSecure()`表函数可以直接查另一个集群的表，Distributed 表也能把远端集群的表纳进来。但这只是查询时的临时拉取，不是数据复制。真正要做异地灾备或多机房数据同步，官方给不出答案。历史上有个`clickhouse-copier`，现在已经废弃了。
+可 CCR 的实用性一般。看看官方文档自己列的注意事项：同步期间 backup/restore job 和 binlog 全在 FE 内存里，建议每个 job 在两边 FE 各预留 4GB 以上的堆内存，多几个 job，FE 就得单独扩容；binlog 默认无限保留，不手动设 `binlog.max_bytes` 磁盘迟早被撑爆；同步的表带倒排索引，目标集群得配 `restore_reset_index_id=false`；上游只要建了 tmp partition，Doris 就禁止 backup，同步直接中断；BE 的 `thrift_max_message_size` 默认 100MB，tablet 一多就超限。再加上 Syncer 本身还得单独部署和运维，这东西更像是「能用」，而不是「省心」。
 
-所以 CK 的跨集群方案，实际上都在数据库之外。一种是写入端双写（我们在 clickhouse_sinker 里就是这么干的，一份数据同时投递到两个集群）；另一种是把多个物理集群在管理层抽象成一个逻辑集群，ckman 里的逻辑集群功能就是这个思路，让上层查询看到的是一个统一的集群视图，而底层是多个独立的物理集群。这种方案的好处是物理集群之间完全解耦，坏了一个不影响另一个；坏处是数据一致性得自己保证。
+账面上 Doris 赢，毕竟有原生方案。但真到生产上，CCR 是个需要精心调参、持续照看的半成品，CK 那套双写加逻辑集群虽然朴素，反而更可控。我的建议是，跨机房这件事，不管用哪个数据库，都别指望它自己能解决好。
 
-Doris 这边有原生方案，叫 CCR（Cross Cluster Replication）。2.0 版本引入 Binlog 机制（Meta Binlog 和 Data Binlog）记录数据变更，通过一个叫 Syncer 的外部组件读取 binlog 并回放到下游集群。它的底层实现是 Backup/Restore 做全量，然后按 CommitSeq 做增量回放。能力上确实完整：库级/表级同步、全量或增量、甚至支持 DDL 同步（上游建表加字段，下游自动跟上）。
+### 物化视图
 
-但 CCR 的实际实用性一般。看看官方文档自己列出的注意事项：
+聊物化视图，不能只把它当成「预计算后的查询缓存」。在 CK 里，增量物化视图还干着流式计算和写入转换的活。两边各有三种预计算机制，但能力线是错开的，直接正面比很容易比歪。
 
-- 同步期间 backup/restore job 和 binlog 全部驻留在 FE 内存中，建议为每个 CCR job 在源集群和目标集群的 FE 各预留 4GB 以上堆内存。多几个 job，FE 就得单独扩容
-- binlog 默认无限保留，必须手动设置`binlog.max_bytes`等限制，否则磁盘迟早被撑爆
-- 同步的表如果带倒排索引，目标集群必须配置`restore_reset_index_id=false`，否则索引对不上
-- 上游只要创建了 tmp partition，Doris 就会禁止 backup，直接导致同步中断，得设置`ignore_backup_tmp_partitions=true`来规避
-- `max_backup_restore_job_num_per_db`默认 10，官方建议调到 2
-- BE 的`thrift_max_message_size`默认 100MB，tablet 数量多了会超限，得调大
+CK 的增量 MV 不是定时刷新的缓存，它是插入触发器。每个 INSERT block 到达，MV 立刻对这一批数据算完，把结果写进目标表。从 PostgreSQL 过来的人常带着「物化视图 = 缓存的查询结果 + 定时刷新」的印象，在 CK 这里是完全错的。
 
-再加上 Syncer 本身是个需要独立部署和运维的外部进程，整套东西的运维复杂度并不低。它更像是「能用」，而不是「省心」。
+这么设计的第一个好处，是成本只和增量有关，和表的总量无关。一张 PB 级的表挂上 MV，集群几乎没有额外压力，因为它永远只算刚写进来的那一个 block。
 
-账面上 Doris 赢，毕竟有原生方案。但真到生产上，CCR 是个需要精心调参和持续照看的半成品，CK 那套双写加逻辑集群虽然朴素，反而更可控。笔者的建议是，跨机房这件事无论用哪个数据库，都别指望它自己能解决好。
+第二个好处是能持久化聚合状态。`sumState`、`uniqState`、`quantilesState` 这些 `-State` 组合子存的不是最终结果，而是能继续合并的中间态，查询时用 `-Merge` 得到想要的粒度。一份按分钟存的 `uniqState`，能正确合并出小时、天、月的精确去重数，而不是把每分钟的 UV 简单相加。状态还能一层层往上卷：源表 → MV → 分钟级 AggregatingMergeTree → 再挂 MV → 小时级 → 天级，每一层的计算量都只取决于新增数据。Doris 也有 `AGG_STATE` 和 `state`/`merge`/`union` 组合子，BITMAP、HLL 也能继续聚合，所以不能说 Doris 没有聚合中间态，但和增量处理链路结合成这么一整套体系，CK 要成熟得多。
 
-#### 2.1.6 物化视图
+第三个好处是 MV 本身就是个 ETL 算子。里面可以做 schema 转换、字段解析、类型清洗，一张源表挂多个 MV，各自带不同的 WHERE，就能把数据分流到不同的表；源表用 `Null` 引擎，写入不落盘，只做扇出，就是一条「一次写入、多路加工」的管道。CK 生态里最经典的入库范式 Kafka 引擎表 → 物化视图 → MergeTree，也是建在 MV 上的。
 
-讨论物化视图时，不能只把它理解成「预计算后的查询缓存」。在 ClickHouse 中，增量物化视图还承担了流式计算和写入转换的职责。
-
-CK 和 Doris 各有三种预计算机制，但这三条能力线是错位的，直接正面比较会得出错误结论。
-
-##### CK 的增量物化视图：一个内嵌在数据库里的流处理引擎
-
-CK 的增量 MV 不是「定时刷新的缓存」，它是插入触发器。每个 INSERT block 到达时，MV 立即对这一批新数据完成计算，把结果写进目标表。从 PostgreSQL 过来的人往往会带着「物化视图=缓存的查询结果+定时刷新」的心智模型，在 CK 这里是完全错的。
-
-这么设计带来的第一个好处是成本只与增量相关，与表总量无关。一张 PB 级的表挂上 MV，对集群几乎没有额外压力，因为它永远只算刚写进来的那一个 block。所有「定时全量重算」的方案在这一点上都没法比。
-
-第二个重要能力是持久化聚合状态（AggregateFunction）。`sumState`、`uniqState`、`quantilesState`、`maxState`这些`-State`组合子保存的不是最终结果，而是可以继续合并的中间态；查询时再通过`-Merge`得到所需粒度的结果。
-
-换来的效果是：一份按分钟粒度存储的`uniqState`，能正确合并出小时、天、月的精确去重数，而不是把每分钟的 UV 简单相加。粒度可以任意往上卷，而且结果是对的。
-
-CK 的优势在于，聚合状态与增量物化视图、AggregatingMergeTree 和函数组合子形成了一套成熟体系。Doris 也提供`AGG_STATE`以及`state`、`merge`、`union`组合子，并可通过 BITMAP、HLL 等状态继续聚合，但覆盖范围、成熟度以及与增量处理链路的结合方式和 CK 并不相同。因此这里更准确的结论是 CK 体系更完整，而不是 Doris 完全不具备聚合中间态。
-
-聚合状态还可以级联复用：源表 → MV → 分钟级 AggregatingMergeTree → 再挂 MV → 小时级 → 再挂 MV → 天级。每一层通过`-MergeState`继续合并下层状态，由此构成实时聚合链路，各层计算量都主要取决于新增数据。
-
-第三个好处是 MV 不止能做聚合，它本身就是一个完整的 ETL 算子。MV 里可以做 schema 转换、字段解析、类型清洗，还可以做条件路由——一张源表挂多个 MV，各自带不同的 WHERE 条件，把数据分流写进不同的目标表。配合`Null`引擎作为源表（写入不落盘，纯做扇出），可以做出「一次写入、多路加工、零冗余存储」的管道。
-
-而 CK 生态里最经典的入库范式，正是建立在 MV 之上的：
-
-```
-Kafka引擎表 → 物化视图 → MergeTree表
-```
-
-消费、转换、落盘，全部在数据库内部完成，不需要任何外部 ETL 进程。很多团队正是用这一套省掉了一整套 Flink 作业。
-
-把上面讲的几种用法画在一起，更能看出增量 MV 在 CK 里承担的角色：左侧是 Kafka 入库管道，中间是聚合状态的级联，下方是借助 Null 引擎做的扇出分流。
+不过这套范式优雅归优雅，生产口碑一般。脏消息会让消费卡住，得人工去清 offset；解析消费都挤在 CK 集群里，消费者一多，CPU 就被 merge 吃掉；投递只有 at-least-once。CK 官方现在给 Cloud 用户的建议已经改成用 ClickPipes 了。实际生产里，这一段大多交给数据库外面的组件，官方的 clickhouse-kafka-connect、我写的 clickhouse_sinker 都是。Kafka 表引擎展示的是增量 MV 能做到哪一步，不是生产级的入库方案。
 
 <figure class="dfig">
-<img class="dfig-l" src="/diagrams/doris-02.light.svg" alt="CK 的增量物化视图：一个内嵌在数据库里的流处理引擎">
-<img class="dfig-d" src="/diagrams/doris-02.dark.svg" alt="CK 的增量物化视图：一个内嵌在数据库里的流处理引擎">
+<img class="dfig-l" src="/diagrams/doris-02.light.svg" alt="CK 增量物化视图的几种用法：Kafka 入库、聚合状态级联、Null 引擎扇出">
+<img class="dfig-d" src="/diagrams/doris-02.dark.svg" alt="CK 增量物化视图的几种用法：Kafka 入库、聚合状态级联、Null 引擎扇出">
 </figure>
 
-当然代价也很明显：只有最左侧的源表插入才会触发 MV，右表数据变更不触发；没有快照隔离，AggregatingMergeTree 的 merge 是异步的，读到的可能是部分合并的状态；以及最现实的一条，同一张高频写入的表上挂多个 MV，会成倍放大`too many parts`问题。
+增量 MV 的代价也很明显：只有最左侧源表的插入才触发，右表变了不触发；没有快照隔离，AggregatingMergeTree 的 merge 是异步的，读到的可能是合并了一半的状态；还有最现实的一条，一张高频写入的表上挂多个 MV，会成倍放大 too many parts。
 
-##### CK 的另外两种机制
+CK 另外两种机制是 Projection 和 Refreshable MV。Projection 对查询透明，CK 自己判断用不用，不用改 SQL，适合接 BI，但只能单表。Refreshable MV 24.10 起 production-ready，定时全量重算写入目标表，支持 `DEPENDS ON` 搭 DAG，能替代简单的 dbt 调度，但成本跟着源表总量走，大表上刷一次又慢又吃内存，而且得显式去查目标表。
 
-**Projection**：查询仍然面向主表，由 CK 自动判断是否使用 projection。它与主表同生命周期，支持自动回填，不要求修改 SQL，因此适合对接 BI 工具。限制是只能用于单表，不能引用其他表；创建过多也会明显增加存储开销。
+Doris 这边，同步物化视图实时，但本质是 rollup，只能单表。真正的优势在异步物化视图：能做多表 JOIN，还在 CBO 层做透明改写，用户根本不需要知道 MV 存在，优化器自己判断能不能用 MV 改写查询。CK 的三种机制里，Projection 透明但只能单表，Refreshable MV 能 JOIN 但不透明，没有一个能同时做到「多表」和「透明」。
 
-**Refreshable MV**：24.10 起 production-ready，定时对全量数据重算并写入目标表。支持`DEPENDS ON`构建 DAG，一个视图等另一个跑完再刷新，可以替代简单的 dbt 调度；26.6 又加了级联刷新和实验性的连续查询。代价是成本正比于源表总量而非变更量，大表上全量刷新既慢又吃内存。而且必须显式去查目标表，不会透明改写。
+所以物化视图这一项，要看你拿它干什么。做流式加工链路、想省掉一套 Flink，CK 的增量 MV 是独一份；想给已有的 BI 报表提速，又不想改 SQL，Doris 的透明改写更省事。
 
-##### Doris 侧
+### 数据湖
 
-**同步物化视图**：实时，但本质是 rollup，只能单表，可用的聚合函数有限。
+Doris 在这块的设计更正统。Multi-Catalog 建了 catalog → database → table 三级元数据，Hive、Iceberg、Hudi、Paimon、ES、JDBC 在 catalog 这一层整体接进来。早期 Doris 只有两级，接外部数据得一张表一张表地 `create external table`，几百张表就是几百条 DDL，这个痛点现在解决了。有了 catalog 这一层，跨 catalog 的联邦 JOIN、下沉到外部 catalog 的统一权限、湖上写回，这几件事 CK 都做不了。
 
-**异步物化视图**：能做多表 JOIN，并且在 CBO 层做透明改写，这是 Doris 真正的优势所在。用户根本不需要知道 MV 的存在，优化器会自动判断能否用 MV 改写查询。而 CK 的三种机制里，Projection 有透明改写但只能单表，Refreshable MV 能 JOIN 但必须显式查目标表，没有一个能同时做到「多表」和「透明」。
+CK 这边有表函数（`iceberg()`、`deltaLake()`、`hudi()`、`paimon()`，一条 SQL 直接查）、表引擎（`IcebergS3` 等，把外部表持久化成一张表定义），还有 `DataLakeCatalog` 库引擎对接 Unity、REST、Polaris、Glue，26.2 起还能查 Google BigLake。配合 25.8 引入的 Parallel Replicas，文件扫描能摊到多个节点上。和 2024 年比，CK 对 Iceberg 的支持已经完善了很多。
 
-##### 对照
+差距在深度，不在有无。CK 把湖当成一个数据源来读，Doris 把湖当成一等公民来管。湖上要联邦查询、统一权限、写回，选 Doris；湖只是个只读的上游，数据最终还要落进本地表做高吞吐分析，CK 足够了。
 
-| 能力 | ClickHouse | Doris | 判断 |
-| --- | --- | --- | --- |
-| 流式增量计算 | 增量 MV（插入触发器） | 无对等物 | **CK 独有** |
-| 可再聚合的中间态 | AggregateFunction + `-State`/`-Merge` | 无 | **CK 独有** |
-| MV 内做 ETL/路由/消费 Kafka | 生态核心范式 | 需外部组件 | **CK 领先** |
-| 单表透明改写 | Projection | 同步 MV | 打平 |
-| 多表 JOIN 的 MV | Refreshable MV | 异步 MV | 打平 |
-| 多表 MV 的 CBO 透明改写 | 无 | 支持 | **Doris 独有** |
+### 存算分离
 
-两者的物化视图并不是同一条能力线。CK 擅长增量计算、状态持久化、Kafka 消费以及写入时转换和分流，使用方式接近数据库内嵌的轻量流处理；Doris 则擅长由优化器自动匹配多表物化视图，让已有 SQL 直接获得加速。前者强调计算和管道能力，后者强调查询改写和使用透明度。
+这一项是两边产品边界差得最明显的。
 
-流式加工链路更适合发挥 CK 增量 MV 的能力；如果目标是加速已有 BI 报表且尽量不修改 SQL，Doris 的透明改写更省事。
+Doris 3.0 有完整的存算分离：共享存储（对象存储或 HDFS）、计算组（Compute Group）、元数据服务（Meta Service）三层。数据在共享存储上，BE 无状态，编成计算组，用 `use @<compute_group_name>` 把不同负载分到不同计算组，导入和查询物理隔离。工程细节也做得不错，扩缩容时渐进式预热缓存，不影响正在跑的查询；一个集群的表只复制元数据就能克隆到另一个集群。官方给的数字是存储成本下降约 90%，查询性能下降约 35%（这些数字来自 SelectDB/VeloDB 的博客，只能当厂商案例看）。
 
-#### 2.1.7 数据湖查询
+CK 对应的能力叫 SharedMergeTree，只在 Cloud 里有，开源版没有。开源版能做的只有存储下沉：把 S3 注册成一块盘，用 `TTL ... TO VOLUME` 把冷数据挪过去。这解决的是冷数据的存储成本，计算和存储还是绑死的，没法独立扩计算节点，扩容还是要搬数据。这不是存算分离，只是分级存储。
 
-Doris 在这一块的设计更「正统」。它的 Multi-Catalog 建立了 catalog → database → table 的三级元数据体系，外部数据源在 catalog 这一层就整体接进来。支持 Hive、Iceberg、Hudi、Paimon、Elasticsearch、JDBC 等。这解决了老版本的一个真实痛点，早期 Doris 只有 db 和 table 两级，接外部数据得一张表一张表地`create external table`，几百张表就是几百条 DDL。
+必须私有化部署存算分离的，Doris 有明确优势。协议一样是 Apache 2.0，但 Doris 把存算分离放进了开源版，CK 把它留在了 Cloud，这是产品边界，不是技术高下。
 
-有了 catalog 这一层，Doris 能做到几件 CK 做不了的事：跨 catalog 的联邦 JOIN（一条 SQL 同时 JOIN Hive 表、Iceberg 表和 Doris 内表）、统一的权限治理（RBAC 可以下沉到外部 catalog，并遵循 catalog 侧的 IAM/HMS ACL）、以及湖上写回。2.1 版本又补上了多 SQL 方言兼容和 Arrow Flight 高速读取接口。
+## 存储
 
-CK 这边提供了三种机制，各自对应不同的访问模式：
+### 分区
 
-1. **表函数**：`iceberg()`、`deltaLake()`、`hudi()`、`paimon()`，一条 SQL 里直接查，不需要提前配置，还有 S3/Azure/GCS 各种变体
-2. **表引擎**：`IcebergS3`（别名`Iceberg`）、`IcebergAzure`、`IcebergHDFS`、`IcebergLocal`，把外部表持久化成 CK 里的一张表定义
-3. `DataLakeCatalog`库引擎：对接 Unity、REST、Polaris、Glue 等 catalog 做自动发现，26.2 起还支持查 Google BigLake
+分区看起来只是建表时的一行 DDL，但两家在这里的取向截然不同，而且会一直影响日常运维。
 
-配合 25.8 引入的 Parallel Replicas，CK 可以把文件扫描分摊到多个节点，读取 Parquet 的吞吐也有明显提升。与 2024 年的版本相比，2026 年 CK 对 Iceberg 的支持已经完善了许多。
-
-但差距在深度而不在有无。CK 把湖当作一个「数据源」来读，Doris 把湖当作「一等公民」来管。联邦 JOIN、统一权限、写回这三项，CK 都弱。
-
-两者的定位可以概括为：CK 侧重高效读取外部湖数据，Doris 侧重把数据湖纳入统一查询和治理体系。需要跨异构 catalog 联邦查询、统一权限或湖上写回时，Doris 更合适；如果数据湖主要是只读上游，最终仍要落入本地表提供高吞吐分析，CK 已经足够，单表扫描也很有竞争力。
-
-#### 2.1.8 存算分离
-
-存算分离是本文中两者产品边界差异最明显的一项。
-
-Doris 3.0 引入了完整的存算分离架构，三层结构：共享存储层（对象存储或 HDFS）+ 计算组（Compute Group） + 元数据服务（Meta Service）。数据持久化在共享存储，无状态的 BE 节点编组成计算集群，通过`use @<compute_group_name>`把不同负载分配到不同计算组，实现导入与查询的物理隔离、读写分离。
-
-工程上的细节也做得不错：采用渐进式主动缓存预热，扩缩容期间不影响正在进行的查询和导入；升级时用多进程模式保证查询和导入不失败；一个集群的表可以只通过元数据复制就克隆到另一个集群。
-
-官方给出的收益是存储成本下降约 90%，同时——这个数字更值得看：查询性能下降约 35%。用性能换成本，值不值得就看具体场景了。
-
-CK 这边呢？对应的能力叫 SharedMergeTree，只在 ClickHouse Cloud 里有，开源版本没有。
-
-开源版能做的只有「存储下沉」：把 S3 注册成一块磁盘，用`TTL ... TO VOLUME`把冷数据挪过去。这解决的是冷数据的存储成本问题，但计算和存储依然是绑死的，你没法独立扩计算节点，没法做计算组隔离，扩容依然要搬数据（见 3.2）。这不是存算分离，这只是分级存储。
-
-这里引用的公开对比材料主要来自 SelectDB/VeloDB 官方博客，包括「成本下降约 90%」这一数字，因此只能作为厂商案例参考，不能替代独立测试。但 SharedMergeTree 未进入 ClickHouse 开源版，是可以明确确认的产品边界。
-
-对于必须私有化部署存算分离架构的用户，Doris 有明确优势。两者虽然都使用 Apache 2.0 协议，但开源范围并不相同：Doris 把存算分离放进了开源版本，CK 的 SharedMergeTree 则属于 Cloud 能力。这不是性能差异，而是直接影响选型的产品边界。
-
-### 2.2 存储能力
-
-#### 2.2.1 分区机制
-
-分区看起来只是建表时的一行 DDL，但两家在这里的取向截然不同，而且这个差异会一直影响到日常运维。
-
-**ClickHouse：数据驱动，先有数据后有分区**
-
-CK 的`PARTITION BY`是一个表达式。数据写进来时对表达式求值，得到分区名；分区不存在就当场创建。整个过程不需要任何预先规划。
+CK 是先有数据后有分区。`PARTITION BY` 是一个表达式，数据写进来时求值，分区不存在就当场创建：
 
 ```sql
 PARTITION BY toYYYYMM(event_time)
 ```
 
-建完表直接灌数据，2023 年的数据来了就有 2023 年的分区，2026 年的来了就有 2026 年的。回填十年前的历史数据也一样，不需要提前做任何准备。这种自由度在数据探索、历史回补、时间跨度不确定的场景下非常舒服。
+建完表直接灌，2023 年的数据来了就有 2023 年的分区，回填十年前的历史数据也不用提前准备，数据探索、历史回补的时候非常舒服。代价是分区数失控的风险全落在使用者身上。分区键选细了，比如跨多年的数据按天分，分区数肉眼可见地膨胀。更隐蔽的是脏数据，日志里混进一个 1970 年或者 2099 年的时间戳，就能凭空造出一个分区，而且一直待在那。`max_partitions_per_insert_block`（默认 100）拦得住「一次写入撒到几百个分区」，拦不住「分区总数慢慢涨到几万个」，这事我在 [Too many partitions](/clickhouse/troubleshooting/too-many-partitions) 那篇里也说过。
 
-代价是分区数量失控的风险完全落在使用者身上。分区键粒度选细了（比如跨多年的数据用`toDate()`按天分，或者把某个高基数维度拼进分区键），分区数量会以肉眼可见的速度膨胀。更隐蔽的是脏数据：日志里混进一个 1970 年或 2099 年的时间戳，就能凭空造出一个分区，而且它会一直待在那里。
+分区多了的后果，CK 在报错信息里写得很直白：启动变慢、INSERT 变慢、SELECT 变慢，建议单表 1000 个以内。同一段提示里还有一句常被忽略的话：分区不是用来加速查询的，那是排序键的活，分区是为了 `DROP PARTITION` 这类数据操作存在的。很多人把分区当索引用，方向从一开始就错了。CK 也不支持原地改分区键，选错了只能新建表、迁数据、`RENAME` 交换，所以这一行得在建表时想清楚。
 
-CK 有一道保护叫`max_partitions_per_insert_block`，默认 100，超了就抛`Too many partitions for single INSERT block`，整个 INSERT 原子回滚。但要注意它限制的是**单个插入块涉及的分区数**，不是表的分区总量——它拦得住「一次写入撒到几百个分区」，拦不住「分区总数慢慢涨到几万个」。
+Doris 是先有分区后有数据。传统的 RANGE/LIST 分区必须先建好，分区不存在，导入直接报错。好处是分区数始终在掌控之中。增量数据可以用 `dynamic_partition` 自动滚动，配几个参数就不用管了。
 
-分区多了的后果，CK 官方在错误信息里写得很直白：服务器启动变慢、INSERT 变慢、SELECT 变慢，建议单表分区总数控制在 1000 以内。同一段提示里还有一句常被忽略的话：**分区不是用来加速查询的**，那是排序键的职责；分区是为了支持`DROP PARTITION`这类数据操作而存在的。很多人把分区当索引用，方向从一开始就错了。
+问题出在历史数据上。动态分区只管窗口之内，超出 `dynamic_partition.start` 的历史数据没有分区可落，导入失败；要补历史分区得开 `create_history_partition=true`，还受 FE 的 `max_dynamic_partition_num` 限制。而且 `start` 到当前时间之间要是有分区意外丢了，动态分区不会再帮你建回来。
 
-最麻烦的是纠错成本。CK 不支持原地修改 MergeTree 表的分区键，一旦发现选错，只能新建表、迁数据、`RENAME`交换。所以`PARTITION BY`这一行，属于建表时就得想清楚的决定。
+这套机制真正难受的地方，在数据时间轴稀疏的时候。举个实际会遇到的场景：一个月前某一天补了一批历史数据，中间三十来天什么都没有，然后今天才有新数据进来。按天分区，想让那一天的数据落进去，就得把那天到今天之间的分区全建出来，中间那三十个分区一行数据都不会有，纯粹是为了让边界上那一天能进库。空分区也不是零成本：每个分区都要按分桶数乘副本数分配 tablet，一张 32 桶 3 副本的表，一个空分区就是 96 个 tablet，30 个就将近 3000 个，这些元数据全驻留在 FE 内存里，还要写进 BDB JE 参与 checkpoint；BE 侧也要建目录、定期向 FE 做 tablet report，前面 CCR 那条 `thrift_max_message_size` 被撑爆，根因就是 tablet 太多。`max_dynamic_partition_num` 默认只有 500（`Config.java:1686`），按天分区一年多一点就顶到天花板了。
 
-**Doris：规划先行，先有分区后有数据**
+同样的数据在 CK 这边不是问题：7 月 5 日有数据就建 7 月 5 日的分区，中间三十天没数据就一个都不建，连空目录都没有。
 
-Doris 传统的 RANGE/LIST 分区必须先建好。分区不存在时数据写不进去，导入直接报错。好处是分区数量始终在掌控之中，不会有意外膨胀。
+Doris 2.1 的 AUTO PARTITION 就是冲着这个来的，按导入数据的实际取值按需建分区，中间的空洞不会被填上，说白了就是朝 CK 那套数据驱动的模式靠了一步。但它只管建、不管删，过期得自己写脚本 `DROP PARTITION`；2.1.3 起还不能和 dynamic_partition 共用，因为动态分区回收时不看分区是谁建的，会把 AUTO PARTITION 建的一并回收掉，造成不易察觉的数据丢失；上限换成了 `max_auto_partition_num`，默认 2000（`Config.java:2953`）。所以在 Doris 上，「不产生空分区」和「分区自动过期」这两件事，2.1.3 之后是二选一。CK 没有这个取舍，分区创建和 TTL 回收本来就是两套独立的机制。
 
-面向未来的增量数据，`dynamic_partition`可以自动滚动：按`start`/`end`窗口定期创建新分区、回收过期分区，配好几个参数就不用管了。
+一句话说，CK 把分区当成写入的副产物，Doris 把分区当成需要申报的资源。前者省了规划，风险留到运行期，可能被脏数据带跑；后者在建表和导入时多花心思，换来规模可控，代价是时间轴不连续时要拿空分区去凑。我自己更喜欢 CK 这种，脏数据的问题在写入端过滤就是了，空分区的问题可没法在写入端解决。
 
-问题出在历史数据上。动态分区只负责窗口之内，超出`dynamic_partition.start`的历史数据没有分区可落，导入会失败。要一次性补齐历史分区，得开`create_history_partition=true`，还要受 FE 的`max_dynamic_partition_num`限制。而且有个容易踩的坑：`start`与当前时间之间若有分区意外丢失，动态分区**不会**重新创建它们（只有当前时间到`end`之间的会补）。
+### 更新和删除
 
-所以往 Doris 里导历史数据这件事，心智负担确实比 CK 重——你得先算清楚要多少个分区、用什么方式建出来、会不会撞上数量上限。
+这是 CK 和 Doris 最核心的架构分歧之一，也常常是选型里的硬约束。
 
-**而这套机制真正难受的地方，在于数据时间轴稀疏的时候。**
+CK 是为追加写设计的，更新删除是后来一点点补上的。ReplacingMergeTree 能让同主键最终只留最新版本，但去重靠后台 merge，什么时候完成说不准，要立刻看到去重结果就得在查询里加 `FINAL`，查询代价跟着上去。`ALTER TABLE ... UPDATE/DELETE` 是 mutation，直接重写整个 part，异步执行，大表上跑一次能把 IO 打满，生产上基本属于能不用就不用。轻量级 delete/update 用标记代替重写，好多了，但限制还是不少。`insert_quorum` 管的是副本写入确认，`insert_deduplication_token` 管的是投递幂等，都和主键语义没关系。这些可以组合着用，但组合起来也不等于一个主键约束，CK 没有写入即可见的唯一键语义。
 
-举个实际会遇到的场景：一个月前的某一天补了一批历史数据，中间三十来天什么都没有，然后跳到今天才有新数据进来。按天分区的话，你想让那一天的数据落进去，就必须把从那天到今天之间的分区**全部创建出来**——中间那三十个分区一行数据都不会有，纯粹是为了让边界上那一天能进库而存在。
-
-分区数量是靠这种方式凑齐的，这跟「按需分配」就是两回事了。而且空分区并不是零成本：
-
-- 每个分区都要按分桶数乘副本数分配 tablet。一张 32 桶 3 副本的表，一个空分区就是 96 个 tablet 的元数据，30 个空分区接近 3000 个
-- 这些 tablet 元数据全部驻留在 FE 内存里，同时要写进 BDB JE 并参与 checkpoint
-- BE 侧同样会创建 tablet 目录和 meta 记录，并周期性向 FE 做 tablet report。tablet 规模上去之后，report 消息本身就会变大——2.1.5 节提到的 CCR 场景里，`thrift_max_message_size`默认 100MB 被撑爆，根因正是 tablet 数量过多
-- 查询规划阶段做分区裁剪时，要遍历的是完整的分区列表，空分区一样占位置
-
-更现实的约束是上限。`max_dynamic_partition_num`默认只有**500**（源码`Config.java:1686`），按天分区一年多一点就顶到天花板了。想覆盖更长的历史区间，要么调大这个参数，要么放弃动态分区改用手工`ALTER TABLE ADD PARTITION`按需补，后者又回到了「得自己算清楚建哪些」的老路上。
-
-同样的数据形态在 CK 这边不构成问题：7 月 5 日有数据就建 7 月 5 日的分区，中间三十天没数据就一个分区都不建，连空目录都不会有。这正是数据驱动模式的直接好处。
-
-Doris 2.1 引入的**AUTO PARTITION**恰好是冲着这个来的：按导入数据的实际取值按需创建分区，同时支持 RANGE 和 LIST，中间的空洞不会被填上，也天然容纳任意历史时间点。本质上这是朝 CK 那套数据驱动模式靠了一步。
-
-但它并不是免费的升级，用之前要清楚几件事：
-
-- 导入时要先检索已有分区再决定是否创建，相比动态分区有额外的时间开销
-- 只负责创建，不负责回收。生命周期管理得靠外部调度脚本`DROP PARTITION`，动态分区那套自动过期就用不上了
-- **2.1.3 起不能与 dynamic_partition 共用**。原因是动态分区回收时不区分分区的创建来源，会把 AUTO PARTITION 建出来的分区一并回收，造成不易察觉的数据丢失
-- 导入失败或被取消时，过程中已创建的分区不会自动清理
-- 上限换成了`max_auto_partition_num`，默认**2000**（源码`Config.java:2953`），比动态分区宽松，但依然是个需要盯着的数字
-
-所以在 Doris 上，「不产生空分区」和「分区自动过期回收」这两件事，2.1.3 之后是**二选一**的：用 dynamic_partition 拿到自动回收，就得接受稀疏数据带来的空分区；用 AUTO PARTITION 避开空分区，就得自己写脚本管过期。这个取舍在 CK 那边不存在，因为 CK 的分区创建和 TTL 回收本来就是两套彼此独立的机制（TTL 见 3.4 节）。
-
-**两种取向的代价落点不同**
-
-| 维度 | ClickHouse | Doris |
-| --- | --- | --- |
-| 分区创建 | 写入时按表达式自动创建 | 需预先创建，或由 dynamic/AUTO 托管 |
-| 历史数据回填 | 无需准备，直接写 | 需先补历史分区，或改用 AUTO PARTITION |
-| 时间轴稀疏时 | 只为有数据的时间点建分区 | dynamic 需填满区间产生空分区；AUTO 可避免 |
-| 分区膨胀风险 | 脏数据即可凭空造分区 | 数量可控，但空分区同样占 tablet 元数据 |
-| 数量上限 | 官方建议单表 1000 以内（软约束） | `max_dynamic_partition_num`=500 / `max_auto_partition_num`=2000（硬约束） |
-| 写入端保护 | `max_partitions_per_insert_block`（限单块） | 无对应分区则直接拒绝写入 |
-| 分区键可改 | 不可原地修改，需重建表 | 可增删分区，分区列同样不可改 |
-| 生命周期 | TTL 独立于分区创建（见 3.4） | dynamic 自带回收；用 AUTO 则需外部脚本 |
-
-概括起来：**CK 把分区当成写入的副产物，Doris 把分区当成需要申报的资源**。前者省去了规划，把风险留到运行期，代价是分区可能被脏数据带跑；后者在建表和导入阶段多花心思，换取分区规模的确定性，代价是数据时间轴不连续时要用空分区去凑。选哪种更省事，取决于你的数据时间跨度是否可预期、上游时间字段是否干净，以及历史数据是成片到达还是零散补录。
-
-#### 2.2.2 数据更新与删除
-
-数据更新与删除是 CK 和 Doris 最核心的架构分歧之一，也往往是选型中的硬约束。
-
-CK 主要面向追加写入，更新和删除能力是在这一基础上逐步补充的：
-
-- ReplacingMergeTree：同主键的数据最终保留最新版本，但去重依赖后台 merge，完成时间并不确定。需要立即得到去重结果时通常要在查询中使用`FINAL`，由此增加读取和合并开销
-- `ALTER TABLE ... UPDATE/DELETE`（mutation）：直接重写整个 part。异步执行，什么时候完成不可预期，大表上跑一次能把集群 IO 打满。这东西在生产上基本属于「能不用就不用」
-- **轻量级 delete/update**：新特性，用标记代替重写，好了很多，但仍有各种限制
-- **`insert_quorum`**：只保证写入被 N 个副本确认，解决的是写入可靠性，跟主键去重没关系
-- `insert_deduplication_token`：防止同一批数据被重复插入，解决的是投递幂等，跟主键语义也没关系。顺带一提，26.2 起 CK 把所有插入的去重默认打开了
-
-需要注意的是，这几项机制各自解决的问题并不相同：ReplacingMergeTree 处理的是最终去重，`insert_quorum`处理的是副本写入确认，`insert_deduplication_token`处理的是投递幂等。它们可以组合使用，但组合的结果并不等价于一个主键约束——CK 没有提供写入即可见的唯一键语义。
-
-Doris 这边是正面解决的。Unique Key 表从 2.1 起默认使用 Merge-on-Write（MOW）：
-
-写入时，BE 先在 memtable 里按 key 排序缓冲这一批数据；然后对批次内的每个 key 去查各 segment 的主键索引，定位它在哪个已有 rowset 的哪一行；找到后，把旧行的 row id 在对应 rowset 的 delete bitmap 上置位；新行则写进一个全新的 rowset。
-
-delete bitmap 是以`(rowset_id, segment_id, version)`为键的 Roaring bitmap，记录了查询时需要跳过的 row id。这样一来，查询时不需要做任何按 key 的多版本合并，读取时直接跳过被标记的行就行了。旧数据仍然留在磁盘上，等 compaction 时才真正回收。
-
-整条写入路径如下，标红的那一步是写放大的主要来源：
+Doris 是正面解决的。Unique Key 表从 2.1 起默认 Merge-on-Write：写入时 BE 先在 memtable 里按 key 排好序，然后拿批次里的每个 key 去查各个 segment 的主键索引，找到旧行所在的 rowset 和 row id，在对应 rowset 的 delete bitmap 上置位，新行写进一个全新的 rowset。查询时直接跳过被标记的行，不需要按 key 做多版本合并，旧数据等 compaction 时再回收。
 
 <figure class="dfig">
-<img class="dfig-l" src="/diagrams/doris-03.light.svg" alt="2.2.2 数据更新与删除">
-<img class="dfig-d" src="/diagrams/doris-03.dark.svg" alt="2.2.2 数据更新与删除">
+<img class="dfig-l" src="/diagrams/doris-03.light.svg" alt="Doris Merge-on-Write 的写入路径，查主键索引是写放大的主要来源">
+<img class="dfig-d" src="/diagrams/doris-03.dark.svg" alt="Doris Merge-on-Write 的写入路径，查主键索引是写放大的主要来源">
 </figure>
 
-配套的能力也很完整：
+配套也完整：sequence 列（`function_column.sequence_col`）决定同一个 key 的两次更新谁赢，CDC 场景下事件乱序到达也能留下较新的那条；`__DORIS_DELETE_SIGN__` 隐藏列置 1 就是软删除；部分列更新时自动读出缺的列值补全整行。MOW 也有代价，写放大主要来自主键索引查找，delete bitmap 的计算开销随存量和并发导入数上升，存算分离模式下计算还要持锁，3.0 修过一类「上一个失败事务没释放锁、后续导入全部卡死」的问题。
 
-- **sequence 列**（`function_column.sequence_col`）：决定同一个 key 的两次更新谁胜出。CDC 场景下事件乱序到达时，靠它保证最终留下的是较新的那条
-- `__DORIS_DELETE_SIGN__`隐藏列：置 1 即可软删除，任何导入通道都能用
-- **部分列更新**：只写部分列时，Doris 会自动从已有行读出缺失的列值，回写完整行
+这一项 Doris 赢得很干脆。业务里有高频更新、CDC 入库、需要唯一键约束，基本就是 Doris；数据以追加为主，这一项的权重就低得多。
 
-MOW 也不是毫无代价：写放大的主要来源是主键索引 lookup，delete bitmap 的计算开销随存量数据量和并发导入数线性上升。存算分离模式下 delete bitmap 计算还需要持锁，3.0 修过一类「上一个失败事务没释放锁导致后续导入全部卡死」的问题。所以 MOW 表的分区粒度要控制好，compaction 资源要留足。
+### 写入
 
-这是两者面向的写入模型不同带来的结果：CK 围绕追加写优化，更新和删除是后来补充的能力；Doris 把主键语义放进了写入路径。如果业务包含高频更新、CDC 入库或需要唯一键约束，这项差异通常会直接成为选型的硬约束；如果数据以追加为主，它的权重则要低得多。
+CK 写入调优的核心约束是一次 INSERT 通常产生一个 part，插入频率超过后台合并速度，part 失控，就报 too many parts（详见 [Too many parts](/clickhouse/troubleshooting/too-many-parts)）。物化视图还会放大这个问题，每个挂在源表上的 MV 都在持续生成小 part。官方的办法说到底都是攒批：客户端攒够几十万行或上百 MB 再写；客户端攒不了就开 `async_insert`；或者用 Buffer 表先缓存在内存里定期刷，好处是缓冲区里的数据也能查到，坏处是它在事务之外，宕机就丢。
 
-#### 2.2.3 写入性能
+Doris 的写入是事务性的。同一个 label 在一个 DB 里只会成功一次，重试会被判重拒绝，天然幂等；Stream Load 支持两阶段提交，由 Flink/Spark 在 checkpoint 成功后再 Commit，这是真正的 exactly-once。
 
-CK 写入调优的核心约束是：一次 INSERT 通常会产生一个 part。
+不过这里要泼一盆冷水：Doris 也不是不用攒批。每次 Stream Load 产生一个 rowset，rowset 就相当于 CK 的 part，高频微批一样会撞上版本数限制、compaction 跟不上。区别是 Doris 把攒批做进了 Routine Load、Flink Connector 和 Group Commit，还有事务兜着。
 
-part 多了查询要扫的文件就多，所以 CK 靠后台的 MergeTree 进程持续把小 part 合并成大 part。一旦插入频率超过后台合并速度，part 数量失控，就报`too many parts`。物化视图会放大这个问题，源表每秒插几次小批量，每个挂在上面的 MV 都在持续生成小 part。
+我当初写 clickhouse_sinker，初衷之一就是在数据库外面把攒批、去重、路由、失败重试补齐。这也意味着评估 CK 的时候，不能只算数据库本身的运维成本，写入组件那一层也得算进去。纯吞吐两边都能做得很高，把事务、幂等、exactly-once 算进来，Doris 更完整。
 
-官方给出的规避手段，本质都是「攒批」：
+### 压缩比
 
-1. **客户端本地攒批**，攒够几十万行或上百 MB 再写。这是最推荐的做法
-2. **`async_insert`**：客户端没法攒批时，让 CK 在服务端先缓存再写
-3. **Buffer 表**：数据先进内存缓冲区，定期批量刷到目标表。好处是缓冲区里的数据也能被查到，且与 MV 目标表兼容；坏处是它在事务之外，宕机就丢数据
+CK 压缩比高，这是公认的，但很多人说不清为什么高。根子还是前面说的排序存放：排序以后相邻行相似度极高，同一列的相邻值往往连续或者重复，这给压缩算法提供了最理想的输入。Doris 的 tablet 内部虽然也按 Key 排序，但没有 CK 这么彻底地围绕排序键组织数据，压缩效果要打个折扣。再加上 CK 有列级 codec，`Delta`、`DoubleDelta`、`Gorilla`、`T64`，时间戳列用 `DoubleDelta`、浮点指标用 `Gorilla`，压缩比还能再上一个台阶，这套东西 Doris 没有对等物。
 
-Doris 这边，写入是事务性的。Load Transaction 机制可以把多条导入语句作为一个原子单元，并提供两层保障：
+网上有一种说法流传很广：「CK 开 ZSTD 会触发 too many parts，所以生产上只能用 LZ4。」源头是浩瀚深度那个 13PB 的迁移案例，他们为了省存储试了 ZSTD，结果频繁 too many parts、入库积压，退回 LZ4；迁到 Doris 后用 ZSTD 跑得很稳，存储还比 CK 的 LZ4 低 6%。这个数据被大量引用，甚至被读成「Doris 压缩比比 CK 高」。
 
-- **label 去重**：同一个 label 在同一个 DB 内只会成功一次，重试会被判重拒绝，天然幂等
-- 2PC（`two_phase_commit`）：Stream Load 先 PreCommit，由 Flink/Spark 等 sink 在 checkpoint 成功后再 Commit，失败则 Abort。与引擎的 checkpoint 对齐，这是真正的 exactly-once
+这个结论站不住。它比的是 Doris 的 ZSTD 和 CK 的 LZ4，根本不是同一个算法，同样开 ZSTD，CK 不会输。它是单一迁移案例，还发在迁移方自己的渠道上，典型的一面之词。最关键的是，too many parts 的根因是 merge 跟不上写入，不是压缩算法。ZSTD 比 LZ4 慢是事实，但它只是压垮骆驼的最后一根稻草，该调的是 merge 线程池、`max_bytes_to_merge_at_max_space_in_pool` 这类参数。我自己的生产环境长期用 ZSTD，没因为它出过入库积压。
 
-这里要泼一盆冷水：Doris 并不是不需要攒批。每次 Stream Load 产生一个 rowset，rowset 就等价于 CK 的 part，高频微批同样会撞上版本数限制和 compaction 落后。
+所以压缩比 CK 确实领先，只是领先幅度被网上的文章夸大了；「开高压缩比容易撞写入瓶颈」也确实存在，但那是个调优问题，不是架构缺陷。
 
-Doris 把攒批整合进 Routine Load、Flink Connector 和 Group Commit，并由事务机制保护；CK 的 Buffer 表位于事务之外，节点故障可能导致尚未刷盘的数据丢失。
+### 分级存储
 
-纯写入吞吐需要结合批次大小和表模型实测，两者都能达到很高水平；更值得关注的是事务、幂等和失败恢复语义。
+两边功能看着差不多，真正的差别在于对象存储被放在了哪一层抽象里。
 
-笔者开发 clickhouse_sinker 的初衷之一，就是在数据库外补齐攒批、去重、路由和失败重试。这些能力在 CK 生态里经常由写入组件承担，也意味着实际评估 CK 时，不能只计算数据库本身的运维成本。
-
-因此，单看追加写吞吐，两者各有优势；如果把事务、幂等和 exactly-once 语义纳入比较，Doris 更完整。
-
-#### 2.2.4 压缩比
-
-CK 压缩比高，这是公认的，但很多人说不清为什么高。
-
-根本原因在 2.1.1 已经埋了伏笔：CK 的数据在磁盘上是按主键排序存放的。排序意味着相邻行的相似度极高，同一列的相邻值往往连续或重复，这给压缩算法创造了最理想的输入。Doris 虽然也是列存，但数据在 tablet 内部并没有全局排序，压缩效果自然打折。
-
-除此之外，CK 还提供了列级 codec：`Delta`、`DoubleDelta`、`Gorilla`、`T64`、`LowCardinality`……可以按列的数据特征逐列定制。时序场景下时间戳列用`DoubleDelta`、浮点指标用`Gorilla`，压缩比能再上一个台阶。这套东西 Doris 没有对等物。
-
-接下来要专门拆一个流传很广的结论。
-
-网上有一种说法：「CK 开 ZSTD 会触发 too many parts，所以生产上只能用 LZ4。」这个说法源自浩瀚深度那个 13PB 的迁移案例，他们为降低存储成本尝试 ZSTD，结果频繁出现`too many parts`和入库积压，最后退回 LZ4；迁到 Doris 后用 ZSTD 跑得很稳，存储消耗比 CK 的 LZ4 还低 6%。这个数据被大量引用，甚至被读成「Doris 压缩比比 CK 高」。
-
-这个结论站不住，至少有三处问题：
-
-第一，它是跨压缩算法的对比，Doris(ZSTD) vs CK(LZ4)，不是同一算法的横向比较。同样开 ZSTD，CK 的压缩比不会输。
-
-第二，这是单一迁移案例，且发布在迁移方的官方渠道，属于典型的一面之词。
-
-第三，也是最关键的——`too many parts`的根因是 merge 跟不上写入速率，不是压缩算法。ZSTD 比 LZ4 慢是事实，但它只是压垮骆驼的最后一根稻草。真正该调的是 merge 线程池大小、`max_bytes_to_merge_at_max_space_in_pool`这类参数，而不是换压缩算法。笔者自己的生产环境长期使用 ZSTD，运行稳定，从未因此出现过入库积压。
-
-所以压缩比这一项 CK 确实领先，只是领先幅度被网上的文章夸大了。而「CK 开高压缩比容易撞写入瓶颈」这个痛点是真实存在的，只不过它是个调优问题，不是架构缺陷。
-
-#### 2.2.5 分级存储
-
-分级存储方面，两者的功能看起来相近，真正的差异在于对象存储被放在了哪一层抽象中。
-
-**ClickHouse：把对象存储当成一块磁盘**
-
-CK 的做法是在`storage_configuration`里把 S3/HDFS 注册成一个 disk，多个 disk 组成 volume，volume 组成 storage policy，然后表绑定 policy，用 TTL 规则控制数据什么时候从热卷挪到冷卷。
+CK 把对象存储当成一块盘。在 `storage_configuration` 里把 S3/HDFS 注册成 disk，disk 组成 volume，volume 组成 storage policy，表绑定 policy，再用 TTL 控制数据什么时候挪到冷卷：
 
 ```sql
 TTL event_time + INTERVAL 30 DAY TO VOLUME 's3'
 ```
 
-这个设计的优势是 TTL 可以指定业务字段。上面这条规则的语义清清楚楚：事件时间过了 30 天就下沉。数据什么时候变冷，由业务语义决定，这非常贴合真实需求。CK 的 TTL 表达力在 3.4 节还会展开讲，那是它的强项。
+好处是 TTL 能指定业务字段，事件时间过了 30 天就下沉，什么时候变冷由业务语义决定，非常贴合真实需求。代价是强绑定：既然对象存储是一块盘，那它不可达就等于本地盘坏了，S3/HDFS 挂掉时 CK 可能直接起不来，故障从「部分历史数据查不到」升级成「整个服务不可用」。这个坑我在 [metadata 明明在本地，为什么 ClickHouse 说 S3 上找不到](/clickhouse/troubleshooting/s3-unreachable-startup) 那篇里实打实踩过。
 
-但代价是强绑定。既然对象存储是「一块磁盘」，那么磁盘不可达就等同于本地盘坏了，S3/HDFS 挂掉时，CK 服务可能直接起不来。故障等级从「部分历史数据查不到」直接升级成「整个服务不可用」。这个爆炸半径，在生产上是很吓人的。
-
-**Doris：把对象存储当成一种资源**
-
-Doris 的抽象是三级的：`RESOURCE` → `STORAGE POLICY` → `TABLE`。冷存储是一种资源，不是一块磁盘。
-
-这个差别看起来只是命名，实际影响很大：资源不可用时，只影响存储在这个资源上的那部分数据查不到，Doris 服务本身不受影响，照常跑。故障影响级别和 CK 完全不在一个层面上。
-
-但 Doris 这边也有两个坑：
-
-1. 表一旦绑定了 resource 就不能更换。这是个硬约束，前期规划错了后期改不了
-2. 冷却判定依据是`visableVersion`的时间，而不是业务字段。也就是说，Doris 看的是「这批数据什么时候写进来的」，而不是「这条数据的业务时间是什么」。对于有数据回补、乱序到达的场景，这个语义是不准的，你回补一批三个月前的历史数据，它会被当成新数据留在热存储里
-
-这个抽象层次的差别，落到故障时的表现上最为直观：
+Doris 把对象存储当成一种资源，`RESOURCE` → `STORAGE POLICY` → `TABLE`。看起来只是命名不同，实际影响很大：资源不可用时，只是放在这个资源上的那部分数据查不到，服务照常跑。但 Doris 也有两个坑：表一旦绑定了 resource 就换不了，前期规划错了后期改不了；冷却判定看的是 `visableVersion` 的时间，也就是数据什么时候写进来的，不是业务时间，你回补一批三个月前的数据，它会被当成新数据留在热存储里。
 
 <figure class="dfig">
-<img class="dfig-l" src="/diagrams/doris-04.light.svg" alt="2.2.5 分级存储">
-<img class="dfig-d" src="/diagrams/doris-04.dark.svg" alt="2.2.5 分级存储">
+<img class="dfig-l" src="/diagrams/doris-04.light.svg" alt="对象存储不可达时，CK 整个服务起不来，Doris 只影响该资源上的数据">
+<img class="dfig-d" src="/diagrams/doris-04.dark.svg" alt="对象存储不可达时，CK 整个服务起不来，Doris 只影响该资源上的数据">
 </figure>
 
-两边的代价落在不同位置：CK 的冷却语义更贴合业务，但把外部存储的可用性绑进了服务可用性；Doris 的故障隔离更好，但冷却判定依据不带业务含义。这两类代价都有缓解手段——Doris 侧可以按业务时间分区、让写入时间与业务时间对齐，CK 侧则需要把对象存储的可用性纳入自身的 SLA 评估。哪一类更难以承受，取决于你的数据回补频率和对服务可用性的要求。
+两边的代价落在不同地方：CK 的冷却语义更贴业务，但把外部存储的可用性绑进了服务可用性；Doris 故障隔离更好，冷却判定却不带业务含义。数据回补频繁的，CK 更合适；对服务可用性要求极高、对象存储又不太靠谱的，Doris 更稳。
 
-#### 2.2.6 半结构化数据支持
+### 半结构化数据
 
-先澄清一个流传很广的过时认知：「ClickHouse 不擅长 JSON」这句话，指向的是一个已经不存在的旧实现。在 2026 年重复这个批评，属于信息过时。
+先澄清一个过时的认知：「ClickHouse 不擅长 JSON」，说的是一个已经不存在的旧实现。CK 的 JSON 类型 25.3 GA，旧的 `Object('json')` 25.11 被彻底移除。现在的实现是从头重写的纯列式方案，每个路径存成独立子列，保留原生类型，查询只读用到的路径。CK 还有个独立的 `Variant` 类型，和 Doris 的 VARIANT 不是一回事，它得显式声明能装哪些子类型，存 JSON 应该用 JSON 类型。
 
-CK 的 JSON 类型在 25.3 正式 GA（旧的`Object('json')`在 25.11 被彻底移除）。当前的实现是从头重写的纯列式方案：JSON 的每个路径存成独立的子列，保留原生类型，支持主键索引，查询时只读取你实际用到的路径。此外 CK 还有一个独立的`Variant`类型——注意它和 Doris 的 VARIANT 不是一回事，CK 的 Variant 必须显式声明能容纳哪些子类型，且不能包含 JSON 类型，存 JSON 应该用 JSON 类型。
+Doris 的 VARIANT 2.1 引入，写入时在 memtable 里对相同的 JSON 键做类型推导和合并，存储上是动态子列加稀疏列，设计目标是撑住万列级的子列。实践中有个坑：某个路径下的值类型没法兼容转换时，会退化成 JSONB，性能比原生列差一截，所以业务上得尽量保证字段类型一致。
 
-Doris 的 VARIANT 在 2.1 引入。写入时在 memtable 里对相同的 JSON 键做类型推导与合并，生成一棵前缀树，记录每个 JSON field 的类型和 column 信息，然后把同一列的所有类型合并成最小公共类型，编码成 Doris 存储格式写进 segment。存储上是动态子列 + 稀疏列，配合路径索引，设计目标是撑住万列级别的子列。
+性能上两边正面 PK 过一次，挺有意思。JSONBench（十亿条 JSON）的默认配置下，CK 第一、第二，Doris 第三。Doris 官方随后发文，用 Schema 结构化、生成列、缓存配置、并行度调参，把总耗时降了 74%，反超 CK 约 39%。关键是生成列：JSONBench 的查询路径是固定的，那就把高频字段用生成列提成真正的列。可 JSONBench 是 CK 维护的，反超的对比是 Doris 官方发的，两边都有立场，像是对着考题的开卷考试，两组数字都得打折看。我的看法是两边打平，CK 开箱即用更省心，Doris 在 schema 变化频繁、超宽表的场景下更有针对性。
 
-VARIANT 有一个实践上的坑要注意：字段类型不一致时会退化成 JSONB。当某个路径下的值类型无法做兼容转换时，Doris 会把它统一转成 JSONB 类型，而 JSONB 列的性能相比 int、text 这类原生列有明显退化。所以业务上要尽量保证字段类型的一致性。
+## 资源管理和 AI
 
-性能上，两边正面 PK 过一次，结果很有意思。JSONBench（十亿条 JSON 记录）的默认配置下，排名是 ClickHouse 第一、第二，Doris 第三。但 Doris 官方随后发文，通过 Schema 结构化 + 生成列 + 缓存配置 + 并行度调参，把查询总耗时降低了 74%，反超原榜首的 CK 约 39%。
+### 负载隔离
 
-关键手段是生成列（generated columns）：JSONBench 的查询用的是固定提取路径，也就是说这批半结构化数据的 schema 其实是固定的。那就可以用生成列把高频字段提取成真正的列，同时享受半结构化的灵活性和结构化的性能。
+多租户共享一个集群，最怕一个查询把整个集群拖垮。
 
-这里必须提醒立场问题：JSONBench 本身由 ClickHouse 维护，而调优反超的对比由 Doris 官方发布，两边都有立场，像是对着试题针对性的开卷考试，两组数字都要打折看。真要选型，还是拿自己的数据集实测。
+Doris 用 Workload Group，基于 CGroup 做 OS 级隔离，限制单个查询在单个 BE 上能用的 CPU 和内存百分比，分软限和硬限。实测设 `cpu_hard_limit=50%`，16 核机器上并发 1/2/4 跑同一个查询，CPU 稳稳停在 800% 左右，刚好一半。限制是软限和硬限同一时刻只能二选一；2.1 起 CPU 限制基于 CGroup v1，还不支持 v2；容器里用的话，CPU 是在容器可用资源上再切的，宿主机 64 核、容器 8 核、硬限 50%，实际只有 4 核，而且得特权模式启动容器才能读写宿主机的 CGroup 文件。
 
-两者对半结构化数据采用了不同路线。CK 的 JSON 是开箱即用的列式动态类型，默认配置下性能较好；Doris 的 VARIANT 采用动态列、稀疏列与显式结构化相结合的方式，在 schema 频繁变化和超宽表场景下更有针对性。厂商测试结论并不足以判定绝对优劣，仍应使用业务数据验证。
-
-### 2.3 资源管理
-
-#### 2.3.1 负载隔离
-
-多租户共享集群时，最怕的就是一个查询把整个集群拖垮。两家给出的方案，思路差别不小。
-
-**Doris：Workload Group，基于 CGroup 做 OS 级隔离**
-
-Doris 把用户执行的 Query 与 Workload Group 关联，限制单个 Query 在单个 BE 节点上能用的 CPU 和内存百分比。资源空闲时，多个 Group 可以共享空闲资源、自动突破限制。
-
-CPU 限制分软限和硬限：软限资源利用率更高，空闲时能灵活借用；硬限侧重性能稳定性，确保各 Group 之间不会因负载变化互相干扰。实测数据：设置`cpu_hard_limit=50%`，在 16 核机器上并发 1/2/4 执行同一查询，CPU 利用率始终稳定在 800%左右，就是刚好一半。
-
-两个限制要注意：
-
-1. 软限和硬限不能同时使用，一个集群某一时刻只能是软限或者硬限
-2. 从 2.1 起默认基于 CGroup v1 做 CPU 限制，暂不支持 CGroup v2，BE 所在节点必须装好 CGroup v1 环境。不配 cgroup 的话，除 CPU 限制外的其他功能仍可用
-
-容器场景下还有一层坑：Workload Group 的 CPU 用量是在容器可用资源的基础上再切分的。宿主机 64 核、容器分 8 核、硬限配 50%，实际只有 4 核。而且需要特权模式启动容器才能读写宿主机的 CGroup 文件。
-
-**ClickHouse：Workload Scheduling，层级化的调度树**
-
-CK 近几个版本持续补充资源调度能力：23.9 加入 IO 调度，24.11 支持用 SQL 管理 workload，25.4 又引入 CPU slot 调度。
-
-用法是先定义 CPU 资源，之后`max_concurrent_threads`才生效：
+CK 这几个版本一直在补资源调度：23.9 加 IO 调度，24.11 能用 SQL 管理 workload，25.4 引入 CPU slot 调度。先定义 CPU 资源，`max_concurrent_threads` 才生效：
 
 ```sql
 CREATE RESOURCE cpu (MASTER THREAD, WORKER THREAD);
@@ -565,215 +290,90 @@ CREATE WORKLOAD analytics IN production SETTINGS max_cpu_share = 0.7, weight = 3
 CREATE WORKLOAD development IN all SETTINGS max_cpu_share = 0.3;
 ```
 
-这套模型的表达力比 Doris 强：workload 组成一棵层级树，`weight`做加权公平分配（软），`max_cpu_share`做份额上限（硬），两者可以在同一层并存；`priority`控制优先级，数值越小越优先抢 slot。此外还有`max_cpu_waiting_share`限制 CPU 等待时间占比，设成 0.1 就能保证长期来看 CPU wait 不超过可用执行时间的 10%。
+workload 组成一棵层级树，`weight` 做加权公平分配，`max_cpu_share` 做份额上限，两个能在同一层并存，`priority` 越小越优先抢 slot，`max_cpu_waiting_share` 还能限制 CPU 等待时间的占比。用 settings profile 把某个用户的查询固定到某个 workload，后台任务另有 `merge_workload` 和 `mutation_workload`，`system.scheduler` 里能看到整棵调度树。表达力上比 Doris 强。
 
-绑定方式也很自然：查询用`workload`设置区分负载，通过 settings profile 把某个用户的所有查询固定到某个 workload。后台任务另有`merge_workload`和`mutation_workload`。可观测性上，`system.scheduler`能看到整棵调度树的活跃请求和权重分配。
+要 OS 级不可突破的硬隔离，比如强 SLA 的多租户、混部，Doris 的 cgroup 硬限更彻底；要弹性优先级、加权公平、IO 和 CPU 统一调度，CK 更灵活。顺带说一句，「CK 没有资源隔离」这个说法，25.4 以后就不成立了。
 
-**对照**
+### 熔断和限流
 
-| 维度 | Doris Workload Group | ClickHouse Workload Scheduling |
-| --- | --- | --- |
-| CPU 隔离实现 | CGroup v1（不支持 v2） | 进程内 CPU slot 调度 |
-| 硬限语义 | `cpu_hard_limit=N%`，OS 级不可突破 | `max_cpu_share`/`max_concurrent_threads` |
-| 软硬限共存 | 不支持，同一时刻只能二选一 | 支持，层级树中`weight`与`max_cpu_share`并存 |
-| 层级结构 | 扁平 group | 命名资源池组成的层级树 |
-| 绑定方式 | user/query 关联 group | settings profile 统一标记 |
-| 可观测 | workload group 系统表 | `system.scheduler` + `system.processes` |
+隔离解决的是分蛋糕，熔断解决的是有人要把整个蛋糕端走。这是 CK 少数几个明确领先的运维项。单查询级有 `max_memory_usage`、`max_execution_time`、`max_rows_to_read`、`max_bytes_to_read`、`max_result_rows`，超限直接抛异常；用户级有 `max_memory_usage_for_user`；Quota 能按小时、天、周、月限制查询次数、错误数、执行时间、读取行数，这个粒度 Doris 没有；跑起来以后还能在 `system.processes` 里看实时查询，`KILL QUERY` 精准干掉。
 
-要 OS 级不可突破的铁壁隔离（强 SLA 多租户、混部场景），Doris 的 cgroup 硬限更彻底；要弹性优先级、加权公平、IO 和 CPU 统一调度，CK 25.x 的层级模型表达力更强。顺带把另一条过时论调也作废掉：从 25.4 之后，「CK 没有资源隔离」这个说法就不成立了。
+Doris 有 Workload Policy（4.1 增强）、query timeout 和内存超限自动 kill，策略是声明式的，理解起来简单，但能控的维度确实没 CK 细。
 
-#### 2.3.2 熔断与限流
+### 向量和 AI
 
-隔离解决的是「分蛋糕」，熔断解决的是「有人要把整个蛋糕端走」。
+AI 这块其实是三条互不相干的线：向量索引、SQL 里调大模型的 AI 函数、面向 Agent 的 MCP 生态。
 
-CK 的手段非常细，而且这是它少数几个明确领先的运维项：
-
-- **单查询级**：`max_memory_usage`、`max_execution_time`、`max_rows_to_read`、`max_bytes_to_read`、`max_result_rows`，超限直接抛异常
-- **用户级**：`max_memory_usage_for_user`，限制某个用户所有查询的内存总和
-- **Quota**：按小时/天/周/月配额，限制查询次数、错误数、执行时间、读取行数。这个粒度 Doris 没有对等物
-- **运行时干预**：`system.processes`看实时查询，`KILL QUERY`精准干掉
-
-Doris 这边有 Workload Policy（4.1 增强）、query timeout、以及内存超限自动 kill。策略是声明式的，配置心智更简单，但可控的维度确实不如 CK 细。
-
-CK 的 quota 和 settings profile 提供了更细的限制维度；Doris 的策略配置更偏声明式，理解成本较低，但控制粒度相对有限。
-
-### 2.4 AI 与向量能力
-
-AI 相关能力可以拆成三条彼此独立的路线：向量索引、SQL 中的 AI 函数，以及面向 Agent 的 MCP 生态。
-
-**向量检索：索引粒度与构建方式的差异**
-
-Doris 从 4.0 开始支持基于 HNSW 的 ANN 索引，4.1 又加了 IVF 和 IVF_ON_DISK，把向量检索扩展到十亿乃至万亿规模，并新增 Ann Index Only Scan 优化，向量检索可以跳过原始列的 IO，查询性能相比 4.0 最高提升 4 倍。
-
-```sql
-INDEX idx_vec (embedding) USING ANN PROPERTIES (
-  "index_type" = "hnsw",
-  "metric_type" = "l2_distance",
-  "dim" = "768",
-  "quantizer" = "flat"
-)
-```
-
-CK 这边是`vector_similarity`索引：
+向量检索，Doris 从 4.0 开始支持 HNSW 的 ANN 索引，4.1 加了 IVF 和 IVF_ON_DISK，扩展到十亿乃至万亿规模，Ann Index Only Scan 可以跳过原始列的 IO。CK 是 `vector_similarity` 索引：
 
 ```sql
 ALTER TABLE t ADD INDEX vec_idx vector
   TYPE vector_similarity('hnsw', 'cosineDistance', 384, 'bf16', 64, 512);
 ```
 
-两边都提供了 ANN 索引，但索引粒度和构建方式存在两项重要差异：
+两边差在两个地方。一个是索引粒度：Doris 在 Segment 粒度上建索引，参数只要按单批导入的规模设，数据总量涨到多少都不用重建；CK 是 part 加 GRANULARITY（向量索引默认粒度 1 亿），两个 part 合并时要给合并后的 part 重建索引，写入越频繁，重建开销越大，HNSW 会明显拖慢 INSERT 和 OPTIMIZE。另一个是构建方式：Doris 后台异步建，导入后立即可查；CK 要 `MATERIALIZE INDEX`，两三千万行的数据集，建一次几分钟到几小时。内存两边都是硬约束，CK 给了估算公式，100 万条 1536 维 bf16 向量大约要 3.5GB；Doris 也承认常用参数下 HNSW 内存约为原始数据的 2 倍，10 亿向量接近 1TB。到了十亿级两家都得靠量化。CK 社区自己在 RFC #104122 里也承认了这些问题。
 
-**第一，索引粒度**。Doris 在 Segment 粒度上构建和使用 ANN 索引，这把「全表数据量」与「索引超参数」彻底解耦了——用户只需要根据单批次导入的规模设参数，数据总量涨到多少都不用重建索引。CK 则是 part + GRANULARITY（向量索引的默认粒度是 1 亿，与普通跳数索引的 1 完全不同），而且两个 part 合并时，会为合并后的 part 重新构建索引。这意味着写入越频繁，索引重建的开销越大，HNSW 索引会明显拖慢 INSERT 和 OPTIMIZE。
+AI 函数是 Doris 独有的，4.0 起分析师可以直接在 SQL 里调大模型做信息抽取、情感分析、文本摘要。
 
-**第二，构建方式**。Doris 是异步后台构建，数据导入后立即可查，索引在后台慢慢建，不阻塞导入。CK 需要`MATERIALIZE INDEX`，对一个两三千万行的数据集，构建索引可能要几分钟到几小时。
+MCP 生态 CK 积累更深：官方 MCP Server 下载量超过 22 万次，Cloud 有远程 MCP Server 和 Ask AI agent，ClickStack MCP Server 可以把 Claude、Cursor、Codex 直接连到可观测数据上，还有给 AI 编码 agent 打包领域知识的 Agent Skills 仓库。Doris MCP Server 功能上也不弱，但被主流 AI 工具集成的程度跟 CK 还有差距。
 
-内存开销两边都是硬约束。CK 给了明确的估算公式：向量内存 = 向量数 × 维度 × 量化字节数，图内存 = 向量数 × `hnsw_max_connections_per_layer` × 4 × 2。100 万条 1536 维 bf16 向量大约需要 3.5GB。Doris 官方也承认，常用参数下 HNSW 索引内存约为原始数据的 2 倍，扩展到 10 亿向量时接近 1TB，大多数团队接受不了。所以到了十亿级，两家都得靠量化，CK 有二值量化配合过采样和 rescoring，Doris 有 sq8/sq4，以及 4.1 新增的 IVF_ON_DISK。
+做 RAG、向量检索，Doris 更合适；让 Agent 直接访问分析数据，CK 更成熟。
 
-CK 社区自己也在 RFC #104122 里承认了这些问题：HNSW 需要为向量和图占内存，增量更新需要完整重建，单 VM 上的单一向量索引无法服务十亿级搜索。
+## 运维
 
-**AI 函数：Doris 独有**
+### 集群运维
 
-Doris 4.0 引入了 AI 函数，分析师可以直接在 SQL 里调用大模型完成信息抽取、情感分析、文本摘要。这个能力 CK 目前没有对等物。
+CK 的运维痛点，摊开讲有这么几条。加节点要改配置文件，集群拓扑写在 `config.xml`/`metrika.xml` 里，加一个节点就要改配置、分发到每一台机器，Doris 只要一条 `ALTER SYSTEM ADD BACKEND "host:port";`。CK 不感知拓扑变化，这个下一节专门讲。元数据也是各节点各管各的，Doris 的 FE 自带元数据管理，基于 BDB JE 做复制，不依赖外部组件。
 
-**MCP 生态：CK 更成熟**
+不过说到 CK 依赖 ZooKeeper，得说句公道话。早年 CK 把分布式 DDL、表和 part 信息全存在 ZK 里，ZK 经常成为瓶颈，这个批评当时完全成立（我在 [znode 爆炸与线程池](/clickhouse/troubleshooting/znode-explosion) 里就写过一次 ZK 被打爆的事故）。但 CK 自 21.x 起就在推自研的 ClickHouse Keeper，C++ 重写、Raft 共识、兼容 ZK 协议，到 24.x 基本取代了 ZooKeeper，还能内嵌在 clickhouse-server 进程里跑，不用再单独维护一套 Java 服务。所以「CK 依赖 ZooKeeper」也是一条正在过时的批评。
 
-在 Agent 生态方面，CK 的积累更深：
+即便如此，CK 的运维复杂度还是比 Doris 高。这也正是 ckman、ByteHouse 和各家云厂商魔改版存在的理由。ckman 干的就是这个：可视化部署、滚动升级、节点增删、表与数据治理、备份恢复、监控告警，把原本要手改配置、逐台分发的操作，变成 Web 上点几下。
 
-- 官方 MCP Server（PyPI 安装，可自托管），下载量已超 22 万次
-- ClickHouse Cloud 的远程 MCP Server + Ask AI agent
-- ClickStack MCP Server：把可观测性调查能力开放给外部 agent，可以直接把 Claude、Cursor、Codex 连到可观测数据上，通过一组专为日志/指标/追踪设计的调查原语操作
-- ClickHouse Agent Skills 仓库：给 AI 编码 agent 打包的领域知识，涵盖 schema 设计、查询优化、数据摄入模式
+### 数据均衡
 
-Doris MCP Server 在功能覆盖上也不弱（查询、元数据、高级分析、治理，用 ADBC/Arrow 和连接池，支持 Catalog 联邦），但整体生态成熟度和被主流 AI 工具集成的程度，跟 CK 还有差距。
+数据自动均衡是 CK 开源版最突出的运维短板。
 
-因此不能把三条能力合并成一个输赢结论。向量检索方面，Doris 的索引粒度和后台构建机制更适合持续写入的大规模数据；SQL 内调用模型是 Doris 的差异化能力；CK 则在 Agent 和 MCP 生态上更成熟。RAG、混合检索和 AI 可观测更看重前两项，让 Agent 直接访问分析数据则更看重后一项。
+Doris 扩缩容时自动重新分布 tablet；服务器宕机或者坏盘，自动切副本、重定向写入、屏蔽故障节点，在其他节点上重建副本。菜鸟网络的 Doris 集群频繁扩缩容应对大促，不用人工干预。CK 开源版做不到这些，新加了节点，存量数据不会自己挪过去，磁盘或节点故障也得结合副本状态人工处理。
 
-## 3. 运维与扩展
+根子在于 CK 少了一层抽象。Doris 的 tablet 是一个可以整体迁移的最小单元，它属于哪个 BE 只是一个可变的映射，改一下映射、把文件拷过去就完成了迁移。CK 的最小单元是 part，part 归哪个 shard 是 sharding key 硬绑定的，你把一个 part 挪到另一个节点，那个节点上就出现了本不该属于它的数据，路由就错了。
 
-### 3.1 集群运维
+所以 CK 的扩容全是绕路。改各 shard 的权重，让新数据大部分写到新节点，等老数据按 TTL 自然过期，慢慢趋于均衡，再把权重调回来，这是数据量大时最现实的办法，但周期以月计。数据量不大可以建新表重导再换名，表一多就没法用了。还有备份恢复加原地重分片，过程复杂容易出错。云厂商的说法也很直白，腾讯云直接把这称为「ClickHouse 使用和运维上的一大痛点」，它的 Resharding 模式要求剩余容量超过整表大小，一个集群同时只能跑一个任务。
 
-CK 的运维痛点，摊开讲有这么几条：
+既然 CK 自己不做，就只能外部工具来补。ckman 把数据均衡做成了一个可编排的任务，按表选两种策略。
 
-**加节点要改配置文件**。CK 的集群拓扑写在`config.xml`/`metrika.xml`里，加一个节点意味着要修改配置并分发到集群里每一台机器。而 Doris 只需要一条 SQL：
+默认是按分区搬：规划阶段用贪心，每一轮挑出占用最大和最小的 host，尝试把大 host 上的某个分区搬到小 host 上，只有满足 `max >= min + 2 * size` 才搬，不然搬完原本最小的反倒成了最大的，就是在原地打转。每个 host 最新的那个分区会跳过，它还在接收写入，搬它必然出事。复制表集群走纯元数据操作，目标端 `FETCH PARTITION` 拉过来，`ATTACH` 上，源端再 `DROP`，不需要主机之间打通 SSH；非复制表集群就得 `DETACH`、rsync、`ATTACH`，ckman 会先探测连通性，探测失败就跳过这张表，不让整个任务失败。
 
-```sql
-ALTER SYSTEM ADD BACKEND "host:port";
-```
-
-**不感知拓扑变化**。这是更根本的问题，下一节专门讲。
-
-**元数据管理**。CK 没有集中的元数据管理，每个节点各管各的，高可用一般要靠业务方自己实现。Doris 的 FE 内建了元数据管理（基于 BDB JE 做副本复制），不依赖任何外部组件。
-
-不过关于 CK 依赖 ZooKeeper 这一点，得说句公道话。早年 CK 把分布式 DDL、表和 part 信息全存在 ZK 里，由于是细粒度文件信息，ZK 经常成为性能瓶颈，这个批评在当时完全成立。但 CK 自 21.x 起就在推自研的 ClickHouse Keeper（用 C++重写的 ZK 兼容实现，用 Raft 做共识），到 24.x 之后基本已经取代了 ZooKeeper，内存占用和性能都好得多，而且可以内嵌到 clickhouse-server 进程里跑，不需要单独维护一套 Java 服务。所以「CK 依赖 ZooKeeper」也是一条正在过时的批评。
-
-即便如此，CK 的运维复杂度仍然高于 Doris。这也正是 ckman、ByteHouse 以及各家云厂商魔改版存在的理由，把 CK 缺失的那层运维能力补上。ckman 做的事情就是这个：可视化部署、滚动升级、节点增删、表与数据治理、备份恢复、监控告警，把原本需要手工改配置、逐台分发的操作变成 Web 上的几次点击。
-
-集群运维方面 Doris 的内建能力更完整。CK 通常需要额外的管理层来弥补拓扑管理和自动化运维能力，这一层目前主要由社区工具和云厂商提供。
-
-### 3.2 数据均衡
-
-**数据自动均衡是 CK 开源版最突出的运维短板之一。**
-
-Doris 这边：集群扩缩容时自动完成 tablet 的重新分布；服务器宕机或坏盘时，自动完成副本切换与写入重定向，自动屏蔽故障节点的查询与写入请求，并在其他可用节点上重建副本。菜鸟网络的生产环境里，Doris 集群频繁扩缩容应对电商大促，无需人工干预，服务不中断。
-
-CK 开源版不能根据拓扑变化自动完成跨 shard 的数据再均衡。新增节点后，存量数据不会自动迁移；发生磁盘或节点故障时，也通常需要结合副本状态和业务布局进行人工处理。
-
-为什么会这样？根因在于 CK 少了一层抽象。
-
-对比两边的数据层级：
-
-- CK：`SHARD → PARTITION → PART → GRANULARITY → ROWS`
-- Doris：`PARTITION → BUCKET → TABLET → ROWSET → ROWS`
-
-Doris 的 TABLET 是一个可以整体迁移的最小单元，它属于哪个 BE 只是一个可变的映射关系，改一下映射、把文件拷过去就完成了迁移。而 CK 的最小单元是 part，part 归属哪个 shard 是由 sharding key 硬绑定的，你想把一个 part 挪到另一个节点，那这个节点上就出现了本不该属于它的数据，路由就错了。没有 bucket 这一中间层，数据就没法在节点间自由流动。
-
-所以 CK 的扩容，实际做法全是绕路：
-
-1. **权重倾斜 + TTL 自然消解**：改`metrika.xml`里各 shard 的权重，让新数据大部分写到新节点，随着老数据按 TTL 自然过期，数据逐渐趋于均衡，然后再把权重调回来。这是数据量大时最现实的方案，但周期以月计
-2. **建新表重导**：数据量不大时，新建表把数据导过去再换名。表一多就没法用了
-3. **备份恢复 + 原地重分片**：Contentsquare 这样的企业用户也是这么干的，过程复杂且容易出错
-4. `clickhouse-copier`：已废弃
-
-云厂商的定性也很直白。腾讯云直接把这个称为「ClickHouse 使用和运维上的一大痛点」，它提供的 Resharding 模式会把数据重新插入，过程中的临时数据需要额外存储空间，要求剩余容量超过整表大小，而且一个集群同时只支持一个任务执行。字节的 ByteHouse 也把「MPP 架构导致扩容成本高」列为 CK 运维的核心痛点，指出不管哪种方式都需要用户手动复制元数据、校验数据、拼装流程。
-
-**ckman 是怎么做的**
-
-既然 CK 自己不做，这件事就只能由外部工具补。ckman 把数据均衡实现成了一个可编排的任务，提供两种策略，按表选择。
-
-**策略一：按分区搬移（ByPartition）**
-
-这是默认策略，思路是把整个分区作为搬移单元，不动数据内容。
-
-规划阶段用贪心：每一轮挑出当前占用最大的 host 和最小的 host，尝试把大 host 上的某个分区搬到小 host 上。这里有个关键约束——只有满足`max >= min + 2 * size`才执行，也就是说搬完之后不能反过来让原本最小的变成最大的，否则就是在原地打转。循环直到没有有效的搬移为止。另外，**每个 host 最新的那个分区会被跳过**，因为它还在接收写入，搬它必然出问题。同一轮规划里，一个 host 不会既搬出又搬入。
-
-执行阶段分两条路：
-
-- **复制表集群**：纯元数据操作。目标端通过 ZooKeeper 发起`FETCH PARTITION`把数据拉过来，`ATTACH`挂上，源端再`DROP`。全程不需要操作系统层面的文件拷贝，也不需要主机之间打通 SSH
-- **非复制表集群**：源端`DETACH`分区，用 rsync 把 part 文件传到目标端，目标端再`ATTACH`。这条路要求主机之间免密 SSH、并且能 sudo 读数据目录。ckman 会先做一次连通性探测，探测失败就跳过这张表，而不是让整个任务失败
-
-**策略二：按分片键重分布（ByShardingKey）**
-
-按分区搬移有个前提：数据在分区之间的分布本身要相对均匀。如果原本的分片就是斜的（比如当初 sharding key 选得不好），搬分区只是把不均衡换个地方放。这时候需要按行重新计算归属。
-
-流程是这样的：每个 shard 上先建一张临时表（用`engine_full`镜像原表结构，Replicated 引擎的 ZooKeeper 路径会被替换掉以免和真表冲突），把原表数据搬进临时表并校验行数；然后从`cluster()`函数读临时表，用`hash(key) % N = idx`过滤，让每个 host 只 INSERT 属于自己的那部分行回原表；再校验一次行数，最后清理临时表。
+按分区搬有个前提：数据在分区之间本身分布得比较匀。如果当初 sharding key 就选歪了，搬分区只是把不均衡换个地方放，这时候要用第二种策略，按分片键重新算归属。每个 shard 上先建一张临时表（Replicated 引擎的 ZooKeeper 路径会被替换掉，免得和真表冲突），把数据搬进去校验行数，再从 `cluster()` 读临时表，用 `hash(key) % N = idx` 过滤，每个 host 只把属于自己的行 INSERT 回原表，再校验一次，清理临时表。
 
 <figure class="dfig">
-<img class="dfig-l" src="/diagrams/doris-05.light.svg" alt="3.2 数据均衡">
-<img class="dfig-d" src="/diagrams/doris-05.dark.svg" alt="3.2 数据均衡">
+<img class="dfig-l" src="/diagrams/doris-05.light.svg" alt="ckman 按分片键重分布的流程">
+<img class="dfig-d" src="/diagrams/doris-05.dark.svg" alt="ckman 按分片键重分布的流程">
 </figure>
 
-几处工程细节值得一提：
+这里面有几个细节。行数校验用 `>=` 而不是 `==`，均衡期间业务还在写，行数只会变多，卡死 `==` 会误报失败。校验失败等 5 秒再试一次，因为 `cluster()` 是分布式查询，可见性有一点延迟。还可以配一个可接受的丢失率兜底。两种策略都能只算不做，先看这次要搬哪些分区、多少行、多少字节，确认了再执行。取消检查放在每个分区、每个插入批次的边界上，中途点停止是真能停下来的。
 
-- 行数校验用的是`>=`而不是`==`。均衡期间业务仍在写入，行数只会变多，卡死`==`会误报失败
-- 校验失败后会等 5 秒重试一次。`cluster()`是分布式查询，可见性有轻微延迟，一次性的最终一致重试能覆盖掉这种误判，同时不至于陷入无限重试
-- 整个过程支持配置一个可接受的丢失率（`AllowLossRate`）作为兜底阈值
-- 两种策略都实现了`Plan`接口，可以只算不做，先预览这一次均衡会搬哪些分区、涉及多少行和多少字节，确认之后再执行
-- 上下文取消检查放在每次分区搬移、每个插入批次的边界上，所以中途点「停止」是真能停下来的，不用等整张表跑完
+话说回来，这些都是数据库外面的补偿，它没法像 Doris 那样节点一宕就自动重建副本，解决的只是「扩容之后怎么把存量数据挪过去」这一件事。Doris 的自动均衡也不是零成本，坏盘或宕机后的均衡会吃掉大量集群资源，生产上还是得盯着限流参数，尽量放到低峰期。数据均衡这件事我单独写过一篇：[扩容之后为什么不自动做数据均衡](/clickhouse/tooling/why-not-auto-rebalance)。
 
-需要坦白的是，这些都属于外部工具在数据库之外做的补偿。它没法像 Doris 那样在节点宕机时自动触发副本重建，也不可能做到无感知；它解决的是「扩容之后怎么把存量数据挪过去」这个具体问题，而不是把 CK 变成一个自动均衡的系统。ByShardingKey 策略还需要额外的临时表空间，这一点和腾讯云的 Resharding 模式面临的是同一个约束。
+### 备份恢复
 
-需要补充一点公允：Doris 的自动均衡也不是零成本。坏盘或宕机后的数据均衡过程会消耗大量集群资源，引发短时间的负载过高。生产上仍然需要关注均衡限流参数，尽量安排在业务低峰期。
+这一项 CK 原生的覆盖反而更全。Doris 的 `BACKUP`/`RESTORE` 对表或分区做硬链接快照，再由各 BE 并发上传到远端仓库，要提前部署对应的 broker，作业分阶段执行，每个阶段的进度和错误都看得到，语义很清楚。
 
-### 3.3 备份恢复
+CK 有三条路。原生 `BACKUP`/`RESTORE` 能备表、字典、库、视图、ALL，带 `PARTITION` 和 `ON CLUSTER`，目标可以是 `File`、`Disk` 或 `S3`，用 `base_backup` 做增量，支持异步、压缩和限速，不用部署 broker。`FREEZE PARTITION` 是硬链接快照，几乎不占额外空间，但只备数据不备元数据，建表 SQL 得自己从 metadata 目录拷出来，很容易踩坑。第三方的 clickhouse-backup 支持本地和 S3，part 级增量，有保留策略，还能起 server 模式提供 API。
 
-在备份恢复方面，CK 的原生功能覆盖较完整。
+单论周期性的冷备和恢复，两边对等，CK 的语法更全。Doris 多出来的是 CCR 那套持续同步，但实用性要打折扣。不管用哪个，备份成功都不等于能恢复，定期做恢复演练比备份命令本身重要得多。
 
-**Doris**的`BACKUP`/`RESTORE`：对指定表或分区的数据文件做快照（本质是硬链接，耗时很少），然后由各个 BE 并发上传到远端仓库。需要提前部署对应远端存储的 broker。作业分阶段执行——备份是 SNAPSHOTTING → UPLOADING，恢复是 SNAPSHOTTING → DOWNLOADING → COMMIT，每个阶段的子任务和错误都可以通过`UnfinishedTasks`/`TaskErrMsg`/`Status`观察。快照完成之后对表的修改和导入不再影响备份结果，语义很清晰。
+### 生命周期
 
-**ClickHouse**这边其实有三条路：
-
-1. 原生`BACKUP`/`RESTORE`语句。覆盖面比 Doris 还全：支持 TABLE、DICTIONARY、DATABASE、TEMPORARY TABLE、VIEW、ALL 等对象，可带`PARTITION`子句和`ON CLUSTER`，目标可以是`File(...)`、`Disk(...)`或`S3(...)`，并通过`SETTINGS base_backup=...`实现增量备份。支持 ASYNC 执行并用返回的 id 查进度，支持`compression_method`/`compression_level`，还能用`backup_threads`/`restore_threads`限制资源消耗。系统表方面，以`_log`结尾的历史表（query_log、part_log）可以像普通表一样备份，也可以排除掉省空间
-2. `FREEZE PARTITION`：硬链接快照，几乎不额外占磁盘，无需停服。但它只备数据不备元数据，建表 SQL 得自己从 metadata 目录里拷出来。这是个很容易踩的坑
-3. clickhouse-backup：第三方工具，支持本地和 S3 等多种存储，part 级增量（对比两次全量备份的 part 文件），有`backups_to_keep_local`/`backups_to_keep_remote`保留策略，还能起 server 模式对外提供 API，适合容器化环境
-
-**对照**
-
-| 维度 | Doris | ClickHouse |
-| --- | --- | --- |
-| 快照原理 | 硬链快照 + BE 并发上传 | FREEZE 硬链 / BACKUP 直写 Disk、S3 |
-| 增量 | CCR 的全量+binlog 回放 | `base_backup`增量、clickhouse-backup 的 part 级增量 |
-| 对象覆盖 | 表、分区 | 表、字典、库、视图、ALL，可带 PARTITION |
-| 落地存储 | 需部署 broker | File/Disk/S3 直连，无需额外组件 |
-| 跨集群持续同步 | CCR 原生支持 | 无 |
-
-单论周期性冷备与恢复，两边功能对等，CK 的原生语法覆盖面反而更全，还不需要部署 broker。Doris 的优势在 CCR 带来的持续同步，但那个实用性得打折（见 2.1.5）。
-
-无论使用哪一款数据库，备份任务成功都不等于数据可以恢复。生产方案必须包含定期恢复演练，并记录恢复时间、对象完整性和业务校验结果；这通常比备份命令本身更重要。
-
-### 3.4 生命周期管理
-
-生命周期管理是 CK 优势较为明确的一项能力。
-
-CK 的 TTL 是一等公民，写在建表 DDL 里，表达力相当强：
+生命周期管理是 CK 优势很明确的一项。TTL 是一等公民，写在建表 DDL 里：
 
 ```sql
--- 行级TTL：整行过期删除
+-- 行级 TTL：整行过期删除
 TTL event_time + INTERVAL 90 DAY
 
--- 列级TTL：单独某几列先过期，其他列保留
+-- 列级 TTL：某几列先过期，其他列保留
 TTL event_time + INTERVAL 7 DAY TO detail_json
 
--- 分级存储：到期挪到冷卷
+-- 到期挪到冷卷
 TTL event_time + INTERVAL 30 DAY TO VOLUME 's3'
 
 -- 聚合降采样
@@ -781,331 +381,139 @@ TTL event_time + INTERVAL 30 DAY GROUP BY dim1, dim2
     SET metric = sum(metric), cnt = sum(cnt)
 ```
 
-前三种 Doris 或多或少有对应物，但后面两种没有：
+列 TTL 能让原始日志正文、大 JSON 这些大字段先过期释放空间，时间、维度、指标这些小字段继续存很久，可观测场景里 90 天的指标只要几个字段，7 天的原始日志才需要全文。`TTL ... GROUP BY` 降采样，数据过了 30 天自动聚合成粗粒度，相当于内建了一套 rollup，不用额外跑 ETL。几条规则还能组合在同一张表上：7 天后丢明细字段，30 天后降采样并下沉到 S3，90 天后彻底删掉，全部由数据库自己执行，一行调度代码都不用写。
 
-- **列 TTL**：可以让明细字段（比如原始日志正文、大 JSON）先过期释放空间，而时间、维度、指标这些小字段继续存很久。可观测场景下这个能力相当实用，90 天的指标只要几个字段，7 天的原始日志才需要全文
-- `TTL ... GROUP BY`降采样：数据过了 30 天自动聚合成粗粒度，明细扔掉只留汇总。这在时序/指标场景下相当于内建了一套 rollup 机制，不需要额外的 ETL 作业
+Doris 这边主要是动态分区加分区级的冷热策略，配几个参数就完事，心智负担确实轻，但表达力就是不如 CK，列 TTL 和降采样都没有对等的机制。
 
-而且这几条规则可以组合写在同一张表上，形成完整的数据生命周期策略：7 天后丢明细字段 → 30 天后降采样并下沉到 S3 → 90 天后彻底删除。全部由数据库自动执行，一行调度代码都不用写。
+### 权限
 
-Doris 这边主要是动态分区：按时间自动创建新分区、自动删除旧分区，配合分区级的冷热策略。心智负担确实更轻，配好`dynamic_partition`的几个参数就完事了，不需要理解 TTL 表达式的求值时机。但表达力就是不如 CK。
+两边都是 RBAC，模型大同小异，差别在细节。Doris 照着 MySQL 设计，用户是 `username@'host'`，天然带白名单，行级权限是查询时自动追加谓词（不能给 root 和 admin 设），列级权限也有。CK 是一套完整的 SQL 驱动的 RBAC，users、roles、row policies、quotas、settings profiles 五个维度。
 
-CK 在生命周期管理上的优势主要来自列 TTL 和`TTL GROUP BY`降采样，Doris 目前缺少直接对等的机制；Doris 动态分区的优点则是配置简单。对于可观测、时序和指标数据，CK 的 TTL 体系可以减少额外的数据治理任务。
+CK 的 ROW POLICY 有两个必须知道的限制。一是只在只读访问下才有意义，用户能改表、能在表之间复制分区，就能绕过行策略，所以它是给只读分析师用的，不是给能写数据的开发用的。二是 Distributed 表上不生效，行策略只在本地读表时起作用，得在每台服务器的本地表上分别定义，集群一大就是运维灾难。另外 CK 默认没有策略就能看全部行，要做默认拒绝得用 permissive/restrictive 组合，不太直观。好在 `system.row_policies` 能看到所有生效的策略，审计时很方便。
 
-### 3.5 用户权限管理
+整体上打平。CK 的 quota 和 settings profile 更细；Doris 的 MySQL 心智和 host 白名单更亲民，也没有 Distributed 表那个坑。
 
-两边都是 RBAC，模型上大同小异，差别在细节。
+### 数据安全
 
-**Doris**的权限系统参照 MySQL 设计。用户被识别为一个 User Identity，由 username 和 host 两部分组成，写作`username@'host'`，天然带白名单机制。支持自定义角色，角色的权限变更会实时体现在所有属于该角色的用户上。
+除了漏洞扫描，安全合规还管脱敏、审计和留痕，这些数据库层面的能力 Doris 准备得更完整。
 
-- **行级权限（Row Policy）**：原理是给配置了策略的用户在查询时自动追加谓词。注意不能给 root 和 admin 设置
-- **列级权限**：可以只授予表中特定列的权限
+Doris 有原生的动态数据脱敏，可以把信用卡号、身份证号部分或全部替换成星号，原始数据不动，脱敏发生在返回结果的路上。CK 没有，只能自己用视图或者 UDF 包一层，再靠权限不让人直接访问底表，能用，但维护成本高，只要有一个地方忘了套视图，敏感数据就裸奔了。
 
-**ClickHouse**是一套完整的 SQL 驱动 RBAC，包含 users、roles、row policies、quotas、settings profiles 五个维度。列级权限直接通过`GRANT`指定列，行级用`CREATE ROW POLICY`。
+审计日志，Doris 有基于 FE 插件框架的审计插件，把审计日志定期导进指定的 Doris 集群，直接用 SQL 分析，查起来跟查业务表一样。CK 靠 `system.query_log`，信息其实非常全，谁、什么时候、跑了什么 SQL、读了多少行、用了多少内存，但它就是一张普通的系统表，默认 TTL 有限，长期审计得自己配持久化和归档。
 
-CK 的 ROW POLICY 有两个必须知道的致命限制：
+这和前面的漏洞扫描正好反过来：CK 在依赖扫描上占了实现语言的便宜，在合规功能的内建程度上又得靠外部方案补。
 
-1. **只有在只读访问场景下才有意义**。如果用户能修改表，或者能在表之间复制分区，就能绕过行策略的限制。也就是说，行策略是给「只读分析师」用的，不是给「能写数据的开发」用的
-2. **Distributed 表不生效**。行策略只在本地读取表数据时生效，对于把读取委托给远端服务器的 Distributed 表，必须在每一台服务器的底层本地表上分别定义策略。集群一大，这就是个运维灾难
+### 交互体验
 
-另外 CK 默认是「没有策略就能看全部行」，要做「默认拒绝」得用 permissive/restrictive 组合（先`USING 0 TO ALL`全禁，再对特定角色放行），这个心智不太直观。
+Doris 兼容 MySQL 协议，这带来的接入成本差异常常被低估。所有 MySQL 客户端直接能连，Navicat、DBeaver、命令行的 `mysql`；所有 BI 工具直接能接，Tableau、Superset、帆软、Quick BI；所有语言的 MySQL 驱动和 ORM 直接能用。运维排查问题，一句 `mysql -h host -P 9030 -u root` 就进去了。要在公司里大范围推广，业务方的 BI 工程师不用学新语法，存量报表也不用改造，这部分成本很难体现在跑分里，但真推起来往往占大头。
 
-可观测性上 CK 有个优势：`system.row_policies`表能看到所有生效的行策略、条件、以及适用的用户和角色，审计时很方便。
+CK 用自己的 SQL 方言和协议，虽然也有 `mysql_port`，但兼容范围有限，不少 BI 工具缺原生支持。`ARRAY JOIN`、`-If`/`-Array`/`-State` 组合子这些语法很有表现力，可学习和迁移成本也得算进去。CK 的补偿是 `clickhouse-client` 本身极其好用，实时进度条、几十种输出格式、多行编辑、语法高亮，用惯了再用 `mysql` 客户端，感觉像回到了石器时代。
 
-整体上两家模型对等。CK 的 quota 和 settings profile 维度更细，`system.row_policies`便于审计；Doris 的 MySQL 心智和 host 白名单更亲民，行级权限也没有 Distributed 表那个坑。
+执行计划也是这个味道。CK 的 EXPLAIN 家族信息量极大，`EXPLAIN PLAN` 看逻辑计划，`EXPLAIN PIPELINE` 看每个算子几路并行，`EXPLAIN ESTIMATE` 预估读多少 part 和 mark，`EXPLAIN indexes=1` 看主键和跳数索引各裁掉了多少 granule。再配上 `SET send_logs_level='trace'`，执行过程每一步都打到客户端。调优时信息密度极高，但门槛也高，看不懂 granule、mark、part 的关系，这些输出就是天书。Doris 的 EXPLAIN 和 Query Profile 更结构化，有 Web UI，各阶段耗时、行数、内存一目了然，还能看到 CBO 估算和实际值的偏差，看懂的门槛低得多。CK 的信息更全，Doris 的更好懂，这其实是两家整体气质的缩影。
 
-### 3.6 数据安全管理
+### 系统表
 
-除了依赖漏洞扫描，安全合规还涉及数据脱敏、访问审计和长期留痕。在这些数据库层面的能力上，Doris 准备得更完整。
+这是 CK 最容易被低估的一项。它几乎把所有内部状态都做成了能用 SQL 查的系统表：`query_log` 记每条查询，`processes` 看正在跑的，`parts` 看每个 part 的行数和压缩前后大小，`part_log` 记 part 的每一次创建、合并、下载、删除，`columns` 能看每一列的压缩比，`merges`、`mutations`、`replication_queue` 看后台任务，`metrics`、`events`、`asynchronous_metrics` 是各类指标，`errors` 是各类错误的累计次数，`text_log` 能用 SQL 查服务端日志，连 `system.numbers` 这种造数据的都有。
 
-**动态数据脱敏**：Doris 有原生的 Data Masking，CK 没有。
+好处是你不需要任何外部工具就能把 CK 自己查明白。想知道哪张表压缩比最差，查 `system.columns`；merge 为什么跟不上，查 `system.merges` 和 `system.part_log`；昨天哪条 SQL 把内存打爆了，查 `system.query_log` 按 `memory_usage` 排。我前面写的好几篇排障文章，靠的基本都是这几张表。ckman 的原生监控也是直接读这些系统表实现的，一行埋点都不用加。
 
-Doris 可以对敏感字段配置脱敏策略，把信用卡号、身份证号的部分或全部数字替换成星号，或者把真实姓名替换成假名，查询结果返回时动态处理。原始数据不动，脱敏发生在返回路径上。（同样地，给 admin/root 设置脱敏不会生效。）
+Doris 这边是 `information_schema` 加 `SHOW PROC '/...'`，够用，但覆盖面和信息密度差着量级，`SHOW PROC` 的输出是给人看的，不方便用 SQL 再加工。
 
-CK 这边没有内置的动态脱敏，只能自己用视图或 UDF 封装一层，然后靠权限控制不让用户直接访问底表。这个方案能 work，但维护成本高、容易出漏洞，只要有一个地方忘了套视图，敏感数据就裸奔了。
+## 生态
 
-**审计日志**：Doris 有基于 FE 插件框架的审计日志插件，可以在运行时灵活安装或卸载，把 FE 端的审计日志定期导入到指定的 Doris 集群里，然后直接用 SQL 做审计分析。这个设计很讨巧，审计数据就存在数据库自己里，查起来跟查业务表一样。
+### ckman 和 Doris Manager
 
-CK 靠`system.query_log`，信息其实非常全（谁、什么时候、执行了什么 SQL、读了多少行、用了多少内存、耗时多久），但它是一张普通的系统表，默认 TTL 有限，要做长期审计得自己配持久化和归档。
+两家都有集群管理工具，出身完全不同。
 
-就数据库自身提供的合规能力而言，Doris 的覆盖更完整，脱敏和审计都不需要额外封装。这与 1.4 节的情况恰好构成对照：CK 在依赖扫描环节占了实现语言的便宜，在合规功能的内建程度上则要靠外部方案补齐。等保和安全评审具体考察哪些项，各行业口径差别很大，建议按实际评审清单逐项核对，而不是直接套用结论。
+[ckman](https://github.com/housepower/ckman) 是我参与开发的开源项目，前端 Vue，后端 Go。部署、滚动升级、启停、节点增删，分布式表、分区、TTL、物化视图管理，定时备份，三级 RBAC，多实例加 Nacos 选主做高可用，原生直读系统表的监控，还有前面说的逻辑集群，Web 和 API 两个通道都能用。
 
-### 3.7 交互体验
+Doris Manager（现在叫 Cluster Manager for Apache Doris）由 SelectDB 出品，能力也很全面，部署接管集群、扩缩容、升级、监控告警、参数配置、日志查看、巡检，24.0 改成了 server-agent 架构，不再依赖 SSH 互信。但它是闭源的商业产品。SelectDB 宣布过免费开放，下载入口在企业版下载页面，可免费不等于开源，源码至今没有公开。
 
-#### 3.7.1 查询交互
+这就有意思了。Doris 的开源协议更开放，存算分离、倒排索引、实时更新这些核心特性也都在开源版里，这一点 CK 不如它。可到了运维工具这一层，情况反了过来：CK 的管理工具是社区补的，Doris 的管理工具是厂商卖的。想要一个趁手的 Doris 集群管理工具，要么用 SelectDB 给的闭源二进制，要么自己写；CK 这边，社区已经给了好几个能用的开源方案。选型时值得先问自己一句：你在意的到底是内核开源，还是整套方案开源。
 
-**Doris 兼容 MySQL 协议，这带来的接入成本差异常被忽略。**
+### SDK 和驱动
 
-所有 MySQL 客户端直接能连（Navicat、DBeaver、DataGrip、命令行的`mysql`），所有 BI 工具直接能接（Tableau、Superset、帆软、Quick BI），所有语言的 MySQL 驱动直接能用，所有 ORM 直接能跑。运维排查问题时一句`mysql -h host -P 9030 -u root`就进去了，不用装任何额外东西。
+Doris 在这一层直接复用了 MySQL 驱动。任何语言、任何框架，能连 MySQL 就能连 Doris，Java 用 `mysql-connector-java`，Go 用 `go-sql-driver/mysql`，Python 用 `PyMySQL`，不需要任何 Doris 专属的 SDK，ORM 也直接能用。另外还有 Flink/Spark Connector 和 Arrow Flight SQL，大批量拉数据比 MySQL 协议快很多。
 
-对于需要在企业内大范围推广的系统，这意味着业务方的 BI 工程师不必学习新语法，存量报表系统也不需要改造。这部分成本很难体现在跑分里，但在实际推进中往往占据不小的比重。
+CK 全是自己造的轮子：`clickhouse-go`、`clickhouse-jdbc`、`clickhouse-connect`、`clickhouse-cpp`、`clickhouse-rs`，官方维护，质量都不错。走 Native 协议性能明显好于 HTTP，支持列式批量写入、异步插入、查询进度回调，批量写入的吞吐很能打，clickhouse_sinker 就是基于 clickhouse-go 写的。但冷门语言基本没有官方支持。Doris 赢在广度，CK 赢在深度。
 
-CK 使用自己的 SQL 方言和协议，也提供 MySQL 兼容端口（`mysql_port`），但兼容范围有限，部分语法和函数无法直接复用。DBeaver 等客户端通常需要专用驱动，一些 BI 工具也缺少原生支持。`ARRAY JOIN`、`-If`/`-Array`/`-State`组合子和`ANY INNER JOIN`等语法很有表现力，但学习和迁移成本同样需要计入选型。
+### 二次开发
 
-CK 的补偿是`clickhouse-client`本身极其好用。实时进度条（显示已扫描行数、速度、剩余时间）、几十种输出格式（`Pretty`、`PrettyCompact`、`JSONEachRow`、`CSV`、`Vertical`……）、多行编辑、语法高亮、查询历史。用惯了之后再用`mysql`客户端会觉得回到了石器时代。
+回到开头说的那个戏剧性：基于 CK 魔改的二开版本数不胜数，Doris 几乎没有。字节的 ByteHouse，阿里云、腾讯云、华为云各自的托管版，Altinity 的企业版，嵌入式的 chdb，再加上数不清的没对外发布的企业内部版本。
 
-在企业内部推广时，Doris 的 MySQL 兼容性能显著降低接入成本；直接操作数据库时，CK 客户端提供的进度、格式和诊断信息更丰富。面向数百名用户的平台，「能否复用现有工具和驱动」往往比小幅性能差异更重要。
+CK 为什么这么容易二开？单体 C++，一个二进制跑起来就是完整的数据库，改哪编哪都很直接；表引擎、函数、格式、磁盘都是插件化注册的，加一个自己的实现不用动核心；Apache 2.0 加上社区治理约束弱，想改就改，想发就发。Doris 是 FE(Java) + BE(C++) 双语言架构，一个功能往往要同时动两边，还要处理中间的 Thrift 接口，改起来成本高得多；ASF 的治理框架下，社区也更倾向把改动贡献回主干。唯一分出去的 StarRocks，那是分裂，不是二开，而且分完之后两家闹得水火不容。
 
-#### 3.7.2 执行计划
+被大量二开，至少说明代码结构清晰到别人改得动。但对使用方来说是两面的：A 云上的 CK 和 B 云上的 CK 行为可能不一样，社区经验未必适用于手上的魔改版，出了问题上游也难介入。对需要私有化交付、深度定制的厂商来说，CK 的可改造性是实打实的价值。
 
-CK 的 EXPLAIN 家族信息量极大：
+### 可观测生态
 
-- `EXPLAIN` / `EXPLAIN AST` / `EXPLAIN SYNTAX`：语法树和改写后的 SQL
-- `EXPLAIN PLAN`：逻辑计划
-- `EXPLAIN PIPELINE`：物理执行管道，能看到每个算子有几路并行
-- `EXPLAIN ESTIMATE`：预估会读多少 part、多少 mark、多少行
-- `EXPLAIN indexes=1`：索引使用情况，主键索引裁剪掉了多少 granule，跳数索引又裁掉了多少
+Doris 在可观测这块的能力是「支持被监控」：FE 和 BE 各自暴露 Prometheus endpoint，官方给 Grafana Dashboard 模板，中规中矩。CK 当然也有这些，内置 Prometheus endpoint，有官方的 Grafana 数据源插件。
 
-再配合`SET send_logs_level='trace'`，执行过程中的每一步都会打到客户端，选中了哪些 part、每个索引过滤后剩多少 mark、每个阶段耗时多少。调优时信息密度极高。
+但 CK 更重要的身份，是可观测生态的后端存储。CK 官方的 ClickStack，开源 APM SigNoz、Uptrace，被 CK 收购的 HyperDX，还有 Highlight.io、Coroot，都把 CK 选作存储引擎。云杉网络的 Deepflow 2021 年起就用 CK 替代了 InfluxDB 和 ES，收敛日志、指标、追踪三种数据。自建的大规模案例也不少：Tesla 用 CK 搭了代号 Comet 的可观测平台替换 Prometheus，为了不重写存量的 dashboard 和告警，自研了 PromQL 到 SQL 的转译层；Anthropic 在 Claude 3.5 之后可观测系统被写入量压垮，最后迁到了气隙部署的 ClickHouse。
 
-但门槛也高。要看懂`EXPLAIN PIPELINE`的输出，你得先理解 CK 的算子模型和并行执行机制；要看懂 trace 日志，你得知道 granule、mark、part 这些概念之间的关系。这不是一个新手能上手的东西。
+撑起这个地位的，正是前面讲的系统表、压缩比、聚合性能和 TTL 降采样，每一样都是可观测场景的刚需。所以人们聊可观测时，拿来跟 CK 比的往往是 VictoriaMetrics，而不是 Doris。Doris 也开始在可观测上发力，日志检索做得相对完善（倒排索引加 VARIANT），指标和 trace 还有很长的路要走。
 
-Doris 的`EXPLAIN`和 Query Profile 更结构化，有 Web UI 展示，各阶段耗时、行数、内存一目了然，还能看到 CBO 估算的代价和实际值的偏差。看懂的门槛低得多。
+### 云原生
 
-CK 的信息更全，Doris 的更能看懂。这个差异其实是两家整体气质的缩影。
+K8s 这块两边都有 operator。CK 这边 Altinity 的 [clickhouse-operator](https://github.com/Altinity/clickhouse-operator) 是事实标准，用了很多年，集群定义、配置管理、滚动升级、PVC 管理、Keeper 集成都很完备。Doris 社区的 doris-operator 起步晚一些，基本能力都有。
 
-#### 3.7.3 系统表
+但长期看可能是反过来的。CK 开源版是存算一体，节点有状态，上了 K8s，Pod 的弹性伸缩受限于 PVC 和数据分布，扩容还是绕不开前面说的数据均衡难题，K8s 能帮的主要是部署编排。Doris 3.0 存算分离以后 BE 是无状态的，计算节点随起随停，这才是 K8s 真正擅长的场景。现在就要上 K8s，CK 的 operator 更成熟；规划未来几年的部署形态，Doris 的架构更对路。
 
-**CK 把内部状态几乎全部暴露成了可查询的系统表。**
+### 商业支持
 
-CK 几乎把所有内部状态都做成了可以用 SQL 查询的系统表：
+商业支持不算内核能力，但在国内 ToB 项目里往往占很高的权重。
 
-- **查询与执行**：`query_log`（每条查询的完整记录）、`query_thread_log`、`processes`（实时运行中的查询）、`query_views_log`
-- **存储**：`parts`（每个 part 的行数、大小、压缩前后字节数）、`part_log`（part 的每一次创建、合并、下载、删除）、`columns`（每列的压缩比！）
-- **后台任务**：`merges`（正在进行的合并）、`mutations`（ALTER 的执行进度）、`replication_queue`、`replicated_fetches`
-- **指标**：`metrics`（当前值）、`events`（累计计数）、`asynchronous_metrics`（周期采集的系统指标）
-- **诊断**：`errors`（各类错误的累计次数）、`text_log`（服务端日志，可以用 SQL 查日志！）、`stack_trace`
-- **配置**：`settings`、`merge_tree_settings`、`disks`、`storage_policies`、`clusters`、`macros`
-- **甚至还有数据生成器**：`system.numbers`、`system.zeros`，造测试数据一句 SQL 搞定
+ClickHouse Inc. 的势头很猛：2025 年 5 月 C 轮 3.5 亿美元，估值 63.5 亿；2026 年 1 月 D 轮 4 亿美元，估值 150 亿美元，不到一年翻了一倍多；Cloud 客户超过 3000 家，同期还收购了 Langfuse。不过也有冷静的声音，CB Insights 记录 CK 2025 年营收 8800 万美元，对应 150 亿的估值，这个倍数显然是被 AI 叙事推上去的。SelectDB/VeloDB 那边没看到公开的新一轮融资。
 
-这套东西的好处是，你不需要任何外部工具就能把 CK 自己查明白。想知道哪张表压缩比最差，查`system.columns`；想知道 merge 为什么跟不上，查`system.merges`和`system.part_log`；想知道昨天哪条 SQL 把内存打爆了，查`system.query_log`按`memory_usage`排序。ckman 的原生监控就是直接读这些系统表实现的，一行埋点都不用加。
+可对国内用户来说，融资和估值转化不成本地支持。CK 官方对国内客户的支持相对较弱，中文文档滞后，社区提 issue 响应看运气，商务上主推的 Cloud 在国内又基本用不了，真出了问题，你能依靠的是社区、云厂商，或者专门的技术支持团队。SelectDB 是国内公司，中文支持、驻场、定制开发、7×24 响应都更容易落地，政企、金融这些需要强技术支持的行业尤其看重这个。
 
-这套自省能力也是 CK 在可观测领域被广泛采用的基础之一，4.4 节还会再提到。
+还有一个风险得提一句。150 亿美元的估值，对应的是投资人对 Cloud 收入曲线的预期，不是开源社区的活跃度。SharedMergeTree 没进开源版已经是事实，以后还会有哪些能力被划进 Cloud，谁也说不准。如果你的方案强依赖开源版的长期演进，这一点要算进去。
 
-Doris 这边是`information_schema` + `SHOW PROC '/...'`那一套。`information_schema`是 MySQL 标准的元数据视图，`SHOW PROC`能看集群拓扑、tablet 分布、导入作业状态。够用，但覆盖面和信息密度跟 CK 差着量级，而且`SHOW PROC`的输出是给人看的，不方便用 SQL 做二次加工。
+### 其他开源组件
 
-系统表的覆盖范围和可查询性，是 CK 相当突出的优势。
+两边周边的长法很不一样。CK 这边大多是社区自发的：我写的 clickhouse_sinker 和 ckman，嵌入式的 chdb，官方的 clickhouse-local，clickhouse-backup，Altinity 全家桶。Doris 那边以官方规划为主：Flink/Spark Connector，DataX、SeaTunnel 插件，ccr-syncer，doris-streamloader。CK 的周边杂乱，但覆盖长尾，你遇到的奇怪需求很可能已经有人写过工具；Doris 的周边整齐规范，但有缺口，缺的只能等排期。这和二开那件事是同一个逻辑。
 
-## 4. 生态周边
+## 一份过时说法的清单
 
-### 4.1 ckman vs Doris Manager
+写这篇的时候，我核实了很多流传很广的说法，发现相当一部分已经不成立了，包括我自己以前的一些认知。技术选型最怕的就是拿三年前的结论做今天的决策：
 
-两家都有集群管理工具，但出身完全不同。
-
-**ckman**是笔者参与开发的开源项目（[housepower/ckman](https://github.com/housepower/ckman)），前端 Vue、后端 Go。能力覆盖：
-
-- **集群全生命周期**：部署、升级（含滚动升级）、销毁、启停、节点增删，Web 和 API 双通道
-- **表与数据治理**：分布式表管理、分区、TTL、物化视图、DML、数据归档、purge
-- **备份恢复**：定时策略、增量去重，支持本地和 S3
-- **权限**：三级 RBAC + JWT + 客户端 IP 绑定
-- **高可用**：多实例部署 + Nacos 主节点选举，持久层支持 MySQL/PostgreSQL/达梦/SQLite
-- **监控**：原生直读 CK 系统表，开箱即用；Prometheus/Grafana 可选接入
-- **逻辑集群**：把多个物理集群抽象成统一视图（见 2.1.5）
-
-**Doris Manager**（现在叫 Cluster Manager for Apache Doris / SelectDB Manager）由 SelectDB 出品，能力也很全面：部署和接管集群、实时查看运行状态、扩缩容、升级重启、监控告警、参数配置、日志查看、任务审计、集群巡检。24.0 版本改成了 server-agent 架构（此前 23.x 依赖 SSH 互信，对于不允许在内网使用 SSH 互信的高安全客户不适用），agent 装在每个节点上，采集主机和进程指标主动上报，Server 和 Agent 之间用 HTTP + SSL 通信。
-
-但它是闭源的商业产品。SelectDB 曾宣布 Doris Manager「免费开放」以回馈社区，下载入口在企业版下载页面——但免费不等于开源，源码至今未公开。
-
-这里有个值得玩味的对照，恰好呼应 1.1 节讲的那个「戏剧性」：
-
-> CK 的管理工具是社区补的，Doris 的管理工具是厂商卖的。
-
-Doris 的开源协议更开放、核心特性（存算分离、倒排索引、实时更新）也确实都在开源版里，这一点 2.1.8 已经说过 CK 不如它。但到了运维工具这一层，情况反了过来，你想要一个趁手的 Doris 集群管理工具，要么用 SelectDB 给的闭源二进制，要么自己写；而 CK 这边，社区已经给了好几个能用的开源方案。
-
-这一层没有绝对的赢家，但开源与闭源的边界，两家的划法完全不同。选型时值得先问自己一句：你在意的到底是内核开源，还是整套方案开源。
-
-### 4.2 SDK 与驱动
-
-**Doris 在这一层直接复用了 MySQL 驱动。**
-
-任何语言、任何框架，只要能连 MySQL 就能连 Doris。Java 用`mysql-connector-java`、Go 用`go-sql-driver/mysql`、Python 用`PyMySQL`、Node 用`mysql2`……不需要任何 Doris 专属的 SDK。ORM 也是直接可用。这是复用 MySQL 生态带来的直接收益，接入成本几乎为零，语言和框架覆盖面也远超任何单独维护的驱动体系。
-
-除此之外 Doris 还提供了 Flink Connector、Spark Connector、以及 Arrow Flight SQL 高速读取接口（大批量拉数据时比 MySQL 协议快很多）。
-
-CK 这边全是自己造的轮子：`clickhouse-go`、`clickhouse-jdbc`、`clickhouse-connect`（Python）、`clickhouse-cpp`、`clickhouse-rs`，官方维护，质量都不错。走 Native 协议的性能明显优于 HTTP，批量写入的吞吐很能打（笔者的 clickhouse_sinker 就是基于 clickhouse-go 实现的）。
-
-差别在于深度和广度的取舍：CK 的驱动能力更深，支持 Native 协议、支持列式批量写入、支持异步插入、能拿到查询进度回调；但覆盖的语言和框架有限，冷门语言基本没有官方支持。
-
-Doris 赢在广度，靠的是 MySQL 生态；CK 赢在深度，靠的是自己造的轮子。
-
-### 4.3 基于开源版本的二开
-
-这是 1.1 节埋下的那个「戏剧性」的展开：基于 CK 魔改的二开版本数不胜数，而 Doris 几乎没有。
-
-CK 的二开名单可以列很长：字节的 ByteHouse、阿里云/腾讯云/华为云各自的托管版、Altinity 的企业版、嵌入式的 chdb、以及数不清的没有对外发布的企业内部版本。
-
-为什么 CK 这么容易被二开？
-
-1. **单体 C++架构，无外部依赖**。一个二进制跑起来就是完整的数据库，改哪里、编哪里都很直接
-2. **代码模块化程度高**。表引擎、函数、聚合函数、格式、磁盘都是插件化注册的，加一个自己的实现不需要动核心
-3. Apache 2.0 + 弱社区治理约束。想改就改，想发就发，不需要跟任何人商量
-
-而 Doris 的 FE(Java) + BE(C++)双语言架构，改起来成本高得多，一个功能往往要同时动 Java 和 C++两侧，还要处理两者之间的 Thrift 接口。加上 ASF 的治理框架下，社区更倾向于把改动贡献回主干而不是自己拉分支。唯一分出去的 StarRocks，那是分裂而不是二开，而且分完之后两家闹得水火不容。
-
-这件事该怎么评价？
-
-被大量二次开发这件事，至少说明代码结构清晰到别人改得动。但对使用方来说它是双面的：版本碎片化意味着 A 云上的 CK 和 B 云上的 CK 行为可能并不一致，社区经验和文档未必适用于手上的魔改版，出了问题上游也难以介入。
-
-二次开发能力很难简单判定优劣。但对需要私有化交付和深度定制的厂商而言，CK 的模块化结构和可改造性确实有价值。
-
-### 4.4 可观测生态
-
-两者在可观测领域的差距，不只体现在功能，也体现在生态位置。
-
-Doris 在可观测这块的能力是「支持被监控」：FE 和 BE 各自暴露 Prometheus endpoint，官方提供 Grafana Dashboard 模板，配好就能看到集群的各项指标。这是每个成熟数据库都该有的东西，Doris 做得中规中矩。
-
-CK 当然也有这些：`system.metrics`/`events`/`asynchronous_metrics`三张表覆盖了所有内部指标，内置 Prometheus endpoint，还有 clickhouse_exporter 和官方维护的 Grafana 数据源插件。
-
-**但 CK 更重要的身份是——它本身就是可观测生态的后端存储。**
-
-看看有多少可观测产品把 CK 选作存储引擎：
-
-- **ClickStack**：CK 官方的可观测栈（26.2 起内置 UI）
-- **SigNoz**：开源 APM，全套 log/metric/trace 存在 CK 里
-- **Uptrace**：同上
-- **Grafana**：官方 CK 数据源插件，很多团队直接拿 CK 当日志后端
-- **HyperDX**（已被 CK 收购）、Highlight.io、Coroot……
-
-这个名单还在变长。CK 不是「支持监控」，它是被整个可观测行业选中的存储底座。而支撑这个地位的，正是 3.7.3 讲的那套系统表、2.2.4 的压缩比、2.1.1 的聚合性能，以及 3.4 的 TTL 降采样能力，每一样都是可观测场景的刚需。
-
-这也解释了本文结尾提到的那个现象：人们聊可观测时，拿来跟 CK 对比的是 VictoriaMetrics 而不是 Doris。两者在这个赛道上所处的位置不同：CK 已经是多个可观测产品的既有存储层，Doris 则是近几年才开始发力。Doris 在日志检索方向进展不错（倒排索引加 VARIANT），metric 和 trace 的生态积累还在早期。
-
-就当前生态规模而言，CK 在可观测后端领域领先较多。
-
-### 4.5 云原生生态
-
-K8s 部署这块，两边都有 operator，但成熟度有差距。
-
-**CK**：Altinity 的[clickhouse-operator](https://github.com/Altinity/clickhouse-operator)是事实标准，用了很多年，功能完备（集群定义、配置管理、滚动升级、PVC 管理、ZK/Keeper 集成），社区活跃。官方也提供 Helm chart。ClickHouse Cloud 本身就是云原生架构，很多经验会反哺开源侧。
-
-**Doris**：社区的 doris-operator，起步晚一些，但基本能力都有。
-
-不过有意思的是长期趋势可能是反的。
-
-CK 开源版是存算一体架构，BE 是有状态的，上了 K8s 之后，Pod 的弹性伸缩受限于 PVC 和数据分布，扩容依然要面对 3.2 讲的数据均衡难题。K8s 带来的弹性优势，在 CK 这里发挥不出来多少，更多只是解决了「部署编排」的问题。
-
-而 Doris 3.0 的存算分离架构下，BE 是无状态的。数据在共享存储上，计算节点可以随起随停，配合 Compute Group 做隔离，这才是 K8s 真正擅长的场景，想扩就扩、想缩就缩、按需付费。
-
-就当前成熟度而言 CK 的 operator 更完善；就架构与 K8s 弹性模型的契合度而言，Doris 3.0 的无状态 BE 更对路。这两点分别对应短期可用性和长期演进空间，权重取决于你是现在就要上 K8s，还是在规划未来几年的部署形态。
-
-### 4.6 商业化公司技术支持
-
-商业支持不属于内核能力，却经常在国内 ToB 项目中占据很高权重。
-
-**ClickHouse Inc.**（总部西雅图）的势头很猛：
-
-- 2025 年 5 月 C 轮融资 3.5 亿美元，估值 63.5 亿
-- 2026 年 1 月 D 轮融资 4 亿美元，Dragoneer 领投，估值 150 亿美元，不到一年翻了一倍多
-- 累计融资超过 10 亿美元
-- ClickHouse Cloud 客户超过 3000 家，ARR 同比增长 250%+
-- 同期收购了 Langfuse（开源 LLM 可观测平台）
-
-资本市场用真金白银投了票。不过也有冷静的声音：CB Insights 记录 CK 在 2025 年的营收是 8800 万美元，对应 150 亿估值，这个倍数显然是被 AI 叙事推上去的。
-
-**SelectDB/VeloDB**这边未见公开的新一轮融资进展，估值也未披露。
-
-不过对国内用户来说，融资和估值并不能直接转化为本地支持体验：
-
-- CK 官方对国内客户的支持非常薄弱。中文文档滞后于英文版，社区提 issue 的响应速度看运气，商务上主推 Cloud——而 Cloud 在国内又基本不可用。真出了问题，你能依靠的是社区、云厂商，或者自己
-- SelectDB 是国内公司，中文支持、驻场、定制开发、7×24 响应等交付方式在国内项目中更容易落地
-
-因此需要分别看行业投入和国内落地能力：
-
-- **从行业地位和长期投入看**：CK 的融资规模、客户数量和迭代节奏都处于领先，资本市场给出的认可度更高
-- **从落地支持看**：国内项目里 Doris 的本土化优势明显，这一点在政企、金融等需要强技术支持的行业尤其重要
-
-这里也有一个属于推测范畴的风险项：150 亿美元的估值对应的是投资人对 Cloud 收入曲线的预期，而不是开源社区的活跃度。SharedMergeTree 未进入开源版（见 2.1.8）是已经发生的事实，未来还会有哪些能力被划入 Cloud 则无从预判。如果你的方案强依赖开源版长期演进，这一点值得纳入风险评估。
-
-### 4.7 其他开源组件
-
-两边周边生态的生长方式很不一样。
-
-**CK 侧**（大量社区自发项目）：
-
-- clickhouse_sinker：Kafka → CK 的高性能写入组件（笔者作品），负责攒批、去重、路由、失败重试
-- **ckman**：集群管理（笔者作品，见 4.1）
-- **chdb**：嵌入式 CK，像用 SQLite 一样在进程内跑 CK
-- **clickhouse-local**：官方的单文件查询工具，可以直接查 CSV/Parquet/JSON
-- clickhouse-backup：备份恢复（见 3.3）
-- **Altinity 全家桶**：operator、backup、各类运维工具
-
-**Doris 侧**（官方规划为主）：
-
-- Flink Connector / Spark Connector
-- DataX、SeaTunnel 插件
-- ccr-syncer（见 2.1.5）
-- doris-streamloader
-
-CK 的周边是社区自发生长出来的，杂乱但覆盖长尾，你遇到的奇怪需求很可能已经有人写过工具；Doris 的周边是官方统一规划的，整齐规范但有缺口，缺的部分只能等排期。这跟 4.3 讲的二开现象是同一个逻辑的两面。
-
-## 总结
-
-### 5.1 场景速查
-
-先按硬约束过一遍。下面这棵树上的每个判断点，都对应前文的某一节；能在前几步就分流出去的场景，往往不需要再纠结跑分。
-
-<figure class="dfig">
-<img class="dfig-l" src="/diagrams/doris-06.light.svg" alt="5.1 场景速查">
-<img class="dfig-d" src="/diagrams/doris-06.dark.svg" alt="5.1 场景速查">
-</figure>
-
-下表把前文的讨论压缩成一份索引，用于快速定位到对应章节，不建议脱离上下文直接当作选型结论。表中的「打平」不代表两家做法相同，只表示在该维度上没有明显优劣。
-
-| 场景 / 能力 | 通常更适合 | 章节 |
-| --- | --- | --- |
-| 大数据量聚合分析、单查询低延迟 | **ClickHouse** | 2.1.1 |
-| 高并发点查、几百人同时看报表 | **Doris** | 2.1.3 |
-| 全文检索、当 ES 用 | **Doris** | 2.1.4 |
-| 流式加工链路、想省掉 Flink | **ClickHouse** | 2.1.6 |
-| BI 报表提速且不想改 SQL | **Doris** | 2.1.6 |
-| 湖仓联邦查询、跨 catalog JOIN | **Doris** | 2.1.7 |
-| 私有化部署 + 存算分离 | **Doris**（CK 开源版没有） | 2.1.8 |
-| 实时更新、CDC 入库、主键语义 | **Doris**（常为硬约束） | 2.2.2 |
-| 高吞吐追加写入 | 打平（语义 Doris 赢，吞吐不输） | 2.2.3 |
-| 极致压缩、存储成本敏感 | **ClickHouse** | 2.2.4 |
-| 冷热分层，且要求故障不影响服务 | **Doris**（故障隔离更好） | 2.2.5 |
-| 半结构化 / JSON | 打平 | 2.2.6 |
-| 强 SLA 多租户、OS 级资源硬隔离 | **Doris** | 2.3.1 |
-| 精细化查询熔断与配额 | **ClickHouse** | 2.3.2 |
-| 向量检索 / RAG | **Doris** | 2.4 |
-| AI Agent 接入、MCP 生态 | **ClickHouse** | 2.4 |
-| 集群频繁扩缩容 | **Doris**（CK 需外部工具补） | 3.2 |
-| 周期性备份恢复 | 打平（CK 语法更全，无需 broker） | 3.3 |
-| 数据生命周期治理、降采样 | **ClickHouse**（列 TTL + TTL GROUP BY） | 3.4 |
-| 强合规、需要数据脱敏和 SQL 化审计 | **Doris** | 3.6 |
-| 对接存量 BI 工具、全公司推广 | **Doris**（MySQL 协议） | 3.7.1 |
-| 自诊断、自监控、可观测底座 | **ClickHouse**（系统表） | 3.7.3、4.4 |
-| 信创、arm/Kylin 环境 | **Doris** | 1.3 |
-| 需要深度定制、二次开发 | **ClickHouse** | 4.3 |
-| 国内本土化技术支持 | **Doris** | 4.6 |
-
-### 5.2 一份「过时论调」清单
-
-写这篇文章时，笔者核实了大量流传甚广的说法，发现相当一部分已经不成立了，包括我自己此前的一些认知。技术选型最怕的就是拿三年前的结论做今天的决策，所以单独列一份清单：
-
-| 流传的说法 | 现状 |
+| 流传的说法 | 现在的情况 |
 | --- | --- |
-| CK 不支持全文检索 | ❌ 26.2 已 GA，但只是「半个」，无 BM25、不支持模糊匹配，且 GA 后仍在频繁改名和反复（详见 2.1.4） |
-| CK 不擅长 JSON | ❌ JSON 类型 25.3 已 GA，纯列式实现，JSONBench 默认配置下排名第一 |
-| CK 没有资源隔离 | ❌ 25.4 引入 CPU slot 调度，层级 workload 模型表达力比 Doris 更强 |
-| CK 依赖 ZooKeeper，运维负担重 | ❌ ClickHouse Keeper 自 21.x 起逐步取代，24.x 后基本无需再部署 ZK |
-| CK 大表 JOIN 不行 | ❌ 24.7 起持续优化 parallel hash join，25.7 趋于稳定，官方压测 9 表 JOIN 无压力 |
-| runtime filter 是 Doris 独有的加速能力 | ❌ CK 25.10 引入，2026 年 2 月起默认开启 |
-| CK 开 ZSTD 必然触发 too many parts | ❌ 源自单一迁移案例。根因是 merge 跟不上写入，不是压缩算法（详见 2.2.4） |
-| Doris 写入不需要攒批 | ❌ rowset 等价于 part，高频微批同样撞版本数限制。差别在于攒批被内建进了导入通道且受事务保护 |
-| Doris 的 CCR 开箱即用 | ❌ 每个 job 需 FE 预留 4GB+堆内存、binlog 需手动限流、tmp partition 会中断同步，实用性一般 |
-| CK 的物化视图就是个预计算缓存 | ❌ CK 的增量 MV 按写入块触发，可承担流式转换并持久化聚合状态；Doris 虽有`AGG_STATE`等能力，但整体机制和适用方式不同（详见 2.1.6） |
+| CK 不支持全文检索 | 26.2 已 GA，但只算半个：没有 BM25，模糊匹配用不上索引，GA 后还在频繁改名 |
+| CK 不擅长 JSON | JSON 类型 25.3 已 GA，纯列式实现，JSONBench 默认配置下排第一 |
+| CK 没有资源隔离 | 25.4 引入 CPU slot 调度，层级 workload 模型表达力比 Doris 强 |
+| CK 依赖 ZooKeeper，运维负担重 | ClickHouse Keeper 自 21.x 起逐步取代，24.x 后基本不用再部署 ZK |
+| CK 大表 JOIN 不行 | 24.7 起持续优化 parallel hash join，25.7 趋于稳定 |
+| runtime filter 是 Doris 独有的 | CK 25.10 引入，2026 年 2 月起默认开启 |
+| CK 开 ZSTD 必然 too many parts | 源自单一迁移案例，根因是 merge 跟不上写入，不是压缩算法 |
+| Doris 写入不需要攒批 | rowset 相当于 part，高频微批一样撞版本数限制 |
+| Doris 的 CCR 开箱即用 | 每个 job 要预留 4GB 以上 FE 堆内存，binlog 要手动限，tmp partition 会中断同步 |
+| CK 的物化视图就是预计算缓存 | 增量 MV 按写入块触发，能做流式转换、持久化聚合状态 |
 
-这份清单本身也会过时。唯一可靠的做法是拿自己的数据集实测，其次是去看两家的 release note 和源码，而不是看两年前的对比文章，包括这一篇。
+这份清单本身也会过时。最靠谱的还是拿自己的数据测，其次是看两家的 release note 和源码，而不是看两年前的对比文章，包括这一篇。
 
-### 5.3 最后
+## 我推 ClickHouse
 
-CK 和 Doris 的能力边界正在接近，但两者的设计重心并没有因此消失。CK 围绕有序存储、向量化执行和追加写入不断强化分析效率，很多高级能力也允许使用者深入控制；Doris 则把更多精力放在 MPP 调度、更新语义、自动运维和 MySQL 生态兼容上，优先降低企业落地成本。
+一项一项比下来，Doris 和 ClickHouse 之争，有点像自动挡新能源和手动挡性能跑车之间的较量。Doris 秉承着中国人中庸的思想，什么都想做，什么都是中上等，不冒尖，也没有特别明显的短板，上限不顶尖，下限也不低。CK 是手动挡跑车，会调教的人觉得强得离谱，不会用的人甚至觉得不如 MySQL。它是典型的偏科生，擅长的领域一骑绝尘，短板的地方又拉胯得让人没法直视。
 
-这种差异在可观测场景中尤其明显。CK 已经被大量日志、指标和 APM 产品用作存储后端，聚合性能、压缩、TTL 和系统表共同构成了它的生态基础。Doris 的日志检索能力进步很快，但在指标和 Trace 生态中仍处于追赶位置。即便如此，日志场景也不能只按产品名称选择：侧重全文检索时，Doris 的倒排索引更成熟；侧重扫描、聚合和生命周期治理时，CK 更有优势。
+那到底选哪个？如果问我，我推 ClickHouse。
 
-选型时可以先看几个硬约束：是否需要高频更新和主键语义，是否要频繁扩缩容，是否依赖私有化存算分离，是否需要全文搜索，以及查询主要是高并发短查询还是少量重聚合。这些条件往往比功能清单和单项跑分更能决定结果。
+我是做 ClickHouse 的，这个结论可能不让人意外，但它不全是屁股决定脑袋。理由一半在前面的对比里：聚合查询、压缩比、增量物化视图、TTL 和降采样、系统表，这些是分析和可观测场景天天要用的东西，CK 都是明确领先的那一方。而 CK 的那些短板，并发、更新、扩容、跨机房，很多场景其实碰不到，碰到了也有成熟的绕法。
 
-如果数据以追加写为主，核心负载是大规模聚合、可观测分析或时序降采样，并且团队有能力管理分片和参数，CK 通常更合适。如果需要 CDC 更新、高并发 BI、自动均衡、MySQL 工具链或信创环境适配，Doris 通常更稳妥。处在两者交集中的业务，则应使用自己的数据分布、查询集合和故障场景完成 POC，而不是直接套用厂商或本文的结论。
+另一半理由是我熟它。这么多年下来，CK 的坑我基本都踩过一遍，知道它在哪里会塌，塌了怎么兜：并发不够就降 `max_threads`、单分片横向加节点；扩容搬不动数据就用权重倾斜，或者 ckman 去搬；写入扛不住就在 sinker 那一层攒批。一个我知道边界在哪的数据库，用起来比一个看起来什么都好、但边界在哪我还摸不清的数据库心里踏实得多。Doris 有些地方看起来确实很强，这个我不否认，但也可能只是我用得不深，很多坑还没碰到。
 
-归根结底，CK 倾向于把更多控制权交给使用者，以换取性能和表达力；Doris 倾向于把更多复杂度收进系统内部，以换取一致的使用和运维体验。选型的关键不是谁的功能更多，而是哪一种复杂度更适合你的团队承担。
+推 CK 不等于无脑上 CK。下面这几种情况，我会直接让人选 Doris：
+
+- 对信创有非常严格的要求，无脑入 Doris 就对了
+- 业务里有高频更新、CDC 入库，或者需要唯一键约束
+- 几百人同时看报表，还要对接一堆存量 BI 工具和 MySQL 工具链，在公司里大范围推广
+- 必须私有化部署存算分离
+- 集群要频繁扩缩容，又没有专门的人去管分片和数据均衡
+- 要拿它当 ES 用，做真正的全文检索
+- 强合规场景，需要原生的数据脱敏和 SQL 化审计
+
+如果你的业务刚好卡在两者中间，那就别看我的结论，也别看厂商的，拿自己的数据、自己的查询、自己的故障场景做一轮 POC。
+
+---
+
+**相关**：[日志检索三家实测](/clickhouse/comparison/log-search-ck-doris-es) · [存算分离横评：谁真的做到了](/clickhouse/comparison/storage-compute-separation) · [扩容之后为什么不自动做数据均衡](/clickhouse/tooling/why-not-auto-rebalance)

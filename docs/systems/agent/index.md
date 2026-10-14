@@ -5,8 +5,8 @@
 <div class="posts">
 
 <a class="post" href="/systems/agent/memory-leak-tool-blind-spots">
-<span class="post-t">进程退出时一个字节都没漏，跑起来却一直在涨</span>
-<span class="post-d">valgrind、mtrace、bcc <code>memleak</code>、手写 hook 各自结构上看不见什么。常驻进程 + <code>apr_pool</code> 内存池，恰好落在退出时对账类工具的判据之外。</span>
+<span class="post-t">内存泄漏排查：为什么 valgrind 查不出内存池里的泄漏</span>
+<span class="post-d">valgrind、mtrace、bcc <code>memleak</code>、自己写 hook，各自漏在哪。用 <code>apr_pool</code> 的常驻进程，退出时一查干干净净，跑起来却在涨。</span>
 </a>
 
 <a class="post" href="/systems/agent/dwarf-version-mismatch">
