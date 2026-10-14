@@ -73,7 +73,7 @@ clickhouse-go / ch-go：
 
 ## 最近在做
 
-在调研 Iceberg。还在看文档和搭环境的阶段，没有能拿出来说的结论，有了再写。
+在调研 Iceberg，看它能不能接替现在这套冷数据方案。现在的做法是把冷数据从 ClickHouse 导成 Parquet 放进 S3，再拿 chDB 当一个独立的查询端，写在 [chDB + S3 Parquet](/clickhouse/cold-storage/chdb) 里。裸 Parquet 没有表一级的元数据，查询能裁掉多少，全看路径怎么分区、文件内的统计信息有多准，有点吃建表时的手艺。我想看看换成 Iceberg，靠它的快照和清单统计能不能把冷查询再提一截，前提是冷查询这套系统仍然独立于 ClickHouse 集群，不要又把依赖绕回去。还在看文档和搭环境的阶段，有结论了再写。
 
 另一件是想把 ARM 的 ClickHouse 安装包分发这件事做起来。官方 CI 一直在构建 `aarch64v80compat`，可它只活在流水线产物里，能拉到的永远是 master，没有任何 release 或者 LTS 渠道。信创项目要的是明确的版本号和支持周期，这个渠道不存在，这个能力对生产就等于不存在。来龙去脉写在 [ARM 上一跑就 SIGILL](/clickhouse/vendor/kylin-arm-instruction-baseline) 里，现在在评估构建和分发具体怎么做。
 
