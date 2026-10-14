@@ -1,6 +1,6 @@
 # Doris
 
-站上大部分内容是 ClickHouse，但我手里有一个金融行业的日志平台跑在 Apache Doris 上，日增百 TB 级。这一栏放的是在那上面实测出来的东西。
+站上大部分内容是 ClickHouse，但我手里有一个金融行业的日志平台跑在 Apache Doris 上，日增百 TB 级。这一栏放的是在那上面实测出来的东西，归在[其他引擎](/others/)底下。
 
 和[选型与横评](/clickhouse/comparison/)那一栏的分工：那边是把 Doris 和 ClickHouse 放在一起比，回答该选哪个；这边不比，就是把 Doris 自己的某个机制拆开看，它怎么运作，边界在哪。
 
@@ -10,12 +10,12 @@
 
 <div class="posts">
 
-<a class="post" href="/doris/storage-policy-s3">
+<a class="post" href="/others/doris/storage-policy-s3">
 <span class="post-t">Doris 的存储策略：冷数据转 S3 之后，这几件事得先知道</span>
 <span class="post-d">策略建了就删不掉，换个 S3 得重建表，cooldown 算的是写入时间不是业务时间。好消息是 S3 挂了不影响集群健康。</span>
 </a>
 
-<a class="post" href="/doris/cross-datacenter-query">
+<a class="post" href="/others/doris/cross-datacenter-query">
 <span class="post-t">Doris 跨数据中心查询：查视图还是查底表，差别在执行计划里</span>
 <span class="post-d">同一个聚合查询，查视图只有过滤能下沉，23 万行全量跨机房；查底表自己写两层聚合，跨机房的只有 19 行。</span>
 </a>

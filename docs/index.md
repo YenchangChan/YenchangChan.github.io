@@ -2,6 +2,14 @@
 pageClass: home-page
 ---
 
+<div class="profile">
+<img src="/avatar.jpg" alt="陈衍长的头像">
+<p class="p-name">陈衍长</p>
+<p class="p-handle">YenchangChan · 禹鼎侯</p>
+<p class="p-bio">做 ClickHouse 的工具和集群运维，场景集中在金融和信创。</p>
+<p class="p-meta"><a href="https://github.com/YenchangChan">GitHub</a> · <a href="https://www.zhihu.com/people/yu-ding-hou">知乎</a> · <a href="/about/">关于我</a></p>
+</div>
+
 # 禹鼎侯
 
 <p class="hero-line">做 ClickHouse 的存储与集群运维，主要场景是金融和信创。</p>
@@ -141,12 +149,4 @@ ReplicatedMergeTree 防的是节点故障，防不了误删和逻辑错误。这
 
 <hr class="hr-soft" />
 
-<div class="whoami">
-
-**陈衍长 / 禹鼎侯**，做 ClickHouse 的工具（[ckman](https://github.com/housepower/ckman) 第一作者、[clickhouse_sinker](https://github.com/housepower/clickhouse_sinker) 维护者），也扛 ClickHouse 的线上故障。2020 年起只做这一件事，场景集中在金融和信创。
-
 这里写的都是自己踩过的：能复现的给命令，不能复现的说清楚边界，判断错的地方也留着不删。
-
-[关于我](/about/) · [GitHub](https://github.com/YenchangChan) · [知乎](https://www.zhihu.com/people/yu-ding-hou)
-
-</div>

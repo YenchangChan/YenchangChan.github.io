@@ -14,7 +14,7 @@ function readingStats(src: string) {
   return { words, minutes: Math.max(1, Math.round(cjk / 450 + latin / 200)) }
 }
 
-// ClickHouse 与 Doris 共用这一套侧边栏，Doris 栏就挂在里面
+// ClickHouse 的侧边栏。Doris 等其他引擎单独一套（见 OTHERS_SIDEBAR）
 const CH_SIDEBAR = [
         { text: '版本升级避坑清单', link: '/clickhouse/upgrade-gotchas' },
         { text: '23.8 → 26.3 升级路径评估', link: '/clickhouse/upgrade-23-8-to-26-3' },
@@ -90,13 +90,18 @@ const CH_SIDEBAR = [
             { text: 'OpenObserve：压测实录', link: '/clickhouse/comparison/openobserve-benchmark' },
           ],
         },
+]
+
+// 其他引擎（ClickHouse 之外在生产里跑过的）。以后加 StarRocks 等往这里塞。
+const OTHERS_SIDEBAR = [
+        { text: '概览', link: '/others/' },
         {
           text: 'Doris',
           collapsed: false,
           items: [
-            { text: '概览', link: '/doris/' },
-            { text: '存储策略与 S3', link: '/doris/storage-policy-s3' },
-            { text: '跨数据中心查询', link: '/doris/cross-datacenter-query' },
+            { text: '概览', link: '/others/doris/' },
+            { text: '存储策略与 S3', link: '/others/doris/storage-policy-s3' },
+            { text: '跨数据中心查询', link: '/others/doris/cross-datacenter-query' },
           ],
         },
 ]
@@ -153,16 +158,16 @@ export default defineConfig({
 
   themeConfig: {
     nav: [
-      { text: 'ClickHouse', link: '/clickhouse/', activeMatch: '/(clickhouse|doris)/' },
-      { text: '系统底层', link: '/systems/', activeMatch: '/systems/' },
-      { text: 'Field Notes', link: '/notes/', activeMatch: '/notes/' },
-      { text: '关于', link: '/about/' },
+      { text: '<svg viewBox="0 0 24 24" fill="currentColor" style="width:15px;height:15px;vertical-align:-2px;margin-right:6px" xmlns="http://www.w3.org/2000/svg"><path d="M21.333 10H24v4h-2.667ZM16 1.335h2.667v21.33H16Zm-5.333 0h2.666v21.33h-2.666ZM0 22.665V1.335h2.667v21.33zm5.333-21.33H8v21.33H5.333Z"/></svg>ClickHouse', link: '/clickhouse/', activeMatch: '/clickhouse/' },
+      { text: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px;vertical-align:-2px;margin-right:6px" xmlns="http://www.w3.org/2000/svg"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></svg>其他引擎', link: '/others/', activeMatch: '/others/' },
+      { text: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px;vertical-align:-2px;margin-right:6px" xmlns="http://www.w3.org/2000/svg"><path d="M12 20v2"/><path d="M12 2v2"/><path d="M17 20v2"/><path d="M17 2v2"/><path d="M2 12h2"/><path d="M2 17h2"/><path d="M2 7h2"/><path d="M20 12h2"/><path d="M20 17h2"/><path d="M20 7h2"/><path d="M7 20v2"/><path d="M7 2v2"/><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg>系统底层', link: '/systems/', activeMatch: '/systems/' },
+      { text: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px;vertical-align:-2px;margin-right:6px" xmlns="http://www.w3.org/2000/svg"><path d="M13.4 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7.4"/><path d="M2 6h4"/><path d="M2 10h4"/><path d="M2 14h4"/><path d="M2 18h4"/><path d="M21.378 5.626a1 1 0 1 0-3.004-3.004l-5.01 5.012a2 2 0 0 0-.506.854l-.837 2.87a.5.5 0 0 0 .62.62l2.87-.837a2 2 0 0 0 .854-.506z"/></svg>Field Notes', link: '/notes/', activeMatch: '/notes/' },
+      { text: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px;vertical-align:-2px;margin-right:6px" xmlns="http://www.w3.org/2000/svg"><path d="M18 20a6 6 0 0 0-12 0"/><circle cx="12" cy="10" r="4"/><circle cx="12" cy="12" r="10"/></svg>关于', link: '/about/' },
     ],
 
     sidebar: {
-      // Doris 栏挂在 ClickHouse 这套侧边栏里，所以 /doris/ 复用同一份（见文件末尾）
       '/clickhouse/': CH_SIDEBAR,
-      '/doris/': CH_SIDEBAR,
+      '/others/': OTHERS_SIDEBAR,
       '/systems/': [
         { text: '概览', link: '/systems/' },
         {

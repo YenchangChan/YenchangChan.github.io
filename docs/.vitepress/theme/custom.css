@@ -736,8 +736,7 @@
 
 /* ─────────────── 14. 首页 ─────────────── */
 
-/* 首页没有左侧栏，正文被顶在左边、右边空一大块。
-   目录对一张落地页也没什么用 —— 收掉，正文居中放宽 */
+/* 首页没有导航侧栏，右侧目录也收掉 —— 左边的空位留给资料栏 */
 .home-page .VPDoc .aside {
   display: none;
 }
@@ -751,7 +750,98 @@
   max-width: 100%;
 }
 
-@media (min-width: 960px) {
+/* ── 左侧资料栏：GitHub 主页式，头像 + 名字 + 简介 + 链接 ──
+   这是「栏」不是「卡」，不加边框底色。宽屏占住左栏（见下方媒体查询），
+   窄屏退化成页首的一个普通块，头像限宽免得压住版面 */
+.profile {
+  margin: 0 0 1.8rem;
+}
+
+.profile img {
+  display: block;
+  width: 100%;
+  max-width: 200px;
+  border-radius: 50%;
+  border: 1px solid var(--rule-soft);
+}
+
+.profile .p-name {
+  margin: 0.95rem 0 0;
+  font-size: 1.18rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  color: var(--vp-c-text-1);
+}
+
+.profile .p-handle {
+  margin: 0.2rem 0 0;
+  font-size: 0.83rem;
+  color: var(--vp-c-text-3);
+}
+
+.profile .p-bio {
+  margin: 0.75rem 0 0;
+  font-size: 0.89rem;
+  line-height: 1.75;
+  color: var(--vp-c-text-2);
+}
+
+.profile .p-meta {
+  margin: 0.85rem 0 0;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--rule);
+  font-size: 0.85rem;
+  color: var(--vp-c-text-3);
+}
+
+.profile .p-meta a {
+  color: var(--vp-c-text-2);
+  text-decoration: none;
+  border-bottom: 1px solid var(--vp-c-brand-soft);
+  transition:
+    color 0.15s,
+    border-color 0.15s;
+}
+
+.profile .p-meta a:hover {
+  color: var(--vp-c-brand-1);
+  border-bottom-color: currentColor;
+}
+
+/* 中屏（960–1439）：资料栏收瘦到 200px，容器总宽压在 1020，
+   正文列折算下来仍是既定的 ~750 行宽，不缩水 */
+@media (min-width: 960px) and (max-width: 1439px) {
+  .home-page .VPDoc .container {
+    max-width: 1020px;
+  }
+  .home-page .VPDoc .content {
+    max-width: none;
+    min-width: 0;
+    margin: 0;
+  }
+  .home-page .vp-doc > div {
+    display: grid;
+    grid-template-columns: 200px minmax(0, 1fr);
+    column-gap: 2.25rem;
+    align-items: start;
+  }
+  .home-page .vp-doc > div > :not(.profile) {
+    grid-column: 2;
+  }
+  .home-page .vp-doc > div > .profile {
+    grid-column: 1;
+    grid-row: 1 / span 10000;
+  }
+  .home-page .profile img {
+    max-width: none;
+  }
+}
+
+/* 大屏（≥1440）：正文退回 800px 居中 —— 和没有侧栏时一模一样。
+   资料栏脱离文档流，浮进左边距：页宽零变化，「挤」的感觉才真正消失。
+   1440 是临界点：再窄左边距就装不下 200px 的资料栏 + 3rem 间距 */
+@media (min-width: 1440px) {
   .home-page .VPDoc .container {
     max-width: 800px;
   }
@@ -760,9 +850,24 @@
     min-width: 0;
     margin: 0 auto;
   }
+  .home-page .vp-doc > div {
+    position: relative;
+  }
+  .home-page .vp-doc > div > .profile {
+    position: absolute;
+    top: 0;
+    right: 100%;
+    margin-right: 3rem;
+    width: 200px;
+  }
+  .home-page .profile img {
+    max-width: none;
+  }
 }
 
-.home-page .vp-doc > div > h1:first-child {
+/* h1 前面现在站着资料卡，:first-child 认不出 h1 了。
+   首页只有一个 h1，直接点名 */
+.home-page .vp-doc > div > h1 {
   font-size: 2.6rem;
   letter-spacing: -0.02em;
   margin-bottom: 0.5rem;
@@ -829,6 +934,21 @@
   color: var(--vp-c-text-3);
 }
 
+/* 仓库名前面挂 GitHub 标。这四条全是 GitHub 仓库；图标走 currentColor mask，
+   链接变色、暗黑模式都自动跟随。以后要是有非 GitHub 的仓库，给那条 .id
+   加类，把 ::before  mask 收掉即可 */
+.idlinks .id a::before {
+  content: "";
+  display: inline-block;
+  width: 0.95em;
+  height: 0.95em;
+  margin-right: 0.42em;
+  vertical-align: -0.08em;
+  background-color: currentColor;
+  -webkit-mask: url('data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%3E%3Cpath%20d%3D%22M12%20.297c-6.63%200-12%205.373-12%2012%200%205.303%203.438%209.8%208.205%2011.385.6.113.82-.258.82-.577%200-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422%2018.07%203.633%2017.7%203.633%2017.7c-1.087-.744.084-.729.084-.729%201.205.084%201.838%201.236%201.838%201.236%201.07%201.835%202.809%201.305%203.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93%200-1.31.465-2.38%201.235-3.22-.135-.303-.54-1.523.105-3.176%200%200%201.005-.322%203.3%201.23.96-.267%201.98-.399%203-.405%201.02.006%202.04.138%203%20.405%202.28-1.552%203.285-1.23%203.285-1.23.645%201.653.24%202.873.12%203.176.765.84%201.23%201.91%201.23%203.22%200%204.61-2.805%205.625-5.475%205.92.42.36.81%201.096.81%202.22%200%201.606-.015%202.896-.015%203.286%200%20.315.21.69.825.57C20.565%2022.092%2024%2017.592%2024%2012.297c0-6.627-5.373-12-12-12%22%2F%3E%3C%2Fsvg%3E') center / contain no-repeat;
+  mask: url('data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%3E%3Cpath%20d%3D%22M12%20.297c-6.63%200-12%205.373-12%2012%200%205.303%203.438%209.8%208.205%2011.385.6.113.82-.258.82-.577%200-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422%2018.07%203.633%2017.7%203.633%2017.7c-1.087-.744.084-.729.084-.729%201.205.084%201.838%201.236%201.838%201.236%201.07%201.835%202.809%201.305%203.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93%200-1.31.465-2.38%201.235-3.22-.135-.303-.54-1.523.105-3.176%200%200%201.005-.322%203.3%201.23.96-.267%201.98-.399%203-.405%201.02.006%202.04.138%203%20.405%202.28-1.552%203.285-1.23%203.285-1.23.645%201.653.24%202.873.12%203.176.765.84%201.23%201.91%201.23%203.22%200%204.61-2.805%205.625-5.475%205.92.42.36.81%201.096.81%202.22%200%201.606-.015%202.896-.015%203.286%200%20.315.21.69.825.57C20.565%2022.092%2024%2017.592%2024%2012.297c0-6.627-5.373-12-12-12%22%2F%3E%3C%2Fsvg%3E') center / contain no-repeat;
+}
+
 /* ─────────────── 15. 站点外壳 ─────────────── */
 
 .VPNavBar:not(.home.top) {
@@ -838,6 +958,20 @@
 .VPNavBar .title {
   font-weight: 650;
   letter-spacing: -0.01em;
+}
+
+/* 导航图标与文字必须横排：图标内联在 nav text 里（v-html 渲染），
+   窗口窄下来 flex 把链接宽度压小时，文字会被挤到图标下面变成两行。
+   锁成 inline-flex + nowrap，图标和文字是一个不可拆的横排单元 */
+.VPNavBarMenuLink,
+.VPNavScreenMenuLink {
+  flex-shrink: 0;
+}
+.VPNavBarMenuLink > span,
+.VPNavScreenMenuLink > span {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
 }
 
 /* 侧栏：分组标题压住，条目退后，当前项用琥珀左槽标出 */
@@ -952,7 +1086,7 @@
     grid-column: 1;
   }
 
-  .home-page .vp-doc > div > h1:first-child {
+  .home-page .vp-doc > div > h1 {
     font-size: 2rem;
   }
 
@@ -998,25 +1132,6 @@
   color: var(--vp-c-text-3);
   letter-spacing: 0.02em;
   font-variant-numeric: tabular-nums;
-}
-
-/* ── 首页署名块：读完内容之后才出现的「谁写的」 ───────────── */
-.whoami {
-  margin: 2.5rem 0 1rem;
-  padding: 1.1rem 1.3rem;
-  border-left: 3px solid var(--vp-c-brand-1);
-  background: var(--vp-c-bg-soft);
-  border-radius: 0 6px 6px 0;
-}
-.whoami p {
-  margin: 0 0 0.6rem;
-  font-size: 0.93rem;
-  line-height: 1.75;
-}
-.whoami p:last-child {
-  margin-bottom: 0;
-  font-size: 0.86rem;
-  color: var(--vp-c-text-2);
 }
 
 /* ─────────────── 14. 手绘图示 .sk ─────────────── */
