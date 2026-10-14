@@ -458,7 +458,7 @@ diff settings-23.8.tsv settings-26.3.tsv
 
 `system.merge_tree_settings` 同理。`system.server_settings` 可能需要起完整 server 而不是 `local`，按你的版本试。
 
-系统表自己也会变。`system.server_settings` 是 23.x 以后才有的，`is_obsolete` 这类列也是后加的，跨度大的版本做对比，先确认两边都有你要的列，不然查询直接报错。说来也有点讽刺，拿来排查版本差异的工具，自己也有版本差异。
+系统表自己也会变。`system.server_settings` 是 23.x 以后才有的，`is_obsolete` 这类列也是后加的，跨度大的版本做对比，先确认两边都有你要的列，不然查询直接报错。
 
 ### diff 出来之后怎么读
 

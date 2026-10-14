@@ -8,7 +8,7 @@ ClickHouse 的冷热分层，不是调一个参数、配一个 storage policy �
 
 两栏都往深里写，区别在于要不要在几个方案里挑一个。
 
-这一栏讲的是一个架构问题，有好几条路线，重点在取舍：选错了代价是什么，到什么规模该换路。[一次讲透](/clickhouse/deep-dive/) 讲的是一个功能，一条线走到底，重点在机制。要在几条路里挑一条，看这里；只有一个东西但不知道它怎么回事，看那边。
+这一栏讲的是一个架构问题，有好几条路线，重点在取舍：选错了代价是什么，到什么规模该换路。[一次讲透](/clickhouse/deep-dive/) 讲的是一个功能，一条线走到底，重点在机制。
 
 ## 这一栏怎么写
 
@@ -107,7 +107,7 @@ ClickHouse 的冷热分层，不是调一个参数、配一个 storage policy �
 <p class="sk-cap">上半开放格式、下半锁定 ClickHouse；左半低频、右半高频</p>
 </div>
 
-三条路线不是谁替代谁，而是各占一块。选型的时候，先看清楚自己的数据落在哪一块。
+三条路线各占一块，选型的时候先看清楚自己的数据落在哪一块。
 
 ## 业界是怎么做的
 
@@ -117,7 +117,7 @@ Cloudflare 的工程博客多次披露过，他们用 ClickHouse 处理 HTTP ana
 
 B 站、滴滴、携程算是百 TB 级 ClickHouse 集群的典型。共同的做法有三层 storage policy（NVMe → SSD → 对象存储），TTL 触发下沉的时间避开业务高峰，自己写缓存预热脚本，冷数据上基本不让做 mutation。滴滴早期用过 zero-copy，踩了不少坑，后来干脆不省这个存储钱，副本各存各的。
 
-Sentry 的 Snuba 管着几十 PB 的错误追踪数据，他们绕开了 S3 disk，老数据要查就走 BigQuery 或者离线任务，不在 ClickHouse 里查。这个信号挺有意思，规模到了一定程度，干脆不在 ClickHouse 里做冷热分层，反而更省事。
+Sentry 的 Snuba 管着几十 PB 的错误追踪数据，他们绕开了 S3 disk，老数据要查就走 BigQuery 或者离线任务，不在 ClickHouse 里查。规模到了这个量级，干脆不在 ClickHouse 里做冷热分层，反而更省事。
 
 字节跳动是在 S3 Disk 模式扛不住以后，自研了存算分离的引擎，也就是后来开源的 ByConity。它分成无状态的 Server、Worker（Virtual Warehouse）、基于 FoundationDB 的 Catalog，以及 HDFS/S3/OSS 存储几层。从给 ClickHouse 一路打补丁到自己造一个新引擎，算是「S3 Disk 之后该怎么办」的一个公开答案。
 
@@ -132,7 +132,7 @@ Sentry 的 Snuba 管着几十 PB 的错误追踪数据，他们绕开了 S3 disk
 | 1 PB ~ 10 PB | 混合架构（S3 Disk 温层 + Parquet/BACKUP 冷层）| 双引擎运维、台账管理、数据格式转换 | Sentry、Uber 部分场景 |
 | > 10 PB | SharedMergeTree（Cloud）/ ByConity / Iceberg | 部署复杂度、生态适配、迁移成本 | Cloudflare、字节 ByConity |
 
-S3 Disk 最合适的区间是 100TB 到 1PB。低于这个是杀鸡用牛刀，高于这个，工程复杂度就压不住了。
+S3 Disk 最合适的区间是 100TB 到 1PB，低于这个用不上这一整套工程，高于这个复杂度就压不住了。
 
 ## 最后
 
@@ -143,4 +143,4 @@ S3 Disk、BACKUP、Parquet 并不互斥。更常见的成熟做法是分层组�
 <img class="dfig-d" src="/diagrams/cold-storage-02.dark.svg" alt="冷热分层的组合形态：热数据本地盘，温数据 S3 Disk，冷数据 Parquet 或 BACKUP">
 </figure>
 
-冷热分层说到底要回答的，是哪些数据还归查询系统管，哪些只需要归档，哪些应该导出成开放格式给别人用。数据放在哪块盘上，是想清楚这件事以后的结果。
+冷热分层要回答的是三个问题：哪些数据还归查询系统管，哪些只需要归档，哪些应该导出成开放格式给别人用。这三个问题答完了，再去选盘和 storage policy。

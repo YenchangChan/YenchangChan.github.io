@@ -22,7 +22,7 @@ title: 存算分离横评：谁真的做到了
 
 三条全中才叫存算分离。只满足第二条、不满足第一条的，那只能叫把数据放在了对象存储上，后面会反复碰到这个区别。
 
-先看结果：
+用这把尺子量下来是这样：
 
 | | 计算无状态 | 共享一份存储 | 独立扩缩 | 开源协议 | 成熟度 |
 |---|---|---|---|---|---|
@@ -33,14 +33,14 @@ title: 存算分离横评：谁真的做到了
 | Apache Doris 3.0+ | 是 | 是 | 是 | Apache-2.0 | 3.0（2024-10）起 |
 | GreptimeDB | 部分 | 是 | 是 | Apache-2.0 | 1.0 GA（2026-04-14） |
 
-有一件事得先说在前面：OpenObserve 是 AGPL-3.0，不是 Apache-2.0。
+表里有一格得先拎出来说：OpenObserve 是 AGPL-3.0，不是 Apache-2.0。
 
 ```
 GitHub API → openobserve/openobserve → 「spdx_id」: 「AGPL-3.0」
 Cargo.toml → license = 「AGPL-3.0」   (v0.93.0)
 ```
 
-GreptimeDB、Doris、ClickHouse 都是 Apache-2.0，只有 O2 用 AGPL。这一条对选型的杀伤力，可能比后面所有的性能数字都大。AGPL 要求你修改了它、又通过网络对外提供服务的话，衍生作品得以同样的协议开源。打算把 O2 嵌进对外售卖的产品里，这是个法务问题，得在评估性能之前就先过掉。
+GreptimeDB、Doris、ClickHouse 都是 Apache-2.0，只有 O2 用 AGPL。AGPL 要求你修改了它、又通过网络对外提供服务的话，衍生作品得以同样的协议开源。打算把 O2 嵌进对外售卖的产品里，这是个法务问题，得在评估性能之前就先过掉，性能再好也救不了。
 
 ## 挨个看
 
@@ -89,19 +89,19 @@ v4.0.0 抽出了 `Strategy` 接口，`Plan()` 提供只读的预览（「It must
 
 可它并没有让 ClickHouse 有了自动均衡的能力，局限有四条。`AddNode` 和 `RebalanceCluster` 是两个独立的操作，都得人去点，加了节点不会自动均衡，ClickHouse 内核不会自动 rebalance 这件事没变，变的只是操作成本。DETACH/ATTACH 那条路没有内建的数据校验，issue #82（2021-05-20 提的）「rebalance 是不是可以加一下数据校验，因为 attach 和 detach 的过程可能出错」到现在还 open。ByShardingKey 有一个一致性窗口，`MOVE PARTITION ... TO TABLE` 会先把原表搬空到临时表再回填，这期间查原表可能读到不完整的数据，源码里没看到写锁。另外它纳管不了 K8s 上的 ClickHouse，ckman 的部署模型是 SSH 到裸机或虚拟机上生成配置、启停进程，跟 Operator 部署的 StatefulSet 合不到一起（README 里说的 Kubernetes，是指 ckman 自己能跑在 K8s 里，不是能纳管）。
 
-所以准确地说，CK 的扩缩容还是做不到自动均衡，但有了 ckman，成本从手写高风险脚本降到了点一下就能跑的半自动任务。比原生支持自动 rebalance 的系统还是要高，但已经不是只能手工搬数据了。
+所以准确地说，CK 的扩缩容还是做不到自动均衡，有了 ckman，成本从手写高风险脚本降到了点一下就能跑的半自动任务，比原生支持自动 rebalance 的系统仍然要高。
 
 ### OpenObserve：做到了，代价在别处
 
-O2 是这几家里架构最简单的，单二进制、零建模、数据直接进对象存储。三条判据基本满足，但有两个折扣得说清楚。
+O2 是这几家里架构最简单的，单二进制、零建模、数据直接进对象存储。三条判据基本满足，但要打两处折扣。
 
-第一个折扣，Ingester 并不是无状态的。README 里写的是「stateless architecture」，可官方架构文档里逐个节点列属性的那张表写得很老实，Ingester 那一栏是：
+第一处，Ingester 并不是无状态的。README 里写的是「stateless architecture」，可官方架构文档里逐个节点列属性的那张表写得很老实，Ingester 那一栏是：
 
 > Stateless: Yes (buffers in WAL, Memtable, and local parquet)
 
 也就是说 Querier、Compactor、Router 扩容确实不用搬数据，但一个正在写 WAL、还没 flush 的 Ingester 被强杀，是有丢数据窗口的。
 
-第二个折扣更严重，WAL 的 fsync 默认是关的：
+第二处更严重，WAL 的 fsync 默认是关的：
 
 ```rust
 // src/config/src/config.rs:1159
@@ -130,7 +130,7 @@ pub fn sync(&mut self) -> Result<()> {
 
 跟源码对得上（`ZO_MAX_FILE_RETENTION_TIME` 默认 600 秒）。但官方只讨论了进程崩溃磁盘还在、物理磁盘损坏这两种情况，fsync 默认关着的时候直接断电会怎样，没提。这部分是我从源码机制推出来的，不是官方说法。
 
-还有个没有任何文档提示的部署差异。官方 Helm chart 的 `values.yaml` 里显式写了 `ZO_WAL_FSYNC_DISABLED: "false"`，也就是用 Helm 装会把 fsync 重新打开，直接跑 Docker 或二进制则是关着的。同一个产品，两种装法，持久性保证不一样。
+还有个没有任何文档提示的部署差异。官方 Helm chart 的 `values.yaml` 里显式写了 `ZO_WAL_FSYNC_DISABLED: "false"`，也就是用 Helm 装会把 fsync 重新打开，直接跑 Docker 或二进制则是关着的，同一个产品两种装法，持久性保证就不一样。
 
 ### Apache Doris：存算分离、真开源、已落地、还在活跃维护，只有它全占了
 
@@ -154,7 +154,7 @@ Doris 也是唯一给出冷查询量化基准的厂商（TPC-H/TPC-DS 1TB），�
 
 代价是运维复杂度，而且是硬性的。它强制依赖 FoundationDB，官方要求「at least three machines equipped with SSDs」组成双副本的 FDB 集群。Meta Service 生产上至少 3 个节点，FE Follower 要奇数个（「three FOLLOWERs are sufficient」）。官方明确说「storage solutions like JuiceFS should not be used」。FDB 扩容是手动流程，装新机器、拷配置、重启，之后「Data distribution will slowly reorganize」，要多久、有什么风险，官方没给数。
 
-社区里的一手抱怨比官方文档更有说服力。issue #51892 里，FDB backup 一上压力，RPC 延迟升到 1 秒左右，24 个并发的 routine load 调度间隔被拉长到 2 分钟左右，「causing severe jitter in the consumption of routine load」。doris-operator 的 issue #233 里，有用户说官方部署文档过时，照着装不起来，还直接质疑 FDB 的学习和维护成本太高，提议换成 Redis 这种更常见的东西。
+社区里的抱怨比官方文档具体。issue #51892 里，FDB backup 一上压力，RPC 延迟升到 1 秒左右，24 个并发的 routine load 调度间隔被拉长到 2 分钟左右，「causing severe jitter in the consumption of routine load」。doris-operator 的 issue #233 里，有用户说官方部署文档过时，照着装不起来，还直接质疑 FDB 的学习和维护成本太高，提议换成 Redis 这种更常见的东西。
 
 ### GreptimeDB：和 O2 几乎一个模子，但无状态要打折
 
@@ -203,11 +203,11 @@ Doris 也是唯一给出冷查询量化基准的厂商（TPC-H/TPC-DS 1TB），�
 
 但它有两个问题，得跟其他几家一样标清楚。
 
-头一个是选型最该警惕的：公开仓库的维护活跃度存疑。看 GitHub 提交历史，最近的提交（2026-06）基本是零碎改动，修 LRUCache 的拼写、更新 README，再往前直接跳到了 2025-02，也就是说近一年多公开仓库几乎没有实质开发。2,237 star，182 个 open issue。字节的商业精力放在了闭源的云版 ByteHouse（火山引擎）上，开源 ByConity 的社区投入看起来已经明显收缩了。对生产选型来说，上游停更比性能差更要命。
+头一个是公开仓库的维护活跃度存疑。看 GitHub 提交历史，最近的提交（2026-06）基本是零碎改动，修 LRUCache 的拼写、更新 README，再往前直接跳到了 2025-02，也就是说近一年多公开仓库几乎没有实质开发。2,237 star，182 个 open issue。字节的商业精力放在了闭源的云版 ByteHouse（火山引擎）上，开源 ByConity 的社区投入看起来已经明显收缩了。对生产选型来说，上游停更比性能差更要命。
 
 第二个是和 Doris 一样背着 FoundationDB 的包袱。ByConity 的元数据也存在 FoundationDB 里（catalog 层实现完整的 ACID），前面说 Doris 的那些 FDB 负担，3 台 SSD 起步、运维复杂、issue #51892 的抖动，ByConity 一样都继承了。社区里甚至有团队（烽火星空）自己改源码，用 RocksDB 替掉了 FDB，可见这笔负担是实打实的。整套系统也很重，Server + Worker + FoundationDB + Timestamp Oracle + Daemon Manager + Resource Manager + 共享存储 + 本地 DiskCache 二级缓存，离 O2 单二进制的简洁差得远，部署运维的复杂度跟 Doris 一个档次，甚至更高。
 
-ByConity 的信创适配（麒麟、飞腾、龙芯这些）我没去查，所以后面信创那一节没把它放进去。它的 DiskCache 同样是把远端数据下载到本地加速，所以存算分离查询说到底是在拼缓存命中率这一条，对它一样成立。
+ByConity 的信创适配（麒麟、飞腾、龙芯这些）我没去查，所以后面信创那一节没把它放进去。它的 DiskCache 同样是把远端数据下载到本地加速，所以存算分离查询拼的是缓存命中率这一条，对它一样成立。
 
 ## 全表对比
 
@@ -227,7 +227,7 @@ ByConity 的信创适配（麒麟、飞腾、龙芯这些）我没去查，所�
 
 写入语义上，OpenObserve 和 GreptimeDB 都是 At-Least-Once，靠 WAL 加定期刷盘；Doris 是 Exactly-Once，靠 Label 机制保证单次导入去重，前提是上游能做到 At-Least-Once；ClickHouse 是 At-Least-Once，`insert_quorum` 可以要求多副本确认。
 
-这张表里最要紧的是压缩算法那一行。OpenObserve 由 `ZO_PARQUET_COMPRESSION` 控制，默认 zstd，可选 snappy、gzip、brotli、lz4、none，只能全局设；GreptimeDB 是 ZSTD level 1 硬编码；Doris 有 LZ4F、ZSTD、LZ4、Snappy、Zlib 等 7 种，只能在表级设；ClickHouse 有 LZ4、ZSTD、Delta、DoubleDelta、Gorilla、T64 等，自建默认 LZ4，可以逐列指定，还能 pipeline 组合。按能不能配、能配到多细，正好分三档：
+压缩算法那一行值得展开。OpenObserve 由 `ZO_PARQUET_COMPRESSION` 控制，默认 zstd，可选 snappy、gzip、brotli、lz4、none，只能全局设；GreptimeDB 是 ZSTD level 1 硬编码；Doris 有 LZ4F、ZSTD、LZ4、Snappy、Zlib 等 7 种，只能在表级设；ClickHouse 有 LZ4、ZSTD、Delta、DoubleDelta、Gorilla、T64 等，自建默认 LZ4，可以逐列指定，还能 pipeline 组合。按能不能配、能配到多细，正好分三档：
 
 ```
 可逐列配置        ClickHouse                    ← 唯一
@@ -259,7 +259,7 @@ CREATE TABLE codec_example (
 )
 ```
 
-顺带纠正一个流传很广的说法。Doris 官方 CREATE-TABLE 文档写的默认压缩是 LZ4，可 branch-3.0 源码 `PropertyAnalyzer.analyzeCompressionType()` 里实际是 `return TCompressionType.LZ4F;`，文档和源码对不上（master 分支后来才改成可配置、默认 ZSTD）。官方文档也不能全信，这就是个现成的例子。
+顺带纠正一个流传很广的说法。Doris 官方 CREATE-TABLE 文档写的默认压缩是 LZ4，可 branch-3.0 源码 `PropertyAnalyzer.analyzeCompressionType()` 里实际是 `return TCompressionType.LZ4F;`，文档和源码对不上（master 分支后来才改成可配置、默认 ZSTD）。
 
 ### 能力与性能
 
@@ -279,7 +279,7 @@ GreptimeDB 这几格是一手实测填的（2026-07-22，450,394,721 行的同�
 
 ### GreptimeDB 的实测，别只抄一个数
 
-GreptimeDB 的查询性能不是一个数，而是一段跨了 26 倍的区间。落在哪一头，看两件事：做没做过 SWCS compaction，缓存命没命中。
+GreptimeDB 的查询性能是一段跨了 26 倍的区间，给不出一个数。落在哪一头，看两件事：做没做过 SWCS compaction，缓存命没命中。
 
 | 状态 | 24 场景合计耗时 | 相对 CK | 胜出场景 |
 |---|---:|---:|---:|
@@ -297,7 +297,7 @@ GreptimeDB 的查询性能不是一个数，而是一段跨了 26 倍的区间�
 
 不受这些状态影响、能带走的结论有三条。点查强，靠的是 tag/ID：Bloom skipping index 让 P01 8 并发跑到 57.69 QPS，逼近 CK 的 63.62；热轮里 P04 comment_id 点查 0.053 s，比 CK 的 0.102 s 还快，这是架构给的，稳定成立。对象存储上的聚合、扫描、深分页并发弱：SWCS 之后 8 并发也只有 0.13 到 0.17 QPS，CPU 平均 1.3 到 1.6 核就上不去了，瓶颈在 S3 I/O 等待，跟 O2 是同一类问题。存储比 CK 大，SWCS 之后更大：SWCS 前 33.29 GiB，之后 35.15 GiB，比 CK 的 25.69 大 37%；SWCS 让数据小了 0.84%，索引却从 1.60 涨到 3.73 GiB（+133%），总量反而多了 5.59%。这跟对 O2 的判断是一回事，Parquet 放对象存储这条路线，存储体积普遍打不过 CK 的列式编码（逐列 codec + LowCardinality + ORDER BY 聚类），O2 和 GreptimeDB 都比 CK 大，不是巧合。
 
-SWCS 这一步值得单独记一笔。它把热态的上限从垫底拉到了领先，同时也让索引体积翻了一倍，还得手动触发：自动 compaction 只合出了 15 个 L1，3,546 个 L0 纹丝不动，两次 SWCS 一共 81 分钟。在 GreptimeDB 上导完数据直接查是个坑，官方文档也是叫你别这么干的。
+SWCS 把热态的上限从垫底拉到了领先，同时也让索引体积翻了一倍，而且得手动触发：自动 compaction 只合出了 15 个 L1，3,546 个 L0 纹丝不动，两次 SWCS 一共 81 分钟。在 GreptimeDB 上导完数据直接查是个坑，官方文档也是叫你别这么干的。
 
 ### 成本与运维
 
@@ -326,7 +326,7 @@ Doris 是唯一公开了冷查询衰减量化数据的厂商，正好拿来当�
 
 两组数字口径不一样，Doris 是相对自己的存算一体模式，我们是相对 ClickHouse，不能直接相减。但量级上的差距足够说明问题：Doris 把冷查询的代价控制在 35% 以内，O2 首次触达要付出好几倍。
 
-O2 首次触达慢，跟调研篇里从源码得出的结论一致，冷路径要下载并解析 Parquet footer，还要预热 Tantivy 的 term。这不是 bug，是它的架构决定的。
+O2 首次触达慢，跟调研篇里从源码得出的结论一致，冷路径要下载并解析 Parquet footer，还要预热 Tantivy 的 term，这是架构决定的，调参调不掉。
 
 ### 缓存是一笔隐藏的硬件预算
 
@@ -358,7 +358,7 @@ O2 S3 查询：
 
 ## 信创与商业支持
 
-这一块得单独拿出来说，因为它的结论方向跟技术维度正好反过来：技术上最强的 ClickHouse 和 OpenObserve，在这一块恰恰最弱。
+这一块的结论方向跟前面的技术维度正好反过来，技术上最强的 ClickHouse 和 OpenObserve，在信创上恰恰最弱。
 
 这也是全文证据最薄的部分，所以我卡得最严。厂商宣传的已通过某某认证，在认证机构官网上查不到对应收录页的，一律当厂商声称处理。
 
@@ -405,7 +405,7 @@ ClickHouse   ARMv8.0 国产 CPU 上官方包开箱即崩，需自行编译兼容
 OpenObserve  技术上可能可跑（ARM64），但零适配证据、零国内支持、且是 AGPL
 ```
 
-这里最容易读偏的是：ClickHouse 的国产 ARM 问题是个能解的构建问题，你知道要付出什么；OpenObserve 是信息完全空白，没人公开跑过，也没人公开支持过，连代价是多少都不知道。对信创项目来说，已知的成本比未知的风险好对付得多。AGPL、没有国内商业支持、零信创证据，这三条叠在一起，对有合规要求的项目，O2 可能在性能对比开始之前就已经出局了。
+ClickHouse 的国产 ARM 问题是个能解的构建问题，代价你事先就知道；OpenObserve 这边是信息完全空白，没人公开跑过，也没人公开支持过，连代价是多少都不知道。做信创项目，前者好办得多。AGPL、没有国内商业支持、零信创证据，这三条叠在一起，对有合规要求的项目，O2 可能在性能对比开始之前就已经出局了。
 
 ## 回到最初的问题
 
@@ -479,7 +479,7 @@ O2 的护城河，也不是存算分离本身。这个能力在 2026 年已经�
 | ckman 达梦 DM8 支持 | `repository/dm8/`；CHANGELOG v2.2.7「dm8 database adapt」 |
 | ckman ARM64 支持 | CHANGELOG v2.2.4「adapted for arm64」；官方下载页三类产物 |
 
-信创那一节里大量的「未找到证据」，意思是没有公开信息可查，不代表跑不起来。如果这正是你的关键决策点，直接找厂商要测试报告。
+信创那一节里大量的「未找到证据」，如果正好落在你的关键决策点上，直接找厂商要测试报告。
 
 ---
 

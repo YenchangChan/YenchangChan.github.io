@@ -55,8 +55,6 @@ ALTER TABLE t UPDATE col = v WHERE ...;         -- 数据变更
 
 一眼能看出来三件事。S3 Disk 上 schema 变更的代价最没谱，同样是 ADD COLUMN，带不带 MATERIALIZE 差了三个数量级。BACKUP 最干净，线上表怎么 ALTER 都碰不到已经归档的 backup，因为 backup 是自描述的快照。Parquet 对 schema 变更最友好，大多数 ALTER 在 Parquet 上都能自动兼容。
 
-下面一个个说。
-
 ## S3 Disk 上的 ALTER
 
 ### ADD COLUMN 本身没事，坑在顺手的 MATERIALIZE
@@ -191,7 +189,7 @@ ALTER TABLE events_restored ATTACH PART '20260101_1_100_2';
 
 ### 破坏性 ALTER 之前，重做一次 base BACKUP
 
-合规归档的场景下，真正的保障不是 backup 文件在那儿，是恢复演练能跑通。
+合规归档的场景下，backup 文件躺在 S3 上不等于恢复得回来，得靠演练去验。
 
 我建议的节奏是：每次做破坏性的 ALTER（改类型、改 ORDER BY、改引擎）之前，先做一次完整的 base BACKUP，打上「post-alter-X」这样的标记，在测试集群上完整地 RESTORE 演练一遍，演练过了才去生产上执行 ALTER，ALTER 做完再做一次 base BACKUP。这样不管什么时候出事，最近的那份 base BACKUP 都跟当前线上表的 schema 是兼容的。
 
@@ -263,7 +261,7 @@ Parquet 最友好，是因为数据文件自描述、按列名读，从架构上
 
 BACKUP 其次。backup 是冻住的冷数据快照，跟线上表完全分开。代价不是没有，而是挪到了恢复演练上，你得确保关键时刻有一条路能恢复出来。恢复到新表这条路几乎什么情况都能用，但业务那边得能读老 schema。
 
-S3 Disk 最差。数据说到底还是 ClickHouse 自己的 part，schema 变更得走 ClickHouse 自己的 mutation，在 100T 的 S3 上，带宽、限流、ZK、storage policy 漂移，哪一样都可能出问题，代价大还没准。等于是把业务管道改造的复杂度，换成了运维窗口里调度 mutation 的复杂度。
+S3 Disk 最差。数据还是 ClickHouse 自己的 part，schema 变更得走 ClickHouse 自己的 mutation，在 100T 的 S3 上，带宽、限流、ZK、storage policy 漂移，哪一样都可能出问题，代价大还没准。等于是把业务管道改造的复杂度，换成了运维窗口里调度 mutation 的复杂度。
 
 ## 实操上怎么做
 
@@ -289,4 +287,4 @@ schema 变更有多难，取决于老数据放在哪儿。
 
 S3 Disk 把数据留在 ClickHouse 手里，改 schema 就得走 ClickHouse 的 mutation，数据量一大，代价又高又没准。BACKUP 把冷数据冻成自描述的快照，改 schema 跟线上表完全没关系，代价挪到了演练上。Parquet 把数据放在开放格式里，schema 演进是文件格式自带的本事，代价挪到了业务管道的改造上。
 
-冷热分层真正的成本，往往不在写入和查询，而在三年以后要加一列的时候会不会出事。这件事选方案之前就该想清楚，100T 数据落了地再后悔，代价要大得多。
+冷热分层的成本不只在写入和查询上，三年以后要加一列的时候才最看得出来。选方案之前就该把这件事算进去，100T 数据落了地再想换，代价要大得多。

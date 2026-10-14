@@ -169,8 +169,6 @@ CK 这边有表函数（`iceberg()`、`deltaLake()`、`hudi()`、`paimon()`，�
 
 ### 存算分离
 
-这一项是两边产品边界差得最明显的。
-
 Doris 3.0 有完整的存算分离：共享存储（对象存储或 HDFS）、计算组（Compute Group）、元数据服务（Meta Service）三层。数据在共享存储上，BE 无状态，编成计算组，用 `use @<compute_group_name>` 把不同负载分到不同计算组，导入和查询物理隔离。工程细节也做得不错，扩缩容时渐进式预热缓存，不影响正在跑的查询；一个集群的表只复制元数据就能克隆到另一个集群。官方给的数字是存储成本下降约 90%，查询性能下降约 35%（这些数字来自 SelectDB/VeloDB 的博客，只能当厂商案例看）。
 
 CK 对应的能力叫 SharedMergeTree，只在 Cloud 里有，开源版没有。开源版能做的只有存储下沉：把 S3 注册成一块盘，用 `TTL ... TO VOLUME` 把冷数据挪过去。这解决的是冷数据的存储成本，计算和存储还是绑死的，没法独立扩计算节点，扩容还是要搬数据。这不是存算分离，只是分级存储。
@@ -242,7 +240,7 @@ CK 压缩比高，这是公认的，但很多人说不清为什么高。根子�
 
 ### 分级存储
 
-两边功能看着差不多，真正的差别在于对象存储被放在了哪一层抽象里。
+两边功能看着差不多，差别在于对象存储被放在了哪一层抽象里。
 
 CK 把对象存储当成一块盘。在 `storage_configuration` 里把 S3/HDFS 注册成 disk，disk 组成 volume，volume 组成 storage policy，表绑定 policy，再用 TTL 控制数据什么时候挪到冷卷：
 
@@ -294,7 +292,7 @@ workload 组成一棵层级树，`weight` 做加权公平分配，`max_cpu_share
 
 ### 熔断和限流
 
-隔离解决的是分蛋糕，熔断解决的是有人要把整个蛋糕端走。这是 CK 少数几个明确领先的运维项。单查询级有 `max_memory_usage`、`max_execution_time`、`max_rows_to_read`、`max_bytes_to_read`、`max_result_rows`，超限直接抛异常；用户级有 `max_memory_usage_for_user`；Quota 能按小时、天、周、月限制查询次数、错误数、执行时间、读取行数，这个粒度 Doris 没有；跑起来以后还能在 `system.processes` 里看实时查询，`KILL QUERY` 精准干掉。
+熔断管的是单个查询失控，这是 CK 少数几个明确领先的运维项。单查询级有 `max_memory_usage`、`max_execution_time`、`max_rows_to_read`、`max_bytes_to_read`、`max_result_rows`，超限直接抛异常；用户级有 `max_memory_usage_for_user`；Quota 能按小时、天、周、月限制查询次数、错误数、执行时间、读取行数，这个粒度 Doris 没有；跑起来以后还能在 `system.processes` 里看实时查询，`KILL QUERY` 精准干掉。
 
 Doris 有 Workload Policy（4.1 增强）、query timeout 和内存超限自动 kill，策略是声明式的，理解起来简单，但能控的维度确实没 CK 细。
 
@@ -329,9 +327,7 @@ CK 的运维痛点，摊开讲有这么几条。加节点要改配置文件，�
 
 ### 数据均衡
 
-数据自动均衡是 CK 开源版最突出的运维短板。
-
-Doris 扩缩容时自动重新分布 tablet；服务器宕机或者坏盘，自动切副本、重定向写入、屏蔽故障节点，在其他节点上重建副本。菜鸟网络的 Doris 集群频繁扩缩容应对大促，不用人工干预。CK 开源版做不到这些，新加了节点，存量数据不会自己挪过去，磁盘或节点故障也得结合副本状态人工处理。
+数据自动均衡是 CK 开源版最突出的运维短板。Doris 扩缩容时自动重新分布 tablet；服务器宕机或者坏盘，自动切副本、重定向写入、屏蔽故障节点，在其他节点上重建副本。菜鸟网络的 Doris 集群频繁扩缩容应对大促，不用人工干预。CK 开源版做不到这些，新加了节点，存量数据不会自己挪过去，磁盘或节点故障也得结合副本状态人工处理。
 
 根子在于 CK 少了一层抽象。Doris 的 tablet 是一个可以整体迁移的最小单元，它属于哪个 BE 只是一个可变的映射，改一下映射、把文件拷过去就完成了迁移。CK 的最小单元是 part，part 归哪个 shard 是 sharding key 硬绑定的，你把一个 part 挪到另一个节点，那个节点上就出现了本不该属于它的数据，路由就错了。
 

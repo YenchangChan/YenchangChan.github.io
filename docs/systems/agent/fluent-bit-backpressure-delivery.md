@@ -49,7 +49,7 @@ static inline int flb_input_chunk_is_storage_overlimit(struct flb_input_instance
 
 默认 `storage.type` 是 `memory`，默认也不配 `Mem_Buf_Limit`，这两个判断就恒为 false，input 永远不会暂停。
 
-那下游一堵，后面的事就是注定的：
+下游一堵，后面是这么一路滑下去的：
 
 ```
 下游不可用（ES 挂了、Kafka 不可达、连接建不起来……）
@@ -69,7 +69,7 @@ static inline int flb_input_chunk_is_storage_overlimit(struct flb_input_instance
 
 `plugins/in_tail/tail_file.c` 里，数据交给管道以后（`flb_input_log_append_records()`，只是放进 chunk），紧接着就调 `update_resumable_offset_state()` 把 offset 写进 SQLite，并不等 output 的结果。后面的 router、task、flush 全是异步的，哪条路径下 offset 都不会往回退。
 
-所以数据的命运，取决于进程是怎么死的：
+所以丢不丢、丢多少，取决于进程是怎么死的：
 
 | | `Mem_Buf_Limit` 触发 | 正常终止（SIGTERM） | 被杀（OOM / SIGKILL） |
 |---|---|---|---|
@@ -79,11 +79,9 @@ static inline int flb_input_chunk_is_storage_overlimit(struct flb_input_instance
 | 丢失量 | 0 | 0，或 `Grace` 到期时的残留 | 全部积压 |
 | 能看到什么 | pause / resume 日志 | `pending chunk count`，info 级别 | 只有一个 OOMKilled 事件 |
 
-有两件事我想单独说一下。
+容器上的 cgroup 内存限制保护的是宿主，救不了数据。`Mem_Buf_Limit` 触发的是暂停，数据还在；cgroup 触发的是 SIGKILL，积压全丢，丢了多少还看不出来。所以 `limits.memory` 只能当最后一道防线，别拿它当主要手段。按经验设到 `Mem_Buf_Limit` 的 3～4 倍，行缓冲乘文件数、协程栈、连接池、SQLite 缓存这些都得算进去。
 
-一是 cgroup 内存限制。它保护的是宿主，不是数据。`Mem_Buf_Limit` 触发的是暂停，数据还在；cgroup 触发的是 SIGKILL，积压全丢，丢了多少还看不出来。所以容器的 `limits.memory` 只能当最后一道防线，别拿它当主要手段。按经验设到 `Mem_Buf_Limit` 的 3～4 倍，行缓冲乘文件数、协程栈、连接池、SQLite 缓存这些都得算进去。
-
-二是下游堵了、运维顺手重启一下，这是最危险的组合。现象在采集这边，数据采不上来了，根子却在下游。运维的第一反应是重启采集器，SIGTERM 发过去，`Grace` 期里下游还是堵着，排不空，进程退出，内存里的积压全部丢掉，重启以后从已经推进过的 offset 接着读。重启什么问题都没解决，倒把唯一还能救回来的那批数据弄丢了。而「即将丢弃 N 个 chunk」这唯一的一条线索，打的是 `flb_info`。
+更麻烦的是下游堵了、运维顺手重启一下。现象在采集这边，数据采不上来了，根子却在下游。运维的第一反应是重启采集器，SIGTERM 发过去，`Grace` 期里下游还是堵着，排不空，进程退出，内存里的积压全部丢掉，重启以后从已经推进过的 offset 接着读。重启什么问题都没解决，倒把唯一还能救回来的那批数据弄丢了。而「即将丢弃 N 个 chunk」这唯一的一条线索，打的是 `flb_info`。
 
 所以重启之前，先看一眼 `retries_total` 是不是在涨。在涨，那就是下游的问题，重启只会丢数据。
 
@@ -170,9 +168,9 @@ in_tail 吃光 fd
 
 第三，没有水位线。只有一个硬上限，没有到 80% 提醒一下这种东西，告警得自己在监控那边建。
 
-落磁盘这条路要走得通，得同时满足五个前提：独立的磁盘或分区、监控侧有水位告警、`total_limit_size` 留足余量、`storage.sync` 保持 `normal`、团队清楚驱逐是怎么回事。五条里有三条是环境上的约束，光靠改配置解决不了。它等于把采集器从一个只读业务日志的程序，变成了一个在业务机器上抢 IO、抢磁盘的写入方。
+落磁盘这条路要走得通，得同时满足五个前提：独立的磁盘或分区、监控侧有水位告警、`total_limit_size` 留足余量、`storage.sync` 保持 `normal`、团队清楚驱逐是怎么回事。五条里有三条是环境上的约束，光靠改配置解决不了。打开它，采集器就开始在业务机器上抢 IO、占磁盘了。
 
-所以我的看法是，采集器的第一原则是不伤害宿主，不丢数据得排在它后面。Fluent Bit 的两条默认路径都会伤到宿主，只是伤的地方不一样：`memory` 模式不配上限，内存无界，最后 OOM；`filesystem` 模式抢 IO、占磁盘，满了以后悄悄驱逐。真正零侵入的只有限内存这一条：给内存划一个明确的上界，超了就停止采集并告警。数据晚一点到，是采集器自己能兜住的代价；把宿主的资源耗光，那就不是采集器能兜住的了。
+所以我的看法是，采集器的第一原则是不伤害宿主，不丢数据得排在它后面。Fluent Bit 的两条默认路径都会伤到宿主，只是伤的地方不一样：`memory` 模式不配上限，内存无界，最后 OOM；`filesystem` 模式抢 IO、占磁盘，满了以后悄悄驱逐。真正零侵入的只有限内存这一条：给内存划一个明确的上界，超了就停止采集并告警。数据晚一点到，大不了事后补采；宿主的内存和磁盘被耗光，业务跟着一起倒，这个代价采集器赔不起。
 
 ## 哪些不算缺陷
 
@@ -216,7 +214,7 @@ Grace              略小于容器的 terminationGracePeriodSeconds
 
 ## 最后
 
-用 Fluent Bit 的话，如果只能记住一条，那就是 **`Mem_Buf_Limit` 一定要配**。采集不上来的时候先看 `retries_total`，下游堵着就别急着重启。至于落磁盘，它并不等于不丢数据，磁盘满了被驱逐的，恰恰是离发送成功最近的那一批。
+用 Fluent Bit，**`Mem_Buf_Limit` 一定要配**，这是我最想说的一句。采集不上来的时候先看 `retries_total`，下游堵着就别急着重启。至于落磁盘，它并不等于不丢数据，磁盘满了被驱逐的，恰恰是离发送成功最近的那一批。
 
 ---
 

@@ -39,7 +39,7 @@ AmbientCapabilities=CAP_NET_ADMIN CAP_IPC_LOCK CAP_SYS_NICE CAP_NET_BIND_SERVICE
 
 内核没有 `PR_CAP_AMBIENT` 的时候，systemd 调这个 `prctl` 会拿到 `EINVAL`，然后原样报出来，就是我们看到的那句 `Invalid argument`。所以只需要清空 `AmbientCapabilities=`，bounding set 根本不用动。
 
-这里顺便能拿到一个挺好用的判别信号。如果是 systemd 自己不认识这个指令，日志里是 `Unknown lvalue 'AmbientCapabilities' in section 'Service'`，记一条 warning 就忽略过去了，服务照常启动。只有 systemd 认识、去调内核、内核又不支持的时候，才会报 `Failed at step CAPABILITIES ... Invalid argument`，以 `218/CAPABILITIES` 退出。我们碰到的是后一种：报错的是 systemd，缺的其实是内核。
+这里顺便能拿到一个挺好用的判别信号。如果是 systemd 自己不认识这个指令，日志里是 `Unknown lvalue 'AmbientCapabilities' in section 'Service'`，记一条 warning 就忽略过去了，服务照常启动。只有 systemd 认识、去调内核、内核又不支持的时候，才会报 `Failed at step CAPABILITIES ... Invalid argument`，以 `218/CAPABILITIES` 退出。我们碰到的是后一种。
 
 ## 都是 3.10，能力不一样
 
@@ -49,12 +49,12 @@ AmbientCapabilities=CAP_NET_ADMIN CAP_IPC_LOCK CAP_SYS_NICE CAP_NET_BIND_SERVICE
 
 | 发行版 | systemd | 内核 | ambient capabilities |
 |---|---|---|---|
-| CentOS / RHEL 7.0–7.2 | 208 / 219 | `3.10.0-<514` | ❌ 内核缺 |
-| CentOS / RHEL 7.3+ | 219（backport） | `3.10.0-514+` | ✅ |
-| RHEL / CentOS 8+ | 239+ | 4.18+ | ✅ |
-| Ubuntu 16.04+ | 229+ | 4.4+ | ✅ |
-| Debian 9+ | 232+ | 4.9+ | ✅ |
-| 自编译 / 定制 3.10.y | 任意 | 上游 3.10 | ❌ |
+| CentOS / RHEL 7.0–7.2 | 208 / 219 | `3.10.0-<514` | 不支持，内核缺 |
+| CentOS / RHEL 7.3+ | 219（backport） | `3.10.0-514+` | 支持 |
+| RHEL / CentOS 8+ | 239+ | 4.18+ | 支持 |
+| Ubuntu 16.04+ | 229+ | 4.4+ | 支持 |
+| Debian 9+ | 232+ | 4.9+ | 支持 |
+| 自编译 / 定制 3.10.y | 任意 | 上游 3.10 | 不支持 |
 
 所以别看 `uname -r`，直接看内核实际暴露了什么：
 
@@ -67,7 +67,7 @@ systemctl show clickhouse-server -p AmbientCapabilities
 # 能返回这个属性 → 当前 systemd 认识这个指令
 ```
 
-这和内核栏那篇 [jbd 死锁](/systems/kernel/ext3-jbd-memcg-oom-deadlock)是一类事，方向反过来而已。那次是发行版移植补丁时带进了缺陷，这次是某个版本之前还没移植。在 RHEL 系上，3.10 这个数字几乎说明不了这台机器能干什么。
+这和内核栏那篇 [jbd 死锁](/systems/kernel/ext3-jbd-memcg-oom-deadlock)是一类事，方向反过来而已。那次是发行版移植补丁时带进了缺陷，这次是某个版本之前还没移植。
 
 ## 老版本的 ClickHouse 为什么没事
 
@@ -162,5 +162,7 @@ grep -q '^CapAmb:' /proc/self/status || <下发上面的 drop-in>
 缺 `CapAmb` 就创建 `clickhouse-server.service.d/ckman-no-ambient-capabilities.conf`；内核支持的话，就把这个由 ckman 管的 drop-in 删掉。这样老内核节点不会再碰到 `218/CAPABILITIES`，哪天节点升级了内核，drop-in 会被删掉，官方 unit 的能力配置也就自动回来了。
 
 回头看，这次就是被版本号骗了。两台机器 `uname -r` 都是 3.10，systemd 都是 219，按版本号看应该一模一样，实际上一台有这个能力一台没有。在 RHEL 系上排查这类问题，版本号只能当个参考，真正靠得住的是 `/proc/self/status`、systemd 属性，以及到底是哪一步失败的。
+
+---
 
 **相关**：[信创与异构环境](/clickhouse/vendor/) · [ClickHouse `1fe8076b942`](https://github.com/ClickHouse/ClickHouse/commit/1fe8076b942) · [ClickHouse `b503accc7f9`](https://github.com/ClickHouse/ClickHouse/commit/b503accc7f9) · [systemd.exec(5)](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html) · [systemd#5000](https://github.com/systemd/systemd/issues/5000) · [scylladb#3176](https://github.com/scylladb/scylladb/issues/3176)（同一条 3.10.0-514 分界线） · [capabilities(7)](https://man7.org/linux/man-pages/man7/capabilities.7.html)

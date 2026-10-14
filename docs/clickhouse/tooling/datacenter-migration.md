@@ -144,9 +144,7 @@ ORDER BY gb DESC;
 
 ## sharding key 不只是性能优化
 
-讲 reshard 之前，得先把 sharding key 的作用说清楚。很多团队只把它当成性能优化，到了迁移的时候才发现，它其实是数据正确性的硬约束。
-
-它有三重作用。最基础的是写入分布，让数据均匀落到各个 shard，别出热点，这个大家都懂，不多说。
+讲 reshard 之前，得先把 sharding key 的作用说清楚。它有三重作用。最基础的是写入分布，让数据均匀落到各个 shard，别出热点，这个大家都懂，不多说。
 
 第二重最容易翻车：合并型引擎的去重正确性。对 `ReplacingMergeTree`、`CollapsingMergeTree`、`VersionedCollapsingMergeTree`、`SummingMergeTree`、`AggregatingMergeTree` 这些引擎，sharding key 必须是 `ORDER BY` 字段的函数。原因是 FINAL 和后台 merge 都是在单个 shard 内做的，只能合并同一个 shard 里的数据。同一个去重 key 的多个版本要是散到了不同的 shard，FINAL 永远查不出正确的去重结果。
 
@@ -371,7 +369,7 @@ clickhouse-backup restore_remote full_20260429
 
 它不管的几样得手工弄：ZK 路径要重写；分布式表里的 cluster 名是 server config，不在备份里；users 和 roles，22.8 的原生 BACKUP 不包含，24.x 起 `BACKUP ALL` 才带上；放在 `/etc/` 下的字典 XML 也不在备份里。业务库和测试库混在一个库里的（用 `--tables` 过滤）、跨大版本比如 21.x 到 24.x 的（part 格式不兼容，退回 INSERT SELECT）、需要 reshard 的（走双写），都不适合用它。
 
-千表场景真正头疼的，其实不是数据迁得慢，是编排和验证。串行跑太慢，并发跑容易把连接打爆，单张表失败了不好定位。最要命的是 schema 漂移，说是「我们就 800 张表」，一扫发现 1247 张，里面一堆死表，还有重启就没的临时表（`Memory`、`Log` 引擎）。所以千表迁移的第一步永远是先扫出表清单，跟业务确认哪些是死表，把 1000 拆小了，再决定是 BACKUP DATABASE 还是逐表调度。
+千表场景最头疼的是编排和验证。串行跑太慢，并发跑容易把连接打爆，单张表失败了不好定位。最要命的是 schema 漂移，说是「我们就 800 张表」，一扫发现 1247 张，里面一堆死表，还有重启就没的临时表（`Memory`、`Log` 引擎）。所以千表迁移的第一步永远是先扫出表清单，跟业务确认哪些是死表，把 1000 拆小了，再决定是 BACKUP DATABASE 还是逐表调度。
 
 ### PB 级还要 reshard：S3 中转 + s3Cluster
 
@@ -463,8 +461,6 @@ TRUNCATE TABLE db.events_daily_local;
 INSERT INTO db.events_daily_local
 SELECT toDate(event_time) AS day, count() FROM db.events GROUP BY day;
 ```
-
-双写期间累出来的结果靠不住。
 
 还有，别用 POPULATE。`CREATE MATERIALIZED VIEW ... POPULATE` 会在创建时把源表全量跑一遍，可 POPULATE 期间源表新写进来的数据会丢，这是官方文档明确警告过的。正确的做法是先把底层 TO 表的数据迁过去，再创建不带 POPULATE 的 MV，让它只管以后的增量。
 

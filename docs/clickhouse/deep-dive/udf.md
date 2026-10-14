@@ -50,7 +50,7 @@ CREATE TABLE t ON CLUSTER '{cluster}' (...)
 ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/t', '{replica}');
 ```
 
-这才是真正的宏，每个节点用自己的 `macros` 值去展开。
+每个节点用自己的 `macros` 值去展开，替换发生在 DDL 解析期。
 
 它也不是 named collection。named collection 是有名字的参数包，主要用来管理 S3、HDFS、外部数据源的连接凭据：
 
@@ -88,7 +88,7 @@ SQL UDF 其实不是函数调用，是语法替换。`linear_eq(number, 3, 7)` �
 
 限制也很明确：函数体只能是一个表达式，不能写多条语句；不能递归；不能引用表，也就是没有 `SELECT ... FROM`；不能有副作用。
 
-它真正的价值倒不在性能，本来也没什么成本，而在于能把业务口径集中维护起来。GMV 怎么算、活跃用户怎么定义、留存怎么算，封装成 SQL UDF 以后，全公司的报表用同一套定义，改一处，处处生效。我觉得这是 ClickHouse 里最被低估的一个特性，SQL UDF 几乎不需要犹豫，该用就用。
+比起性能，它更有用的地方是把业务口径集中维护起来。GMV 怎么算、活跃用户怎么定义、留存怎么算，封装成 SQL UDF 以后，全公司的报表用同一套定义，改一处，处处生效。我觉得这是 ClickHouse 里最被低估的一个特性，SQL UDF 几乎不需要犹豫，该用就用。
 
 创建、查看、替换、删除：
 
@@ -698,7 +698,7 @@ DELETE FROM system.webassembly_modules WHERE name = 'mask_phone_wasm';
 | 性能 | Python 慢、Go/Rust 中 | 接近原生 70–95% |
 | 失败时 | 子进程崩，worker 被替换 | trap，query 失败，主进程没事 |
 
-### 资源限制是它最大的卖点
+### 资源限制由 ClickHouse 自己管
 
 跟 executable 不一样，WASM 的限制是在 ClickHouse 自己的体系里的，死循环会撞上 fuel 配额，被 trap 掉；内存爆了会撞上 `webassembly_udf_max_memory`，也是 trap；主进程不受影响。而且这些都是查询级的 setting，能按用户写进 profile。
 
@@ -765,7 +765,7 @@ ClickHouse 在配置和函数注册这一层，几乎什么都设计成了热加
 
 ## Profile 限制和安全盲区
 
-这一节才真正决定 UDF 安不安全，三种 UDF 在这上面的差别很大。
+三种 UDF 在这上面的差别很大。
 
 | UDF 类型 | profile 限制是否生效 |
 |---|---|
@@ -807,8 +807,6 @@ WASM 在这点上好得多，`webassembly_udf_max_memory` 和 fuel 是在 VM 里
 
 ## 逻辑放应用层还是放数据库
 
-这是 UDF 讨论里最重要的一节，你写出来的 UDF 是优雅还是反模式，就看这个。
-
 我的默认偏好是放在应用侧。只有三种情况，才把逻辑下推到 ClickHouse：逻辑能大幅减少返回的数据量，比如过滤、聚合、JOIN 之后只取几列，这种必须下推；逻辑能用内置函数或 SQL UDF 表达，没有成本，没理由不推；逻辑承担着合规或者治理的职责，必须集中维护，比如脱敏、加解密、统一口径。除此之外，都更倾向于放应用侧，尤其是 executable UDF。
 
 为什么默认偏应用侧？ClickHouse 集群是全公司共享的地基，算力是稀缺的。你在自己的服务里开 100 个线程算东西，是你自己的事；推到 ClickHouse 上，全公司的查询都跟着卡。应用层是无状态的，加机器便宜，ClickHouse 不是。
@@ -847,7 +845,7 @@ Step 1: 这个逻辑能用 CH 内置函数表达吗？
 
 Step 2: 能在 ETL(Spark/Flink)入库前算好吗？
   能 → 推到 ETL,CH 只存结果。结束。
-       这是最优解，被严重低估。
+       这一步能解决的问题比大多数人以为的多。
 
 Step 3: 会显著减小返回数据量吗？
   会 → 必须下推到 CH，哪怕用 executable_pool 也值。
@@ -956,7 +954,7 @@ SELECT ai_analyze(error_log) FROM errors WHERE day = today();
    AI 结果本身又成为 CH 里可查询的数据。
 ```
 
-说白了，AI 分析不是一种计算，是另一种数据来源。把它当成一个数据生产者接进 ClickHouse，而不是写成 UDF。
+LLM 的产出本身就是一份新数据，让它回写成 ClickHouse 里的一张表，比塞进 UDF 合适得多。
 
 ### 自定义脱敏算法：UDF 的合理场景
 
@@ -1007,7 +1005,7 @@ CREATE FUNCTION enc AS (s) -> hex(encrypt('aes-256-gcm', s, key, iv));
 
 反过来，查询里只要有下面任何一种意图，就默认别写 UDF，搬到应用层去：调用慢 IO（LLM、HTTP API、外部数据库）；给某个 UI 重组数据结构（树、图、嵌套对象）；跑容易变的业务规则；需要重试、流式、容错的逻辑；涉及计费、配额、多租户独立资源管理。
 
-说到底，绝大多数复杂业务本来就不该在数据库里跑，ClickHouse 该干的是减少数据量，过滤、聚合、关联，剩下的交给应用层。要看一个团队的 ClickHouse 用得好不好，executable UDF 的数量可以当个反向指标，用得好的部署里，它几乎不存在。
+绕了一大圈，结论其实挺朴素的：ClickHouse 该干的是把数据量降下来，过滤、聚合、关联，剩下的交给应用层。真要动手写 executable UDF 之前，我建议先把前面那几步再走一遍，内置函数真拼不出来吗，ETL 入库的时候真算不了吗，数据量真的减下来了吗。这三问过不去，写出来的东西早晚还得拆。
 
 ---
 

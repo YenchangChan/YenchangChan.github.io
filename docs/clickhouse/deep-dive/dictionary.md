@@ -23,7 +23,7 @@ WHERE action = 'click'
 GROUP BY city;
 ```
 
-`users_dict` 一次加载、常驻内存，所有查询共享，`dictGet` 就是一次 O(1) 的哈希查找。维表有更新，ClickHouse 按 `LIFETIME` 自己去刷。字典最核心的价值就在这：把反复 JOIN 小维表，变成一次加载、全局共享、O(1) 查找。
+`users_dict` 一次加载、常驻内存，所有查询共享，`dictGet` 就是一次 O(1) 的哈希查找。维表有更新，ClickHouse 按 `LIFETIME` 自己去刷。
 
 ## 定义一个字典要回答三个问题
 
@@ -153,7 +153,7 @@ SYSTEM RELOAD DICTIONARY users_dict;     -- 同步全量刷新
 SYSTEM RELOAD DICTIONARIES;              -- 慎用，触发所有
 ```
 
-### 先记住这张表
+### 状态都在 system.dictionaries 里
 
 ```sql
 SELECT
@@ -250,7 +250,7 @@ LAYOUT(SPARSE_HASHED())
 LIFETIME(MIN 300 MAX 360);
 ```
 
-再配一个 crontab，每天凌晨低峰执行一次 `SYSTEM RELOAD DICTIONARY users_dict;`。增量管性能，全量管正确。
+再配一个 crontab，每天凌晨低峰执行一次 `SYSTEM RELOAD DICTIONARY users_dict;`，把增量期间漏掉的删除清一遍。
 
 别的能感知删除的办法也有：
 
@@ -421,9 +421,7 @@ SOURCE(MYSQL(NAME 'mysql_prod' table 'users'));
 | 周期刷新 | 不刷新（改配置才变） | 按 LIFETIME 刷新 |
 | 解决问题 | 配置复用 + 凭证脱敏 | 维表 JOIN 性能 |
 
-简单说，Named Collection 告诉 ClickHouse 怎么连到源，字典告诉它把源里的数据拉进来以后怎么用。
-
-拿它来管地址是正合适的，但别存业务上的地址数据（比如用户收货地址），别拿它做动态服务发现（配置是静态的），也别拿它替代密钥管理系统，写在配置文件里的密码仍然是明文。它的好处在于改密码只改一处；dev、staging、prod 用同名的 NC，SQL 可以一字不改；`query_log` 里看到的是 `NAME 'xxx'` 而不是密码；权限可以用 `GRANT NAMED COLLECTION` 收住。
+拿它来管连接地址正合适，但别存业务上的地址数据（比如用户收货地址），别拿它做动态服务发现（配置是静态的），也别拿它替代密钥管理系统，写在配置文件里的密码仍然是明文。它的好处在于改密码只改一处；dev、staging、prod 用同名的 NC，SQL 可以一字不改；`query_log` 里看到的是 `NAME 'xxx'` 而不是密码；权限可以用 `GRANT NAMED COLLECTION` 收住。
 
 ## 分布式下的分片字典
 

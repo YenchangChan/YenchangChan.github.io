@@ -59,4 +59,4 @@ INSERT INTO b VALUES (c3, c4, c5);
 
 ---
 
-**相关**：[托管版差异](/clickhouse/vendor/) · [sinker 在华为 MRS 上内存涨到 60G](/clickhouse/vendor/huawei-mrs-protocol-trap)
+**相关**：[托管版差异](/clickhouse/vendor/) · [华为 MRS 的连接协议陷阱](/clickhouse/vendor/huawei-mrs-protocol-trap)
