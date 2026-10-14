@@ -4,23 +4,19 @@ title: ClickHouse 到底要不要写 UDF
 
 # ClickHouse 到底要不要写 UDF
 
-> 三种 UDF 形态能力差着一个数量级，而大多数「需要 UDF」的场景，其实不该用 UDF 解决。
->
-> **阅读对象**：正在考虑把业务逻辑下沉进 ClickHouse，或者已经写了 UDF、但不确定它是不是反模式的工程师。
+想把业务逻辑塞进 ClickHouse 的人，迟早会问到 UDF。我的看法是，ClickHouse 里的三种 UDF 能力差着一个数量级，而大多数「需要 UDF」的场景，其实不该用 UDF 去解决。这篇先把三种 UDF 讲清楚，再讲什么时候该把逻辑放进数据库、什么时候该留在应用层。
 
----
+## 三种 UDF
 
-## 一、UDF 的三种形态
-
-ClickHouse 的「User Defined Function」不是一个东西，而是**三种机制并存**，能力差异巨大：
+ClickHouse 的 User Defined Function 不是一个东西，是三套机制摆在一起：
 
 | 形态 | 引入时间 | 本质 | 成熟度 |
 |---|---|---|---|
-| **SQL UDF** | ~2021 | AST 表达式宏，查询分析期展开 | 完全成熟 |
-| **Executable / Executable Pool UDF** | 2021 | 外挂子进程，通过 stdin/stdout 通信 | 生产可用，有工程负担 |
-| **WASM UDF** | 2026.3 | 嵌入 Wasmtime 沙箱，加载 .wasm 模块 | 实验阶段，不推荐生产关键链路 |
+| SQL UDF | 21.10 前后 | AST 表达式宏，查询分析期展开 | 完全成熟 |
+| Executable / Executable Pool UDF | 2021 | 外挂子进程，通过 stdin/stdout 通信 | 生产可用，有工程负担 |
+| WASM UDF | 26.3 | 嵌入 Wasmtime 沙箱，加载 .wasm 模块 | 实验阶段，不推荐生产关键链路 |
 
-三者的运行位置和性能档次完全不同：
+它们跑在哪、性能在什么档次，完全不一样，大致的量级是这样：
 
 ```
 内置函数             ▮▮▮▮▮▮▮▮▮▮  baseline (SIMD + C++)
@@ -30,29 +26,17 @@ executable_pool      ▮▮▮            10~50x 慢（Go/Rust + RowBinary）
 executable (Python)  ▮              百倍以上慢
 ```
 
-**核心认知**:SQL UDF 是 ClickHouse 的「组成部分」，该用就用；executable/WASM 是「能力延伸」，是逃生口，不是首选工具。
+SQL UDF 算是 ClickHouse 本身的一部分，该用就用。executable 和 WASM 是往外延伸能力的口子，是实在没办法时的退路，不该是首选。
 
----
+## 先跟几个相近的东西分开
 
-## 二、跟相关概念的区分
+UDF 经常被跟几样东西混在一起，先掰扯清楚。
 
-UDF 跟几个相邻概念经常被混淆，先把它们厘清：
+它不是存储过程。存储过程是命令式的，有 `BEGIN/END`、变量、`IF/WHILE`、多条语句，还有副作用。ClickHouse 压根就没有存储过程这个概念，OLAP 也用不上。SQL UDF 是把一个表达式绑在一个名字上，更像 C 里的 `#define`，或者 SQL 标准里的 inline scalar function，跟 PL/pgSQL 不是一回事。从 PostgreSQL、MySQL 转过来的人最容易在这上面想岔。
 
-### 不是存储过程
+它也不是字典。字典是 ClickHouse 拿来查外部数据的，KV、外部数据库、HTTP 都行，用 `dictGet` 访问。凡是想在 UDF 里查另一张表、查外部 KV 的，都应该用字典，字典有缓存、有生命周期、有刷新策略，UDF 一样都没有。
 
-存储过程是命令式的：有 `BEGIN/END`、变量、`IF/WHILE`、多语句、副作用。**ClickHouse 根本没有存储过程这个概念**(OLAP 不需要)。
-
-SQL UDF 是**单表达式 lambda 绑定**，更接近 C 的 `#define` 或 SQL 标准里的 inline scalar function，而不是 PL/pgSQL 那种东西。从 PostgreSQL / MySQL 背景过来的人最常踩这个认知差。
-
-### 不是字典（Dictionary）
-
-字典是 ClickHouse 用来做**外部数据源查找**的机制（KV、外部 DB、HTTP source），通过 `dictGet` 访问。
-
-**任何「在 UDF 里查另一张表 / 查外部 KV」的需求，都应该用字典，不该用 UDF**。字典有缓存、生命周期管理、刷新策略，UDF 全没有。
-
-### 不是 macros
-
-ClickHouse 的 `macros` 是**字符串级模板替换**，主要用在 DDL 里：
+它也不是 macros。ClickHouse 的 `macros` 是字符串级别的模板替换，主要用在 DDL 里：
 
 ```xml
 <macros>
@@ -66,11 +50,9 @@ CREATE TABLE t ON CLUSTER '{cluster}' (...)
 ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/t', '{replica}');
 ```
 
-这是真正的「宏」，每台节点用自己的 `macros` 值展开。
+这才是真正的宏，每个节点用自己的 `macros` 值去展开。
 
-### 不是 named collection
-
-named collection 是**命名的参数包**，主要用来管理 S3/HDFS/外部数据源的连接凭据：
+它也不是 named collection。named collection 是有名字的参数包，主要用来管理 S3、HDFS、外部数据源的连接凭据：
 
 ```xml
 <named_collections>
@@ -85,9 +67,9 @@ named collection 是**命名的参数包**，主要用来管理 S3/HDFS/外部�
 SELECT * FROM s3(my_s3);
 ```
 
-它更像 `.env` 文件或 Ansible vars，解决的是「凭据不要散落 + 权限可控 + 易轮换」,**不是代码复用**。
+它更像 `.env` 文件或者 Ansible 的 vars，解决的是凭据别到处散落、权限好控、好轮换，跟代码复用没关系。
 
-### 三层「替换」机制的对照
+这三样都是在执行之前做替换，只是替换的东西不一样：
 
 ```
 macros            → 字符串模板替换，DDL 解析期（像 envsubst）
@@ -95,42 +77,20 @@ SQL UDF           → AST 表达式替换，查询分析期（像 C 的 #define�
 named collection  → 参数包查表 + kwargs 合并，分析期（像 .env）
 ```
 
-三者都是「运行前替换」，但替换的**单位**不同：字符串 / 表达式树 / 参数字典。
-
----
-
-## 三、SQL UDF：被低估的「零成本」工具
+## SQL UDF：几乎零成本
 
 ```sql
 CREATE FUNCTION linear_eq AS (x, k, b) -> k*x + b;
 SELECT linear_eq(number, 3, 7) FROM numbers(10);
 ```
 
-### 本质
+SQL UDF 其实不是函数调用，是语法替换。`linear_eq(number, 3, 7)` 在分析阶段就被换成了 `3*number + 7`，到了执行器那里，跟你手写这个表达式完全一样。所以它没有运行时开销，照样向量化、照样吃 SIMD，profile 里的各种限制对它一样生效，也能被优化器下推、折叠。
 
-SQL UDF **不是函数调用**，而是**语法替换**。`linear_eq(number, 3, 7)` 在分析期就被替换成 `3*number + 7`，从执行器视角看完全等价于手写表达式。因此：
+限制也很明确：函数体只能是一个表达式，不能写多条语句；不能递归；不能引用表，也就是没有 `SELECT ... FROM`；不能有副作用。
 
-- 零运行时开销
-- 完全向量化、SIMD 加速
-- profile 限制透明生效
-- 可下推、可被优化器折叠
+它真正的价值倒不在性能，本来也没什么成本，而在于能把业务口径集中维护起来。GMV 怎么算、活跃用户怎么定义、留存怎么算，封装成 SQL UDF 以后，全公司的报表用同一套定义，改一处，处处生效。我觉得这是 ClickHouse 里最被低估的一个特性，SQL UDF 几乎不需要犹豫，该用就用。
 
-### 限制
-
-- 函数体只能是**一个表达式**，不能是多语句
-- 不能递归
-- 不能引用表（没有 `SELECT ... FROM`）
-- 不能有副作用
-
-### 价值
-
-SQL UDF 真正的价值不是性能（本来就没成本），而是**集中维护「业务口径」**:GMV 怎么算、活跃用户怎么定义、留存怎么口径化。把这些封装成 SQL UDF 后，全公司报表共用一套定义，改一次到处生效。
-
-**这是 ClickHouse 里最被低估的特性。SQL UDF 几乎不需要「决策」，该用就用**。
-
-### 完整用法示例
-
-**创建、查看、替换、删除**:
+创建、查看、替换、删除：
 
 ```sql
 -- 创建
@@ -155,7 +115,7 @@ DROP FUNCTION mask_phone;
 DROP FUNCTION IF EXISTS mask_phone ON CLUSTER my_cluster;
 ```
 
-**带 Lambda 和数组的进阶用法**:
+配合 lambda 和数组可以玩出不少花样：
 
 ```sql
 -- 1. 业务口径：订单金额 → 阶梯佣金
@@ -189,7 +149,7 @@ CREATE FUNCTION fee_after_tax AS (amount, tax_rate) ->
     commission(amount) * (1 + tax_rate);
 ```
 
-**带默认 settings 的 UDF**(SQL UDF 本身不支持，但可以通过表达式技巧间接做):
+SQL UDF 本身不支持默认参数之类的设置，但可以用表达式绕一下：
 
 ```sql
 -- 数据口径切换：线上 / 测试环境用不同标准
@@ -197,7 +157,7 @@ CREATE FUNCTION revenue_with_env AS (amount, env) ->
     if(env = 'prod', amount, amount * 0.1);
 ```
 
-**生产里 SQL UDF 的常见用法分类**:
+生产上 SQL UDF 常见的用处：
 
 | 类别 | 例子 |
 |---|---|
@@ -208,9 +168,7 @@ CREATE FUNCTION revenue_with_env AS (amount, env) ->
 | 脱敏 | 手机号、邮箱、身份证（可表达的算法）|
 | 数组聚合 | 配合 `arrayMap` / `arrayFilter` 做行内聚合 |
 
----
-
-## 四、Executable UDF 深入
+## Executable UDF
 
 ```xml
 <function>
@@ -226,7 +184,7 @@ CREATE FUNCTION revenue_with_env AS (amount, env) ->
 </function>
 ```
 
-### 通信协议：不是「调用」，是「管道」
+### 它是管道，不是调用
 
 ```
 CH 主进程                   子进程
@@ -238,13 +196,9 @@ CH 主进程                   子进程
    │ ──── 下一个 block ────→ │
 ```
 
-关键事实：
+数据是按 block 流过去的，一个查询可能传好几个 block。输入多少行，输出就必须是多少行，顺序一一对应，多一行少一行，查询失败，worker 的状态也乱了。开了 `send_chunk_header=true`，每个 chunk 前面会先发一行行数，脚本就知道这一批有几行，可以按 chunk 来处理；不开的话，脚本就只能读一行写一行，边读边回。pool 模式下我建议开着，脚本的边界清楚得多。
 
-- 数据流是 **block 级别**，一个 query 可能传多个 block
-- **输入行数必须等于输出行数**，顺序对应。少一行或多一行 → query 失败 + worker 状态污染
-- `send_chunk_header=true` 时协议变为「先一行行数，再 N 行数据」,**这是 pool 模式下唯一能正确工作的方式**
-
-### Python worker 模板（可直接用）
+一个 Python worker 的模板：
 
 ```python
 #!/usr/bin/env python3
@@ -262,11 +216,11 @@ for size_line in sys.stdin:               # 2. 外层是 chunk 循环
     sys.stdout.flush()                    # 4. 每个 chunk 手动 flush
 ```
 
-四个关键点缺一个，在 pool 模式下都会出诡异问题（挂起 / 行错位 / 偶发崩溃）。
+这四点少一个，pool 模式下就会出各种诡异的问题，挂住、行错位、偶发崩溃都有。
 
-### format 选型
+### format 怎么选
 
-对吞吐的影响是**数量级**的：
+format 对吞吐的影响是数量级的：
 
 | format | 何时用 | 注意 |
 |---|---|---|
@@ -274,9 +228,9 @@ for size_line in sys.stdin:               # 2. 外层是 chunk 循环
 | `JSONEachRow` | 字段多、有嵌套 | 解析慢，但 Python 写起来最舒服 |
 | `RowBinary` | 高吞吐、字段类型固定 | Python 慢，Go/Rust/C++ 友好 |
 
-经验值：**Python 用 `JSONEachRow`，Go/Rust 用 `RowBinary`，`TabSeparated` 只在 demo 里用**。
+经验上，Python 用 `JSONEachRow`，Go 和 Rust 用 `RowBinary`，`TabSeparated` 就留给 demo。
 
-### Executable vs Executable Pool
+### executable 还是 executable_pool
 
 | | `executable` | `executable_pool` |
 |---|---|---|
@@ -284,52 +238,45 @@ for size_line in sys.stdin:               # 2. 外层是 chunk 循环
 | 冷启动 | 50–200ms（Python 更糟）| 0 |
 | 适合 | 一次性 ETL | 高 QPS、低延迟 |
 | 崩溃影响 | 仅当前 query | worker 出池，池子补人 |
-| 状态污染 | 无 | **有** —— 全局变量、缓存跨 query 残留 |
+| 状态污染 | 无 | 有，全局变量、缓存跨 query 残留 |
 
-**生产几乎只用 `executable_pool`**。非 pool 只在「一次性离线 ETL，冷启动可接受」的窄场景合理。
+生产上基本只用 `executable_pool`。非 pool 的只适合一次性的离线 ETL，冷启动慢点无所谓的那种。
 
-### 语言选型
+### 用什么语言写
 
-Executable UDF 不挑语言，任何能读 stdin / 写 stdout 的进程都行。但部署性差异很大：
+Executable UDF 不挑语言，能读 stdin、写 stdout 就行。可部署起来差别很大：
 
 | 语言 | 默认产物 | 能否完全静态 | 体感 |
 |---|---|---|---|
-| **Go** | 基本静态 | `CGO_ENABLED=0` → 单文件，**连 glibc 都不要** | **部署最干净** |
-| **Rust** | 默认动态链接 glibc | 加 `--target x86_64-unknown-linux-musl` 即可全静态 | 一行 flag 的事 |
-| **C++** | 默认动态链接 glibc | 静态可以但坑多（libstdc++、TLS、DNS）| **glibc 兼容性最麻烦** |
-| **Python** | 依赖解释器 + .so | 不可能 | 部署最重 |
-| **Java/JVM** | 依赖 JRE | GraalVM native-image 可以 | **JVM 冷启动 + 常驻内存让它不合适**，除非 native-image |
+| Go | 基本静态 | `CGO_ENABLED=0` → 单文件，连 glibc 都不要 | 部署最干净 |
+| Rust | 默认动态链接 glibc | 加 `--target x86_64-unknown-linux-musl` 即可全静态 | 一行 flag 的事 |
+| C++ | 默认动态链接 glibc | 静态可以但坑多（libstdc++、TLS、DNS）| glibc 兼容性最麻烦 |
+| Python | 依赖解释器 + .so | 不可能 | 部署最重 |
+| Java/JVM | 依赖 JRE | GraalVM native-image 可以 | JVM 冷启动 + 常驻内存让它不合适，除非 native-image |
 
-平台/架构（x86_64 / aarch64）依赖所有原生二进制都有，Python wheel 也一样。
+不管哪种原生二进制，x86_64 和 aarch64 都得各出一份，Python 的 wheel 也一样。
 
 ### 调试
 
-子进程的 stderr 默认会进 CH server log:
+子进程的 stderr 默认会进 ClickHouse 的 server log：
 
 ```bash
 grep -i 'user_scripts\|executable' /var/log/clickhouse-server/clickhouse-server.log
 ```
 
-但更可靠的做法是脚本**自己写独立日志文件**(注意 systemd PrivateTmp)，以及**让脚本能离线跑**:
+更靠谱的是让脚本自己写一个独立的日志文件（注意 systemd 的 PrivateTmp），而且让脚本能脱离 ClickHouse 单独跑：
 
 ```bash
 printf '3\nfoo\nbar\nbaz\n' | python3 -u /var/lib/clickhouse/user_scripts/score.py
 ```
 
-query 卡死的排查顺序：
+查询卡死了，按这个顺序查：`SHOW PROCESSLIST` 看查询还活着没有；`ps -ef | grep your_script` 看 worker 进程有几个；`strace -p <pid>` 看它是卡在 `read()` 等输入，还是卡在 `write()` 管道满了。十有八九是 stdout 没 flush，或者脚本按 chunk 读、XML 里却没开 send_chunk_header。
 
-1. `SHOW PROCESSLIST` 看 query 是否还活
-2. `ps -ef | grep your_script` 看 worker 进程数量
-3. `strace -p <pid>` 看是卡在 `read()`（等输入）还是 `write()`（管道满）
-4. 99% 是**没 flush stdout** 或**没开 send_chunk_header**
+### 从配置到调用走一遍
 
-### 完整可跑示例：从配置到调用
+下面从零部署一个 executable UDF，功能是给手机号做格式保留的脱敏，假设这个算法复杂到 SQL UDF 写不出来。
 
-下面是一个从零部署 executable UDF 的完整流程，功能是「对手机号做格式保留脱敏」(假设算法复杂到不适合用 SQL UDF 表达)。
-
-#### 步骤 1:告诉 ClickHouse 去哪里找 UDF 配置
-
-编辑主配置 `/etc/clickhouse-server/config.xml`，确保下面两项存在：
+先确认主配置 `/etc/clickhouse-server/config.xml` 里有这两项，默认都有，确认一下就行：
 
 ```xml
 <clickhouse>
@@ -343,11 +290,9 @@ query 卡死的排查顺序：
 </clickhouse>
 ```
 
-> 通配符 `*_function.xml` 意味着 CH 会扫描所有以 `_function.xml` 结尾的文件，放在 `/etc/clickhouse-server/` 下即可。
+通配符 `*_function.xml` 的意思是，ClickHouse 会扫所有以 `_function.xml` 结尾的文件，放在 `/etc/clickhouse-server/` 下面就行。
 
-#### 步骤 2:写 UDF 的 XML 描述
-
-`/etc/clickhouse-server/mask_phone_function.xml`：
+然后写 UDF 的 XML，`/etc/clickhouse-server/mask_phone_function.xml`：
 
 ```xml
 <clickhouse>
@@ -377,9 +322,7 @@ query 卡死的排查顺序：
 </clickhouse>
 ```
 
-#### 步骤 3:写子进程脚本
-
-`/var/lib/clickhouse/user_scripts/mask_phone.py`：
+再写子进程脚本，`/var/lib/clickhouse/user_scripts/mask_phone.py`：
 
 ```python
 #!/usr/bin/env python3
@@ -424,7 +367,7 @@ if __name__ == '__main__':
     main()
 ```
 
-设置权限（必须 clickhouse 用户可执行）：
+脚本必须是 clickhouse 用户能执行的：
 
 ```bash
 sudo chown clickhouse:clickhouse \
@@ -432,7 +375,7 @@ sudo chown clickhouse:clickhouse \
 sudo chmod 0750 /var/lib/clickhouse/user_scripts/mask_phone.py
 ```
 
-如果脚本依赖 salt，通过 systemd EnvironmentFile 注入：
+脚本要用的 salt，通过 systemd 的 EnvironmentFile 注进去：
 
 ```ini
 # /etc/systemd/system/clickhouse-server.service.d/secrets.conf
@@ -445,9 +388,7 @@ EnvironmentFile=/etc/clickhouse-server/secrets.env
 MASK_SALT=your-real-salt-here
 ```
 
-#### 步骤 4:离线先测脚本
-
-**永远先脱离 ClickHouse 跑一次，免得 query 挂了再排查**:
+先脱离 ClickHouse 把脚本跑一遍，免得查询挂了再回头排查：
 
 ```bash
 printf '3\n13800138000\n13912345678\n12345\n' \
@@ -459,17 +400,13 @@ printf '3\n13800138000\n13912345678\n12345\n' \
 # ***INVALID***
 ```
 
-#### 步骤 5:让 ClickHouse 加载
-
-XML 是被自动监听的，几秒后自动生效。也可以手动触发：
+XML 是自动监听的，几秒以后就生效了，也可以手动触发一下：
 
 ```sql
 SYSTEM RELOAD FUNCTIONS;
 ```
 
-#### 步骤 6:在 SQL 里调用
-
-**注意**:executable UDF **不需要** `CREATE FUNCTION` —— XML 加载完它就是 SQL 里直接可用的函数。
+executable UDF 不用 `CREATE FUNCTION`，XML 加载完它就是 SQL 里能直接用的函数：
 
 ```sql
 -- 直接调用
@@ -490,7 +427,7 @@ SELECT mask_phone_ext(phone) AS phone,
 FROM orders;
 ```
 
-#### 步骤 7:验证 worker 池已就位
+确认一下 worker 池起来了：
 
 ```bash
 # 应该看到 16 个常驻 python3 进程
@@ -507,82 +444,57 @@ clickhouse-client --query "
 -- └───────────────────┴─────────────────────┘
 ```
 
-#### 步骤 8:授权（生产必做）
+权限上要知道一件事：ClickHouse 现在没有按函数控制谁能调用的权限，能管的只是谁能 `CREATE FUNCTION`、`DROP FUNCTION`，谁能 `SYSTEM RELOAD FUNCTION`。executable UDF 一旦加载上，所有能查询的用户都能调它。这一点在多租户的集群上很要命，后面还会说。
 
-默认所有用户都能调，生产里收紧：
+最后是更新。只改了 Python 脚本、XML 没动的话，ClickHouse 不会自己 reload，它只盯 XML，得手动执行 `SYSTEM RELOAD FUNCTIONS;`，它会把 pool 里的 worker 换掉，新 worker 跑的就是新脚本。改了 XML 的，比如调大 `pool_size`、换了 `command` 的路径，会自动 reload。
 
-```sql
--- 先 revoke 所有人
-REVOKE EXECUTE ON FUNCTION mask_phone_ext FROM PUBLIC;
+## WASM UDF
 
--- 只授权给特定角色
-GRANT EXECUTE ON FUNCTION mask_phone_ext TO data_etl;
-```
-
-#### 步骤 9:更新流程（关键）
-
-如果只是改 Python 脚本逻辑，**XML 没动，CH 不会自动 reload**(它只盯 XML)。必须手动：
-
-```sql
-SYSTEM RELOAD FUNCTIONS;
-```
-
-这会优雅替换 pool 里的 worker，新 worker 跑新脚本。
-
-如果改了 XML(比如调大 `pool_size`、换 `command` 路径),**会自动 reload**，不用手动触发。
-
----
-
-## 五、WASM UDF 现状
-
-ClickHouse 在 **2026.3** 引入了 WASM UDF,**目前仍是 experimental**，需要显式开启：
+ClickHouse 在 26.3 里加了 WASM UDF，现在还是实验特性，要在 server 配置里打开：
 
 ```xml
 <allow_experimental_webassembly_udf>true</allow_experimental_webassembly_udf>
 <webassembly_udf_engine>wasmtime</webassembly_udf_engine>
 ```
 
-### 本质：把「外挂进程」换成「嵌入沙箱」
+### 外挂进程换成了内嵌沙箱
 
 ```
 旧：  CH 进程  ──管道──►  python3 子进程
 新：  CH 进程 ─函数调用─► Wasmtime VM(同进程内)
 ```
 
-运行时是 **Wasmtime**(BytecodeAlliance 出品，生产级)。.wasm 是字节码，但**不是 JVM 那种「解释 + JIT 热点」模型** —— Wasmtime 在模块实例化时通过 Cranelift **一次性把整个模块编译成机器码**，之后就是纯原生执行。
+运行时是 Bytecode Alliance 的 Wasmtime，这是个生产级的东西。.wasm 是字节码，但它不走 JVM 那种解释加热点 JIT 的路子，Wasmtime 在模块实例化的时候就用 Cranelift 把整个模块编成机器码，之后跑的就是原生代码。
 
-可以这么理解 WASM 模块：**它是「沙箱化的动态库」**:
+可以把 WASM 模块理解成一个关在沙箱里的动态库：
 
 | 传统动态库 | WASM UDF |
 |---|---|
 | `.so` / `.dll` | `.wasm` 模块 |
 | `ld.so` 动态加载器 | Wasmtime 运行时 |
 | `dlopen` + `dlsym` | INSERT 进系统表 + `CREATE FUNCTION ... LANGUAGE WASM` |
-| 跟 host **共享地址空间** | **独立 linear memory**,host/guest 互不可见 |
-| 跟 host 同权限 | **零默认权限**，无 syscall、fs、net |
-| 架构 + libc + 符号版本三重锁定 | **架构无关、无 libc 依赖** |
+| 跟 host 共享地址空间 | 独立 linear memory，host/guest 互不可见 |
+| 跟 host 同权限 | 零默认权限，无 syscall、fs、net |
+| 架构 + libc + 符号版本三重锁定 | 架构无关、无 libc 依赖 |
 
-### 工作流
+用起来是这么个流程：
 
 ```sql
--- 1. 开启实验特性
-SET allow_experimental_webassembly_udf = 1;
-
--- 2. 把 .wasm 二进制灌进系统表（FORMAT RawBlob 流式上传）
+-- 1. 把 .wasm 二进制灌进系统表（FORMAT RawBlob 流式上传）
 INSERT INTO system.webassembly_modules (name, code) FORMAT RawBlob;
 
--- 3. 注册函数，绑到模块里 export 的符号
+-- 2. 注册函数，绑到模块里 export 的符号
 CREATE FUNCTION greet
 LANGUAGE WASM
 ARGUMENTS (name String)
 RETURNS String
-FROM 'my_module:greet';
+FROM 'my_module' :: 'greet';
 
--- 4. 像普通函数一样用
+-- 3. 像普通函数一样用
 SELECT greet(user_name) FROM users;
 ```
 
-Rust 侧用官方 SDK `clickhouse-wasm-udf-rs`：
+Rust 那边用官方的 SDK，crate 叫 `clickhouse-wasm-udf`（仓库是 `clickhouse-wasm-udf-rs`）：
 
 ```rust
 #[clickhouse_udf]
@@ -591,36 +503,31 @@ fn greet(name: String) -> Result<String, String> {
 }
 ```
 
-target 用 **`wasm32-unknown-unknown`**(不是 wasi)，`cargo build --release` 出 .wasm。
+target 用 `wasm32-unknown-unknown`，不是 wasi，模块必须是不依赖操作系统和标准库的 freestanding wasm32，`cargo build --release` 出 .wasm。宏和 import 的路径，官方文档里前后写得不太一致，以 SDK 仓库的 README 为准。
 
-### 完整可跑示例：Rust + WASM 端到端
+### 同一个脱敏函数，用 WASM 写一遍
 
-下面是同一个「手机号脱敏」功能用 WASM UDF 实现的全流程，可以跟前面 executable 版本对照看差异。
+拿前面那个手机号脱敏，用 WASM 再实现一遍，正好对比一下。
 
-#### 步骤 1:开启实验特性
-
-`/etc/clickhouse-server/config.xml`：
+server 配置里打开实验特性：
 
 ```xml
 <clickhouse>
     <allow_experimental_webassembly_udf>true</allow_experimental_webassembly_udf>
     <webassembly_udf_engine>wasmtime</webassembly_udf_engine>
-
-    <!-- 资源限制 -->
-    <webassembly_udf_max_memory>67108864</webassembly_udf_max_memory>
-    <webassembly_udf_max_fuel>10000000</webassembly_udf_max_fuel>
-    <webassembly_udf_max_input_block_size>65536</webassembly_udf_max_input_block_size>
-    <webassembly_udf_max_instances>16</webassembly_udf_max_instances>
 </clickhouse>
 ```
 
-或者用 user-level setting(临时验证):
+资源限制是查询级的 setting，可以 `SET`，也可以写进用户的 profile：
 
 ```sql
-SET allow_experimental_webassembly_udf = 1;
+SET webassembly_udf_max_memory = 67108864;          -- 每个实例的内存上限（字节）
+SET webassembly_udf_max_fuel = 10000000;            -- 指令配额，防死循环
+SET webassembly_udf_max_input_block_size = 65536;
+SET webassembly_udf_max_instances = 16;
 ```
 
-#### 步骤 2:在开发机上写 Rust 项目
+在开发机上建一个 Rust 项目：
 
 ```bash
 cargo new --lib mask_phone_wasm
@@ -682,7 +589,7 @@ fn mask_email(email: String) -> Result<String, String> {
 }
 ```
 
-#### 步骤 3:编译并瘦身
+编译，顺便瘦个身：
 
 ```bash
 # 装 wasm32 target(只需一次)
@@ -701,7 +608,7 @@ wasm-opt -Oz \
     -o mask_phone.wasm
 ```
 
-#### 步骤 4:把 .wasm 灌进系统表
+把 .wasm 灌进系统表：
 
 ```bash
 clickhouse-client --query "
@@ -710,50 +617,36 @@ clickhouse-client --query "
 " < mask_phone.wasm
 ```
 
-注意 `FORMAT RawBlob` —— 这是把整个二进制流当成一行的 `code` 列灌进去，不做任何分隔符解析。同时**别忘了 `name` 字段** —— 如果只有 code，在某些版本里需要显式指定 name（可能要换写法），具体看你的 26.x 版本文档。
+`FORMAT RawBlob` 的意思是把整个二进制流当成一行的 `code` 列灌进去，不做任何分隔符解析。`name` 字段别忘了，具体写法以你用的 26.x 版本的文档为准。
 
-> 多节点集群必须 **fan-out**(`system.webassembly_modules` 不走 Keeper 自动复制):
->
-> ```bash
-> for host in $(clickhouse-client -q 「SELECT host_name FROM system.clusters WHERE cluster='my_cluster'」); do
->     clickhouse-client -h $host --query 「>         INSERT INTO system.webassembly_modules (name, code) FORMAT RawBlob
->」 < mask_phone.wasm
-> done
-> ```
->
-> INSERT 对 `(name, hash)` 幂等，反复跑安全。
-
-#### 步骤 5:注册 SQL 函数
-
-WASM UDF **跟 SQL UDF 一样需要 `CREATE FUNCTION`**(跟 executable 不同，executable 装好 XML 就直接可用):
+注册 SQL 函数。这一点 WASM 跟 SQL UDF 一样，要 `CREATE FUNCTION`，跟 executable 装好 XML 就能用不一样：
 
 ```sql
 CREATE FUNCTION mask_phone_w
 LANGUAGE WASM
 ARGUMENTS (phone String)
 RETURNS String
-FROM 'mask_phone_wasm:mask_phone';
---    ^^^^^^^^^^^^^^^  ^^^^^^^^^^
---    模块名             模块里 export 的符号名
+FROM 'mask_phone_wasm' :: 'mask_phone';
+--    模块名                模块里 export 的符号名
 
 CREATE FUNCTION mask_email_w
 LANGUAGE WASM
 ARGUMENTS (email String)
 RETURNS String
-FROM 'mask_phone_wasm:mask_email';
+FROM 'mask_phone_wasm' :: 'mask_email';
 ```
 
-ON CLUSTER 也行（函数元数据走 Keeper DDL，模块仍然要手动 fan-out）：
+也可以 ON CLUSTER，函数的元数据走 Keeper 的 DDL 队列，但模块本身还是得自己分发到每个节点，哪个副本上没有这个模块，那个副本上的 `CREATE FUNCTION` 就会失败：
 
 ```sql
 CREATE FUNCTION mask_phone_w ON CLUSTER my_cluster
 LANGUAGE WASM
 ARGUMENTS (phone String)
 RETURNS String
-FROM 'mask_phone_wasm:mask_phone';
+FROM 'mask_phone_wasm' :: 'mask_phone';
 ```
 
-#### 步骤 6:使用
+用起来就是普通函数：
 
 ```sql
 SELECT mask_phone_w('13800138000');
@@ -768,7 +661,7 @@ FROM users
 LIMIT 100;
 ```
 
-#### 步骤 7:查看与管理
+查看和管理：
 
 ```sql
 -- 看有哪些模块
@@ -777,52 +670,41 @@ SELECT name,
        hex(sha256(code)) AS sha
 FROM system.webassembly_modules;
 
--- 看哪些函数引用了模块
-SELECT name, create_query
+-- 看函数有没有注册上
+SELECT name, origin, create_query
 FROM system.functions
-WHERE origin = 'WASMUserDefined';
+WHERE name IN ('mask_phone_w', 'mask_email_w');
 
 -- 更新模块（同名 INSERT，新 hash 会被识别为新版本）
 clickhouse-client --query "
     INSERT INTO system.webassembly_modules (name, code) FORMAT RawBlob
 " < mask_phone_v2.wasm
 
--- 删除函数 / 模块
+-- 删除函数 / 模块（模块还被函数引用时删不掉，要先 DROP FUNCTION）
 DROP FUNCTION mask_phone_w;
 DELETE FROM system.webassembly_modules WHERE name = 'mask_phone_wasm';
 ```
 
-#### Executable vs WASM 同一功能的对照
+同一个功能，两种实现放一起比：
 
 | 维度 | Executable 版本 | WASM 版本 |
 |---|---|---|
 | 部署内容 | XML 配置 + 脚本文件 + Python 解释器 | 一个 .wasm 文件 |
 | 注册方式 | XML 自动扫描，无需 SQL | INSERT 模块 + `CREATE FUNCTION` |
-| 跨节点 | 文件每台节点都要有（或自动 reload）| 模块 INSERT 要 fan-out |
-| 资源限制 | OS 层（cgroup / ulimit）| CH 内置（`max_memory` / `max_fuel`）|
+| 跨节点 | 文件每台节点都要有 | 模块要分发到每个节点 |
+| 资源限制 | OS 层（cgroup / ulimit）| CH 内置（查询级 setting）|
 | 沙箱 | 无 | 强沙箱 |
 | 改实现后生效 | `SYSTEM RELOAD FUNCTIONS` | 重新 INSERT 新 .wasm + 可能 DROP/CREATE |
 | 性能 | Python 慢、Go/Rust 中 | 接近原生 70–95% |
-| 失败时 | 子进程崩，worker 被替换 | trap,query 失败，主进程没事 |
+| 失败时 | 子进程崩，worker 被替换 | trap，query 失败，主进程没事 |
 
-### 资源限制（WASM 的最大卖点）
+### 资源限制是它最大的卖点
 
-跟 executable UDF 不同，WASM 有**真正在 CH 体系内**的限制：
+跟 executable 不一样，WASM 的限制是在 ClickHouse 自己的体系里的，死循环会撞上 fuel 配额，被 trap 掉；内存爆了会撞上 `webassembly_udf_max_memory`，也是 trap；主进程不受影响。而且这些都是查询级的 setting，能按用户写进 profile。
 
-```xml
-<webassembly_udf_max_memory>67108864</webassembly_udf_max_memory>      <!-- 64MB linear memory -->
-<webassembly_udf_max_fuel>10000000</webassembly_udf_max_fuel>          <!-- 指令数，防死循环 -->
-<webassembly_udf_max_input_block_size>65536</webassembly_udf_max_input_block_size>
-<webassembly_udf_max_instances>16</webassembly_udf_max_instances>
-```
+### 模块不会自动跨节点分发
 
-死循环 → 撞 fuel,trap;爆内存 → 撞 max_memory,trap;**主进程不受影响**。
-
-### 一个反直觉的真相：WASM 模块**不会自动跨节点分发**
-
-这是 26.3 实验阶段一个很容易踩的坑。
-
-`system.webassembly_modules` 是 **per-instance 表**,**不走 Keeper 自动复制**。INSERT 只落在被连接的那一台副本上：
+这是 26.3 实验阶段一个很容易踩的坑。`system.webassembly_modules` 是每个实例自己的表，不走 Keeper 复制，INSERT 只落在你连上的那一台：
 
 ```
 你 → 节点 A INSERT system.webassembly_modules
@@ -835,102 +717,71 @@ DELETE FROM system.webassembly_modules WHERE name = 'mask_phone_wasm';
     查询命中其他节点 → "module not found"，失败
 ```
 
-要全集群可用，必须**手动 fan-out**(遍历 `system.clusters` 挨个 `INSERT INTO FUNCTION remote(...)`)，或者用文件路径方式分发。好消息是 **INSERT 对 `(name, hash)` 幂等**，反复跑、补节点都安全。
+要全集群可用，得自己挨个节点灌，比如遍历 `system.clusters` 逐台 INSERT：
 
-也就是说，WASM UDF 解决了「运维痛点」是**部分的、不是质变的**：接口统一（用 SQL 表达）、幂等、可审计，但**不是「INSERT 一次全集群可见」** —— 那是 roadmap 项，不是当前能力。
-
-### 当前明显短板
-
-1. **Experimental，不能用于关键链路**
-2. **Python 直接出局**(CPython 不能编 WASM)
-3. **生态薄**,Rust SDK 是唯一官方 SDK
-4. **没有 per-user 配额**，限制是 server 级
-5. **没有共享状态缓存**(issue #99645 在讨论)
-6. **WASI 支持有限**,fs/time/env 都不可用
-7. **可观测性差**，目前只有 SDK 的 log 宏
-
----
-
-## 六、热加载机制：文件变 ≠ 行为变
-
-### Executable UDF 的 XML 是热加载的
-
-CH server **默认监听 `user_defined_executable_functions_config` 指定的目录**，改文件、加文件、删文件**都会自动触发重载**，不需要重启。
-
-兜底命令：`SYSTEM RELOAD FUNCTIONS`，在文件监听失灵时手动强制重载。
-
-### 但脚本文件改了不会自动生效
-
-**这是生产里最常踩的坑**:
-
-```
-CH 监听：  XML 配置文件     ✅
-CH 不监听：<command> 指向的脚本文件本身    ❌
+```bash
+for host in $(clickhouse-client -q "SELECT host_name FROM system.clusters WHERE cluster='my_cluster'"); do
+    clickhouse-client -h $host --query "
+        INSERT INTO system.webassembly_modules (name, code) FORMAT RawBlob
+    " < mask_phone.wasm
+done
 ```
 
-```
-"我改了 Python 脚本，XML 没动，为什么 query 还是老逻辑？"
-```
+文档里也提了用 `INSERT INTO FUNCTION cluster(...)` 一次分发，但只有 `internal_replication=false` 时才能覆盖到每个副本，否则还是得逐台插。另一个办法是把 .wasm 文件直接拷到每台机器的 `user_scripts/wasm/` 目录下。新加进集群的节点也不会自动拿到已有的模块，扩容的时候别忘了。
 
-答案是 **pool worker 是长跑进程**:
+所以 WASM UDF 在运维上的改善是有的，用 SQL 来表达、可以审计，但还远没到 INSERT 一次全集群可见的程度。
 
-- worker 启动那一刻，Python 已经把 `score.py` 编译成 bytecode 装进内存
-- 之后**没有任何进程再去读磁盘上的脚本文件**
-- 改源文件 ≠ 改运行中代码（这是 Unix 进程模型的基本常识）
+### 现在的短板
 
-要让 worker 跑新代码，必须 `SYSTEM RELOAD FUNCTIONS`（让 CH 优雅替换 worker）。
+还是实验特性，别放进关键链路。模块必须是 freestanding 的 wasm32，没有操作系统和标准库，Python 这种带解释器的语言基本用不上，WASI 的文件、时间、环境变量也都没有。生态很薄，官方 SDK 只有 Rust 一个。没有跨实例共享的状态缓存，[#99645](https://github.com/clickhouse/clickhouse/issues/99645) 还在讨论。可观测性也差，目前只有 SDK 里的 log 宏。ClickHouse Cloud 上也不支持。
 
-### 「删 UDF 文件」的安全顺序
+## 热加载：文件变了，行为不一定变
 
-不要直接 `rm`：
+executable UDF 的 XML 是热加载的。ClickHouse 盯着 `user_defined_executable_functions_config` 指定的那些文件，改、加、删都会自动重载，不用重启。文件监听不灵的时候，`SYSTEM RELOAD FUNCTIONS` 可以手动强制重载。
+
+可脚本文件改了，是不会自动生效的。生产上最常见的问题就是：「我改了 Python 脚本，XML 没动，为什么查出来还是老逻辑？」
 
 ```
-1. 从 XML 里把这个函数定义去掉（或删整个 XML 文件）
-2. CH 自动 reload(或手动 SYSTEM RELOAD FUNCTIONS)
-   → pool 里这个函数的 worker 被优雅终止
-3. 确认没有 query 还在用 → 这时再 rm 脚本文件
+CH 监听：  XML 配置文件     是
+CH 不监听：<command> 指向的脚本文件本身    否
 ```
 
-反过来「先 rm 文件再 reload」，等于自己埋雷：**新 worker 起不来**(自然崩溃替补 / 部署触发 reload 都会撞上)，但已运行的 worker 还活着，看起来「先没事」——直到几小时后忽然全部失败。
+因为 pool 里的 worker 是常驻进程。worker 启动那一刻，Python 已经把 `score.py` 编译成字节码装进内存了，之后没有任何进程再去读磁盘上的那个文件。改了源文件不等于改了正在跑的代码，这是 Unix 进程模型的常识。要让 worker 跑新代码，就得 `SYSTEM RELOAD FUNCTIONS`，让 ClickHouse 把 worker 换掉。
 
-### 各类资源的热加载对照
+删 UDF 也有顺序，别上来就 `rm`。先从 XML 里把这个函数的定义去掉，或者删掉整个 XML 文件；等 ClickHouse 自动 reload，或者手动 `SYSTEM RELOAD FUNCTIONS`，这个函数的 worker 会被优雅地停掉；确认没有查询还在用了，再去删脚本文件。反过来先删脚本再 reload，就是给自己埋雷：已经在跑的 worker 还活着，看起来没事，可一旦有 worker 崩了要补，或者哪次部署触发了 reload，新 worker 就起不来，几个小时以后突然全部失败。
+
+各类资源的热加载情况：
 
 | 资源类型 | 监听机制 | 兜底命令 | 需要重启吗 |
 |---|---|---|---|
-| executable UDF 的 **XML** | 自动文件监听 | `SYSTEM RELOAD FUNCTIONS` | ❌ |
-| executable UDF 的 **脚本** | **不监听** | `SYSTEM RELOAD FUNCTIONS`（踢 worker）| ❌ 但要手动 reload |
-| WASM 模块（INSERT 路径）| INSERT 即生效（本节点）| 无需 | ❌ |
-| SQL UDF (`CREATE FUNCTION`) | DDL 即时生效 | 无需 | ❌ |
+| executable UDF 的 XML | 自动文件监听 | `SYSTEM RELOAD FUNCTIONS` | 不需要 |
+| executable UDF 的脚本 | 不监听 | `SYSTEM RELOAD FUNCTIONS`（踢 worker）| 不需要，但要手动 reload |
+| WASM 模块（INSERT 路径）| INSERT 即生效（本节点）| 无需 | 不需要 |
+| SQL UDF (`CREATE FUNCTION`) | DDL 即时生效 | 无需 | 不需要 |
 | 主 `config.xml` 多数字段 | 自动文件监听 | `SYSTEM RELOAD CONFIG` | 部分字段需要 |
-| `users.xml` | 自动文件监听 | `SYSTEM RELOAD CONFIG` | ❌ |
+| `users.xml` | 自动文件监听 | `SYSTEM RELOAD CONFIG` | 不需要 |
 
-ClickHouse 在「配置和函数注册」层几乎所有东西都设计成热加载。需要重启的只剩端口绑定、磁盘路径这种本质性资源。
+ClickHouse 在配置和函数注册这一层，几乎什么都设计成了热加载，需要重启的只剩端口绑定、磁盘路径这类根本性的东西。
 
----
+## Profile 限制和安全盲区
 
-## 七、Profile 限制与安全盲区
-
-这是生产里**真正决定 UDF 安全性**的一节，而且三种 UDF 表现差异巨大。
-
-### 一句话先答
+这一节才真正决定 UDF 安不安全，三种 UDF 在这上面的差别很大。
 
 | UDF 类型 | profile 限制是否生效 |
 |---|---|
-| SQL UDF | ✅ **完全生效**，跟普通查询无差别 |
-| executable / executable_pool | ⚠️ **部分生效** —— 时间类生效，**内存/CPU 完全失控** |
-| WASM UDF | ⚠️ **部分生效** —— 有专门 server 级限制，但不挂 user profile |
+| SQL UDF | 完全生效，跟普通查询无差别 |
+| executable / executable_pool | 部分生效，时间类生效，内存/CPU 完全管不住 |
+| WASM UDF | 有专门的查询级限制（内存、fuel、实例数），可以写进 profile |
 
-### Executable UDF 的内存盲区
+executable UDF 最大的盲区是内存：
 
 ```
-max_memory_usage         ❌ 不生效
+max_memory_usage         不生效
    ↑ 这个限制只管 ClickHouse 主进程内存，
      subprocess 是另一个 PID，跟 CH 的内存账户没关系。
 ```
 
-一个被授权调用 executable UDF 的用户，理论上可以通过把 Python 子进程写烂（`x = [0] * 10**10`）把整台机器 OOM 掉，**CH 的内存监控完全看不到这部分**。
-
-CH 自己提供的限制写在 UDF 的 XML 里：
+一个能调用 executable UDF 的用户，理论上把 Python 子进程写烂一点（比如 `x = [0] * 10**10`），就能把整台机器 OOM 掉，而 ClickHouse 的内存监控完全看不到这部分。ClickHouse 自己给的限制写在 UDF 的 XML 里：
 
 ```xml
 <max_command_execution_time>10</max_command_execution_time>
@@ -938,11 +789,9 @@ CH 自己提供的限制写在 UDF 的 XML 里：
 <command_write_timeout>10000</command_write_timeout>
 ```
 
-但这些是**全局的、不能 per-user**，而且**没有内存上限**。
+可这些都是全局的，没法按用户配，而且没有内存上限。再加上前面说的，ClickHouse 没有按函数授权调用的权限，谁能查询谁就能调。
 
-### 必须用 OS 层兜底
-
-生产里跑 executable UDF 而不配 cgroup 总内存上限，**就是埋雷**:
+所以生产上跑 executable UDF，却不配 cgroup 总内存上限，就是在埋雷。兜底只能靠操作系统：
 
 ```
 1. cgroups / systemd       → 给 clickhouse-server.service 一个总内存上限，
@@ -952,37 +801,19 @@ CH 自己提供的限制写在 UDF 的 XML 里：
 3. 监控                     → 看子进程 RSS，不只是看 CH 的内存指标
 ```
 
-### WASM 修了「绝对资源失控」
+WASM 在这点上好得多，`webassembly_udf_max_memory` 和 fuel 是在 VM 里强制执行的，这是它相对 executable 最根本的架构优势。
 
-WASM 的 `webassembly_udf_max_memory` 和 `max_fuel` 在 VM 级强制执行，**这是它相对 executable 的核心架构优势**。但目前仍**做不到按用户配额** —— 这是 roadmap 项。
+多租户共享的集群，我的建议是 executable UDF 干脆禁掉，只留 SQL UDF、内置函数和字典。
 
-### 多租户的结论
+## 逻辑放应用层还是放数据库
 
-**多租户共享集群 → executable UDF 几乎应该禁用**，只允许 SQL UDF + 内置函数 + Dictionary。这是行业大厂 ClickHouse 平台的普遍做法。
+这是 UDF 讨论里最重要的一节，你写出来的 UDF 是优雅还是反模式，就看这个。
 
----
+我的默认偏好是放在应用侧。只有三种情况，才把逻辑下推到 ClickHouse：逻辑能大幅减少返回的数据量，比如过滤、聚合、JOIN 之后只取几列，这种必须下推；逻辑能用内置函数或 SQL UDF 表达，没有成本，没理由不推；逻辑承担着合规或者治理的职责，必须集中维护，比如脱敏、加解密、统一口径。除此之外，都更倾向于放应用侧，尤其是 executable UDF。
 
-## 八、架构决策：应用层 vs 数据库层
+为什么默认偏应用侧？ClickHouse 集群是全公司共享的地基，算力是稀缺的。你在自己的服务里开 100 个线程算东西，是你自己的事；推到 ClickHouse 上，全公司的查询都跟着卡。应用层是无状态的，加机器便宜，ClickHouse 不是。
 
-这是 UDF 讨论最重要的一节，因为它决定了**你的 UDF 写出来是优雅还是反模式**。
-
-### 默认偏好
-
-**默认偏好「应用侧处理」，只有三种情况才把逻辑下推到 CH:**
-
-1. **逻辑能显著减小返回数据量**(过滤、聚合、JOIN 后取少量列)→ 必须下推
-2. **逻辑能用内置函数 / SQL UDF 表达**(零成本)→ 下推没理由不
-3. **逻辑承担合规/治理职责，必须集中维护**(脱敏、加解密、统一口径)→ 下推
-
-**其他情况都倾向应用侧**，尤其是 executable UDF。
-
-### 为什么默认偏应用侧？
-
-#### (1) CH 算力是共享稀缺资源，应用算力是水平可扩展
-
-CH 集群是公司的共享地基。你在自己的 service 里开 100 个线程算东西是你自己的事；推到 CH 上，**全公司查询跟着卡**。应用层是 stateless 的，加机器便宜；CH 不是。
-
-#### (2) 网络是核心，不是 CPU
+但应用侧处理，绝不等于把全量数据拉出来自己算。真正的瓶颈在网络，不在 CPU：
 
 ```
 正确分工：
@@ -994,23 +825,21 @@ CH 集群是公司的共享地基。你在自己的 service 里开 100 个线程
    网络：TB 级，死透
 ```
 
-**「应用侧处理」绝不等于「把全量数据拉出来」**。CH 完成扫描/过滤/聚合，应用做最后一公里。
-
-#### (3) 计算形态决定下推有没有收益
+ClickHouse 负责扫描、过滤、聚合，应用负责最后一公里。下推有没有收益，看计算的形态：
 
 | 计算形态 | 推荐位置 |
 |---|---|
-| 过滤 (`WHERE complex(x)`) | ✅ CH |
-| 聚合 (`SUM/AVG/quantile`) | ✅ CH |
-| 关联 (JOIN / dictGet) | ✅ CH |
-| 逐行映射（不改行数）| ⚠️ 看情况（常常应该左移到 ETL）|
-| 复杂业务规则（if/else 多分支）| ❌ 应用 |
-| ML 推理 | ❌ 应用 |
-| 调外部 IO(HTTP/LLM) | ❌ 应用 |
+| 过滤 (`WHERE complex(x)`) | CH |
+| 聚合 (`SUM/AVG/quantile`) | CH |
+| 关联 (JOIN / dictGet) | CH |
+| 逐行映射（不改行数）| 看情况（常常应该左移到 ETL）|
+| 复杂业务规则（if/else 多分支）| 应用 |
+| ML 推理 | 应用 |
+| 调外部 IO(HTTP/LLM) | 应用 |
 
-**最常错误下推的是「逐行映射」** —— 没减数据量，只是把应用的 CPU 偷偷搬到了共享的 CH 节点上。
+最常被错误下推的就是逐行映射。它没减少数据量，只是把应用的 CPU 悄悄搬到了共享的 ClickHouse 节点上。
 
-### 决策树
+我自己判断的顺序是这样的：
 
 ```
 Step 1: 这个逻辑能用 CH 内置函数表达吗？
@@ -1032,16 +861,14 @@ Step 5(只对"必须 CH 端 + 不能用内置"的剩余场景):
   否则 → 重新审视架构，90% 情况都能绕过去
 ```
 
-### 常见好实践
-
-**模式 A:CH 粗筛 + 聚合，应用精算 + 业务**
+比较好的分工有这么几种。一种是 ClickHouse 粗筛加聚合，应用做精算和业务：
 
 ```
 CH:    扫 10 亿行 → 过滤到 100 万 → group by 到 1 万 → 返回
 应用： 对这 1 万行做评分、排序、业务规则、渲染
 ```
 
-**模式 B：把业务沉淀到 ETL**
+一种是把业务逻辑沉到 ETL 里：
 
 ```
 Flink:  消费 Kafka，实时算特征/规则 → 写宽表进 CH
@@ -1049,32 +876,22 @@ CH:     存宽表，只做过滤聚合
 应用：  query 后直接用
 ```
 
-这种架构 **UDF 用得最少**，也是大厂常见选择。
-
-**模式 C:SQL UDF 固化口径**
+这种架构下 UDF 用得最少。还有一种是用 SQL UDF 把口径固化下来：
 
 ```
 SQL UDF:        公司口径（GMV、活跃、留存）统一封装
 executable_pool: 只用在"必须 CH 端 + 减数据量 + 无法用 SQL 表达"的窄场景
 ```
 
----
+## 三个例子
 
-## 九、案例分析
+### APM 调用链生成：不用 UDF
 
-### 案例 1:APM Trace 调用链生成
+数据是一行一个 span，有 `trace_id`、`span_id`、`parent_id`，要还原出调用树。
 
-**结论：不用 UDF。CH 过滤，应用层构树。**
+这个场景不该用 UDF。按 `trace_id` 过滤以后，数据自然就缩到了几百到几千行，返回的是 KB 级，网络可以忽略，UDF 减数据量的价值在这儿根本不存在。重建一棵树天生就是命令式的逻辑，Python 或者 Go 二十行就写完了，SQL 的 `WITH RECURSIVE` 写出来没法维护。下游消费的形态又五花八门，甘特图、火焰图、服务拓扑、关键路径，每种要的 JSON 都不一样，写成 UDF 就把形态绑死了。
 
-数据形态：每行是一个 span，有 `trace_id / span_id / parent_id`，要重建调用树。
-
-为什么不该用 UDF:
-
-1. **数据已经被 `trace_id` 自动收缩**:WHERE 过滤后只剩几百~几千行，KB 级返回，网络可忽略 → UDF 的「减数据量」价值不存在
-2. **树重建是天然命令式逻辑**:Python/Go 20 行能写完，SQL `WITH RECURSIVE` 难维护
-3. **下游消费方多形态**:Gantt / Flame / Service Graph / 关键路径，每种要不同 JSON,UDF 把形态绑死
-
-正确分工：
+所以 ClickHouse 只负责过滤：
 
 ```sql
 SELECT span_id, parent_id, service, operation,
@@ -1083,6 +900,8 @@ FROM spans
 WHERE trace_id = ? AND start_ts BETWEEN ? AND ?
 ORDER BY start_ts;
 ```
+
+树在应用层构：
 
 ```python
 spans = ch.query(...)
@@ -1096,41 +915,27 @@ def build(span_id, depth=0):
 tree = build(root_id)
 ```
 
-**反过来，适合 CH 的 APM 场景**:
+反过来，APM 里适合交给 ClickHouse 的是跨 trace 的东西：p99、错误率、按服务 group by，服务依赖图，关键路径的占比统计（用内置的 array 函数就行，还是用不着 UDF），以及找慢的长尾 trace 做采样。跨 trace 的统计聚合下推，单个 trace 内部怎么组织，放应用层。
 
-- 跨 trace 聚合：p99、错误率、按服务 group by
-- 服务依赖图（跨 trace 的统计）
-- 关键路径占比统计（可以用内置 array 函数，仍不需要 UDF）
-- 找慢长尾 trace 做采样
+### 把查询结果塞给 LLM 做分析：坚决不用 UDF
 
-规律：**跨 trace 的统计聚合下推到 CH;单 trace 内部的形态重组放应用层**。
-
-### 案例 2:查询结果塞 LLM 上下文做 AI 分析
-
-**结论：强烈不用 UDF。架构上每一层都塌。**
-
-设想中的反模式：
+设想中的写法是这样的：
 
 ```sql
 SELECT ai_analyze(error_log) FROM errors WHERE day = today();
 ```
 
-为什么是反模式：
+这在架构上每一层都是塌的：
 
 | 维度 | OLAP query | LLM 调用 |
 |---|---|---|
-| 单次延迟 | ms 级 | **秒级到分钟级** |
-| 失败模式 | 几乎不失败 | **429 / timeout / 5xx 常态** |
-| 重试 | 不需要 | **必须指数退避** |
+| 单次延迟 | ms 级 | 秒级到分钟级 |
+| 失败模式 | 几乎不失败 | 429 / timeout / 5xx 常态 |
+| 重试 | 不需要 | 必须指数退避 |
 
-进一步问题：
+还不止这些。UDF 的协议是一批进一批出，流式输出、熔断、分级超时、可观测性，全都做不了。LLM 按 token 计费，ClickHouse 的 quota 管不了这个，在 UDF 里调 LLM，账单烧爆了都没人知道。LLM 应用最要紧的是不停地调 prompt，UDF 改一次就要 reload 一次，A/B 测试根本没法做。生产上 LLM 的结果一定要缓存，放在 UDF 里就成了一个黑盒。
 
-- **流式输出 / 熔断 / 分级超时 / 可观测** —— UDF 协议是 batch 进 batch 出，全都做不了
-- **成本归属和限速** —— LLM 按 token 计费，CH quota 系统不管这个，UDF 里调 LLM = 烧爆账单没人知道
-- **Prompt 迭代** —— LLM 应用最重要的是 prompt engineering,UDF 改一次要 reload,A/B 没法做
-- **结果缓存** —— 生产 LLM 必有缓存，UDF 里实现等于黑盒
-
-正确架构：
+正确的做法是 ClickHouse 只负责把喂给 LLM 的素材准备好，调用放在应用层或者专门的 AI 服务里：
 
 ```
 1. CH 端：把"喂给 LLM 的素材"准备好
@@ -1151,24 +956,22 @@ SELECT ai_analyze(error_log) FROM errors WHERE day = today();
    AI 结果本身又成为 CH 里可查询的数据。
 ```
 
-**关键洞察**:**「AI 分析」不是计算，是「另一种数据来源」**。把它当成「另一个数据生产者」接到 CH 里，而不是 UDF。
+说白了，AI 分析不是一种计算，是另一种数据来源。把它当成一个数据生产者接进 ClickHouse，而不是写成 UDF。
 
-### 案例 3:自定义脱敏算法 —— UDF 的合理场景
+### 自定义脱敏算法：UDF 的合理场景
 
-**结论：适合 UDF，但优先 SQL UDF + 内置函数，executable 是最后手段。**
-
-为什么适合：
+这个适合用 UDF，但也得先试 SQL UDF 加内置函数，executable 是最后的手段。
 
 | 判据 | 脱敏函数 |
 |---|---|
-| pure function | ✅ 确定性、无 IO |
-| 内置函数表达不了 | ✅(如果算法真的是自定义) |
-| 稳定迭代慢 | ✅ 合规驱动，几个月才改 |
-| **需要集中治理** | ✅ **核心动机** —— 全公司同一份口径，合规可审计 |
+| pure function | 是，确定性、无 IO |
+| 内置函数表达不了 | 是（如果算法真的是自定义）|
+| 稳定迭代慢 | 是，合规驱动，几个月才改 |
+| 需要集中治理 | 是，这是核心动机，全公司同一份口径，合规可审计 |
 
-注意：脱敏**不满足「减数据量」判据**(1:1 行级映射)，但它满足「必须集中维护」判据。两个择一即可。
+脱敏是一对一的逐行映射，不满足减数据量这一条，但它满足必须集中维护这一条，两条满足一条就够了。
 
-**先尝试 SQL UDF + 内置函数**:
+先试 SQL UDF 加内置函数：
 
 ```sql
 CREATE FUNCTION mask_phone AS (p) ->
@@ -1184,49 +987,31 @@ CREATE FUNCTION pseudonymize AS (id) ->
 CREATE FUNCTION enc AS (s) -> hex(encrypt('aes-256-gcm', s, key, iv));
 ```
 
-只有以下情况才升级到 executable / WASM:
+只有算法是 FPE（格式保留加密）这种内置函数没有的方案，或者涉及自定义的状态机，或者必须用公司现成的某个加密库，才值得升级到 executable 或者 WASM。
 
-1. 算法是 FPE(format-preserving encryption)这类内置没有的复杂方案
-2. 算法涉及自定义状态机
-3. 必须用现成的某个内部加密库实现
+还有一条安全红线：**密钥和 salt 永远不要写死在脚本里**，从环境变量或者 KMS 读，配合权限 0600 的 systemd EnvironmentFile。
 
-**重要安全提醒：密钥 / salt 永远不要 hardcode 进脚本**。从环境变量 / KMS 读，配合 systemd EnvironmentFile（权限 0600 root）。这是脱敏类 UDF 唯一的安全红线。
+## 最后怎么判断
 
----
+只有下面这些条件全都满足，才值得考虑 executable 或 WASM UDF：
 
-## 十、最终决策框架
+1. 复杂业务逻辑里的非业务部分，业务流转、规则、外部集成、AI 调用统统放应用层
+2. 剩下的这部分是 pure function，确定、无外部依赖、无副作用、能批处理
+3. 内置函数加 array/lambda 组合确实拼不出来（先认真翻一遍文档）
+4. 没法在 ETL 入库的时候算好
+5. 能显著减少数据量（过滤、聚合），或者承担合规治理职责、必须集中维护
+6. 逻辑稳定，按月迭代而不是按天
+7. 部署环境是单租户，或者用户都可信
 
-### 七条判据清单
+条件都满足了，再按 SQL UDF、WASM UDF、executable_pool、executable 的顺序，挑最克制的那个。
 
-**当且仅当下列条件全部满足，才考虑 executable / WASM UDF:**
+反过来，查询里只要有下面任何一种意图，就默认别写 UDF，搬到应用层去：调用慢 IO（LLM、HTTP API、外部数据库）；给某个 UI 重组数据结构（树、图、嵌套对象）；跑容易变的业务规则；需要重试、流式、容错的逻辑；涉及计费、配额、多租户独立资源管理。
 
-1. 复杂业务逻辑的**非业务部分** —— 业务流转、规则、外部集成、AI 调用统统放应用层
-2. 剩下这部分是 **pure function**(确定性、无外部依赖、无副作用、可批处理)
-3. CH 内置函数 + array/lambda 组合**确实拼不出来**(先认真查文档)
-4. 不能在 ETL 入库时算好
-5. 能**显著减数据量**(filter / agg),**或者**承担合规/治理职责必须集中维护
-6. 逻辑**稳定**，迭代频率以月计而不是天计
-7. 部署环境是**单租户或可信用户**
-
-满足条件后，按 **SQL UDF → WASM UDF → executable_pool → executable** 的顺序挑最克制的实现。
-
-### 五条警示信号
-
-**只要 query 里有以下任何一种意图，默认不要写 UDF，搬应用层：**
-
-- 调用慢 IO（LLM、HTTP API、外部 DB）
-- 重组数据结构（树、图、嵌套对象）给特定 UI
-- 跑容易变的业务规则
-- 处理需要重试 / 流式 / 容错的逻辑
-- 涉及计费 / 配额 / 多租户独立资源管理
-
-### 一句话总结
-
-> **SQL UDF 是 ClickHouse 的组成部分，该用就用；executable / WASM UDF 是能力延伸，生产中是逃生口，不是首选 —— 用得越少，说明你的架构越健康**。绝大多数复杂业务，本来就不该在数据库里跑；CH 的正确分工是「减数据量（过滤/聚合/关联）」，剩下交给应用层。看一个团队的 ClickHouse 用得好不好，**UDF 数量是反向指标：优秀的部署里 executable UDF 几乎不存在**。
+说到底，绝大多数复杂业务本来就不该在数据库里跑，ClickHouse 该干的是减少数据量，过滤、聚合、关联，剩下的交给应用层。要看一个团队的 ClickHouse 用得好不好，executable UDF 的数量可以当个反向指标，用得好的部署里，它几乎不存在。
 
 ---
 
-## 附录：参考资料
+## 参考资料
 
 - [WebAssembly User Defined Functions | ClickHouse Docs](https://clickhouse.com/docs/sql-reference/functions/wasm_udf)
 - [User Defined Functions (UDFs) | ClickHouse Docs](https://clickhouse.com/docs/sql-reference/functions/udf)
@@ -1235,3 +1020,5 @@ CREATE FUNCTION enc AS (s) -> hex(encrypt('aes-256-gcm', s, key, iv));
 - [Support WASM plugins for UDF/TableFunctions/more · Issue #36892](https://github.com/ClickHouse/ClickHouse/issues/36892)
 - [Cache for shared/reused data of WASM UDF · Issue #99645](https://github.com/clickhouse/clickhouse/issues/99645)
 - [Executable user defined functions · PR #28803](https://github.com/ClickHouse/ClickHouse/pull/28803)
+
+**相关**：[字典：省掉的 JOIN，多付的内存](/clickhouse/deep-dive/dictionary) · [物化视图：三种机制，以及 100T 表上的 POPULATE](/clickhouse/deep-dive/materialized-view)

@@ -1,34 +1,18 @@
 ---
-title: 三种冷数据方案下，ALTER TABLE 会发生什么
+title: 冷数据上的 ALTER TABLE：三种方案各会发生什么
 ---
 
-# 三种冷数据方案下，ALTER TABLE 会发生什么
+# 冷数据上的 ALTER TABLE：三种方案各会发生什么
 
-> 冷热分层是一次性架构选择，schema 演化却是常态运维。100T 冷数据下，一句普通的 ADD COLUMN 可能是瞬时操作，也可能是持续几周的灾难 —— 差别全在你走的哪条路线、用的哪种语义。
->
-> **阅读对象**：冷热分层已经上线、接下来要长期维护 schema 的团队。
+冷热分层是一次性的架构选择，schema 变更却是天天要面对的运维。业务隔几个月就要加列、改类型、删列，再正常不过了。可冷数据到了 100T 这个量级，一句普通的 `ALTER TABLE ADD COLUMN`，可能一眨眼就完了，也可能折腾好几个星期，差别就在于你走的是哪种存储方案、用的是哪种 ALTER。
 
----
+这篇是 [冷热分层](/clickhouse/cold-storage/) 这一栏的补充。不再讨论该选哪种方案，只讨论方案选好以后，schema 怎么改才不出事。说的是三种常见的冷数据方案：S3 Disk，ClickHouse 原生的冷热分层，part 还是 ClickHouse 的 part，ClickHouse 全权管着；BACKUP/RESTORE，专门做合规归档，backup 是脱离了线上表的自描述快照；S3 Engine 加 Parquet，走湖仓化的路子，数据用 Parquet 这种开放格式存。
 
-## 引言
+## ALTER 在内部走哪条路
 
-冷热分层是个一次性架构选择，但 schema 演化是**常态运维**——业务每隔几个月加列、改类型、删列是再正常不过的事。在 100T 量级的冷数据下，一句普通的 `ALTER TABLE ADD COLUMN` 可能是瞬时操作，也可能是持续几周的灾难，差别全在于你走的是哪种存储方案、用了哪种 ALTER 语义。
+在说具体场景之前，得先把 ClickHouse 的 ALTER 在内部怎么走讲清楚，后面所有的结论都是从这儿来的。
 
-本文是 [冷热分层实战](/clickhouse/cold-storage/) 的横向补充——不再讨论「该选哪种方案」，而是讨论「方案选好之后，schema 怎么演化才不出事」。重点是三种主流冷数据方案：
-
-- **S3 Disk**：ClickHouse 原生冷热分层，part 还是 ClickHouse 的 part，受 ClickHouse 完整管控
-- **BACKUP/RESTORE**：合规归档专用，backup 文件是脱离 live 表的自描述快照
-- **S3 Engine + Parquet**：湖仓化路径，数据用 Parquet 这种业界开放格式存储
-
-阅读对象：已经在跑这三种方案之一、被业务催着加列改字段的工程师。
-
----
-
-## 一、ALTER 的两条执行路径
-
-讨论任何场景前，先讲清楚 ClickHouse 的 ALTER 在内部是怎么走的——这个分流是后面所有结论的基础。
-
-### 1.1 瞬时元数据路径
+一条是只改元数据的路：
 
 ```sql
 ALTER TABLE t ADD COLUMN foo String DEFAULT '';
@@ -36,17 +20,9 @@ ALTER TABLE t ADD COLUMN bar Nullable(Int64);
 ALTER TABLE t RENAME COLUMN old_name TO new_name;
 ```
 
-行为：
-- 改 schema metadata（`metadata/<db>/<t>.sql`）
-- 通知所有副本（ZK 协调）
-- **不动任何 part 文件**
+它改的是 schema 的元数据（`metadata/<db>/<t>.sql`），通过 ZK 通知所有副本，一个 part 文件都不动。老 part 里没有这一列，查询用到的时候，按 DEFAULT 表达式现算出来，开销也就是算一次表达式，可以忽略不计。100T 的数据加一列，毫秒级完成，S3 上一点 IO 都没有。
 
-读时合成（read-time synthesis）：
-- 老 part 没这列文件，查询命中时由 DEFAULT 表达式现算
-- 性能损耗 ≈ 单次表达式求值（可忽略）
-- 100T 数据加列 → 完成时间毫秒级，零 S3 IO
-
-### 1.2 Mutation 路径
+另一条是 mutation：
 
 ```sql
 ALTER TABLE t MATERIALIZE COLUMN foo;          -- 显式
@@ -54,103 +30,62 @@ ALTER TABLE t MODIFY COLUMN x Int64;            -- 改类型
 ALTER TABLE t UPDATE col = v WHERE ...;         -- 数据变更
 ```
 
-行为：
-- 每个 part 跑一次 mutation，产出新 part
-- 老 part 标记删除（异步清理）
-- 重写量取决于 ALTER 类型：MATERIALIZE 只写新列；MODIFY type 重写整列；UPDATE 可能重写多列
-
-### 1.3 关键分流
+每个 part 都要跑一遍 mutation，产出一个新 part，老 part 标记删除，后台异步清掉。要重写多少，看是哪种 ALTER：MATERIALIZE 只写新列，改类型要重写整列，UPDATE 可能重写好几列。
 
 <figure class="dfig">
-<img class="dfig-l" src="/diagrams/alter-01.light.svg" alt="1.3 关键分流">
-<img class="dfig-d" src="/diagrams/alter-01.dark.svg" alt="1.3 关键分流">
+<img class="dfig-l" src="/diagrams/alter-01.light.svg" alt="ALTER 的两条执行路径：只改元数据的瞬时路径，和逐个 part 重写的 mutation 路径">
+<img class="dfig-d" src="/diagrams/alter-01.dark.svg" alt="ALTER 的两条执行路径：只改元数据的瞬时路径，和逐个 part 重写的 mutation 路径">
 </figure>
 
-记住这条分流——后面三个场景的所有讨论都围绕「你的 ALTER 落在哪一条路径上」展开。
+后面三个场景，说来说去都是在看你的 ALTER 落在了哪一条路上。
 
----
+## 先看全貌
 
-## 二、全景对照表
-
-先给出最终结论。三种典型 ALTER × 三种方案的代价矩阵：
+三种常见的 ALTER 放在三种方案上，代价大概是这样：
 
 | ALTER 类型 | S3 Disk（在线） | BACKUP（已归档） | Parquet（已写入 S3） |
 |---|---|---|---|
-| `ADD COLUMN` 默认（不 MATERIALIZE）| ✅ 瞬时，零 IO | ✅ 不影响 backup | ✅ 老 Parquet 缺列读时返回 DEFAULT |
-| `ADD COLUMN` + `MATERIALIZE COLUMN` | ❌ 全 part mutation，几天~几周 | ✅ 不影响 backup（live 的 mutation 不写 backup） | N/A（Parquet 由外部生产，无 ClickHouse mutation 概念） |
-| `MODIFY COLUMN type` | ❌ 全表 mutation，TB 级 IO | ⚠️ 路径 A 可还原；路径 B 失败 | ⚠️ Parquet 读时支持有限的类型升降 |
-| `DROP COLUMN` | ✅ 元数据 + 异步清理 | ⚠️ 路径 B schema 不匹配 | ✅ 老 Parquet 仍有该列文件，新查询不读 |
-| `RENAME COLUMN` | ✅ 瞬时（现代版本） | ⚠️ 路径 B schema 不匹配 | ⚠️ 列名映射断了，老 Parquet 该列读不到 |
-| `MODIFY ORDER BY`（追加列） | ✅ 瞬时 | ❌ 两条路径都麻烦 | N/A（外部表无 ORDER BY 概念） |
-| `MODIFY TTL` | ⚠️ 部分版本触发全表重评估 | ✅ 不影响 backup | N/A |
+| `ADD COLUMN` 默认（不 MATERIALIZE）| 瞬时，零 IO | 不影响 backup | 老 Parquet 缺列，读时返回 DEFAULT |
+| `ADD COLUMN` + `MATERIALIZE COLUMN` | 全 part mutation，几天到几周 | 不影响 backup（线上表的 mutation 不写 backup） | 不适用（Parquet 由外部生产，没有 ClickHouse mutation） |
+| `MODIFY COLUMN type` | 全表 mutation，TB 级 IO | 恢复到新表可以；合并回原表会失败 | 读时只支持有限的类型转换 |
+| `DROP COLUMN` | 改元数据，异步清理 | 合并回原表时 schema 对不上 | 老 Parquet 里还有这列，新查询不读 |
+| `RENAME COLUMN` | 瞬时（较新版本） | 合并回原表时 schema 对不上 | 列名对不上，老 Parquet 这列读不到 |
+| `MODIFY ORDER BY`（追加列） | 瞬时 | 两种恢复方式都麻烦 | 不适用（外部表没有 ORDER BY） |
+| `MODIFY TTL` | 默认会对全表跑一次 MATERIALIZE TTL | 不影响 backup | 不适用 |
 
-三个一眼可见的结论：
+一眼能看出来三件事。S3 Disk 上 schema 变更的代价最没谱，同样是 ADD COLUMN，带不带 MATERIALIZE 差了三个数量级。BACKUP 最干净，线上表怎么 ALTER 都碰不到已经归档的 backup，因为 backup 是自描述的快照。Parquet 对 schema 变更最友好，大多数 ALTER 在 Parquet 上都能自动兼容。
 
-1. **S3 Disk 是 schema 演化代价最不确定的方案**——同样是 ADD COLUMN，加 vs 不加 MATERIALIZE 差三个数量级
-2. **BACKUP 是最「洁净」的方案**——live 表的 ALTER 完全不影响已归档的 backup，因为 backup 是自描述快照
-3. **Parquet 是 schema 演化最友好的方案**——绝大多数 ALTER 在 Parquet 上「自动兼容」
+下面一个个说。
 
-下面分场景细讲。
+## S3 Disk 上的 ALTER
 
----
+### ADD COLUMN 本身没事，坑在顺手的 MATERIALIZE
 
-## 三、场景一：S3 Disk 上的 ALTER
+不带 MATERIALIZE 的 ADD COLUMN 就是上面那条只改元数据的路，老 part 靠读时现算兜着。
 
-### 3.1 ADD COLUMN：默认路径与陷阱
+可这条路上有几个地方，很容易一不小心就触发了 MATERIALIZE。一是 DDL 自动化工具，不少团队的发布流水线会在 `ADD COLUMN` 后面跟一句 `MATERIALIZE COLUMN`，当成「同步落盘」的步骤，小表上无所谓，100T 的表上就是灾难。二是 `mutations_sync=2`，它让 ALTER 同步等 mutation 跑完，DDL 里要是不小心带了 MATERIALIZE，这条 ALTER 就能卡好几天，看着像挂了。三是业务团队自己要求 materialize，理由一般是想让老数据也用上新的 codec 压缩，在 100T 上这么干，代价远比收益大。
 
-默认行为（不带 MATERIALIZE）就是上面的瞬时元数据路径。读时合成兜住所有老 part。
+### MATERIALIZE COLUMN 在 100T S3 上要花多少
 
-但这条路径上有几个**容易被误触发 MATERIALIZE 的陷阱**：
+假设 part 平均 200MB，那就是 50 万个 part。每个 part 跑一遍 mutation：要算 DEFAULT，如果它依赖别的列，还得先从 S3 把那些列读回来；老列 hard-link 到新 part，在 S3 disk 上就是更新一下本地的 metadata 映射，不复制 S3 对象；新列写到 S3；老 part 标记删除。
 
-1. **DDL 自动化工具**：很多团队的发布流水线在 `ADD COLUMN` 后跟一句 `MATERIALIZE COLUMN`，作为「同步落盘」步骤。在小表上无所谓，在 100T 表上是核灾难
-2. **`mutations_sync=2`**：让 ALTER 同步等 mutation 完成。如果 DDL 不小心加了 MATERIALIZE，ALTER 调用会「卡几天」，看起来像挂了
-3. **业务团队主动要求 materialize**：理由通常是「想让老数据也压缩成新 codec」。在 100T 上代价远大于收益
+S3 写入量要看 DEFAULT 是什么。是常量的话，只写新列，压缩后按每行 10 字节、千亿行算，大约写 1TB；要是像 `DEFAULT user_id % 100` 这种表达式，就得把 user_id 这一列全表从 S3 读一遍，出口流量是几 TB 到几十 TB。
 
-### 3.2 MATERIALIZE COLUMN 在 100T S3 上的具体代价
+请求数更不显眼。50 万个 part，每个 part 要 PUT 5 到 10 次，新列的 .bin、.mrk，还要更新 columns.txt、checksums.txt、count.txt，加起来几百万次 PUT，按 $0.005 每千次算，也就 $25。钱不多，可容易撞上 S3 的限流（默认每个 prefix 每秒 3500 次 PUT），一拖就是好几天。
 
-假设 part 平均 200MB → **50w 个 part**。每个 part 走 mutation：
+最容易被忽略的是 storage policy 漂移。理论上 mutation 的输出会留在原 part 所在的 disk 上，但这跟版本有关。早期有些版本的 mutation 输出会按当前的 storage policy 重新分配，冷 part 的 mutation 结果可能被写到热盘上，几百 GB 的热盘一下子就被几十 TB 的 mutation 输出撑爆了。所以一定要先在影子表上把当前版本的行为验一遍。
 
-- 算 DEFAULT（如果依赖其它列要先从 S3 读这些列）
-- 老列 hard-link 到新 part（S3 disk 上是更新本地 metadata 映射，不复制 S3 对象）
-- 新列写 S3
-- 老 part 标记删除
+还有 ZK。每个 mutation 都会在 ZK 上建节点，50 万个 part 乘上副本数，ZK 的写入量非常大，副本之间的协调很容易卡死，到时候还得 `SYSTEM SYNC REPLICA` 去救。
 
-**S3 写入量**：
-
-- DEFAULT 是常量：只写新列。压缩后假设 10B/行 × 千亿行 → 约 1TB 写入
-- DEFAULT 是表达式 `DEFAULT user_id % 100`：要全表读 user_id 列从 S3 → 几 TB ~ 几十 TB 出口流量
-
-**S3 请求量（更隐形）**：
-
-- 50w part × 每 part 5~10 次 PUT（新列 .bin/.mrk + 更新 columns.txt/checksums.txt/count.txt）
-- ≈ 几百万次 PUT，按 $0.005/1000 算 ≈ $25
-- 钱不多，**但触发 S3 限流**（默认每 prefix 3500 PUT/s）会拖到几天
-
-**Storage Policy 漂移（最容易被忽略）**：
-
-- 理论上 mutation 输出保留原 part 的 disk
-- **但版本相关**：21.x 早期上 mutation 输出按当前 storage policy 重新分配，可能把冷 part mutation 结果写到热盘——你几百 GB 的热盘瞬间被几十 TB mutation 输出打爆
-- **强烈建议在影子表上验证当前版本的行为**
-
-**ZK 元数据膨胀**：
-
-- 每个 mutation 生成 ZK 节点
-- 50w part × 副本数 = 巨量 ZK 写入
-- 跨副本协调容易僵死，需 `SYSTEM SYNC REPLICA` 救
-
-### 3.3 MODIFY COLUMN type：永远走 mutation
+### 改类型永远要走 mutation
 
 ```sql
 ALTER TABLE t MODIFY COLUMN x Int64;  -- 原本 Int32
 ```
 
-这条没有「轻量路径」——必然全表 mutation。代价比 MATERIALIZE 还大，因为不止写新列，是**读老列 + 转换 + 写新列**：
+改类型没有轻量的路可走，一定是全表 mutation，而且比 MATERIALIZE 还贵，它不光写新列，还得把老列读出来、转换、再写进去。100T 的表全读一遍，出口 100T 流量；转换完写回去，入口又是 100T。时间完全卡在 S3 带宽和 background_pool_size 上，按进出各 1Gbps 算，得好几周。
 
-- 100T 全表读 → 出口 100T 流量
-- 转换后写入 → 入口 100T 流量
-- 时间：完全受 S3 带宽和 background_pool_size 限制，按 1Gbps 入出算 ≈ 几周
-
-**实操替代方案**：能不改类型就别改。真要改，常见 workaround：
+所以能不改类型就别改。真要改，常见的绕法是这样的：
 
 ```sql
 -- 1. 加新列(瞬时,不 MATERIALIZE)
@@ -168,64 +103,39 @@ ALTER TABLE t DROP COLUMN x;
 ALTER TABLE t RENAME COLUMN x_v2 TO x;
 ```
 
-这个流程把「一次性 100T 重写」打散成「每月几 TB」，单次代价可控，可以排进维护窗口。
+这样就把一次性重写 100T，拆成了每个月几 TB，每一次的代价都可控，可以排进维护窗口里慢慢做。
 
-### 3.4 DROP COLUMN：元数据 + 异步清理
+### DROP COLUMN 是改元数据加异步清理
 
-DROP COLUMN 的执行：
+DROP COLUMN 会马上更新 schema 元数据，这一列立刻从 `SELECT *` 里消失；然后调度一个 mutation，在后台把这列的 .bin、.mrk 文件物理删掉，不影响业务。
 
-- 立即更新 schema metadata（这一列从 SELECT * 中消失）
-- 调度 mutation 物理删除该列的 .bin/.mrk 文件
-- 异步执行，不阻塞业务
+在 S3 上就是元数据一瞬间改完，列文件在后台慢慢删，删完之前它们还在 S3 上占着空间。要是这一列特别大，比如某个 String 列占了 30T，删除期间 S3 用量看着一点没降，运维可能以为没生效。这时候去看 `system.mutations` 的进度，必要的话把 `background_pool_size` 调大，让它清得快一点。
 
-S3 上的表现：
-
-- 元数据更新瞬时
-- 列文件删除在后台慢慢做
-- 期间该列文件还在 S3 上占空间，删除完成后释放
-
-**陷阱**：如果该列体积巨大（比如某 String 列占了 30T），异步删除期间 S3 用量看上去没下降，运维会以为「没生效」。要查 `system.mutations` 看进度，必要时调大 `background_pool_size` 加速清理。
-
-### 3.5 MODIFY ORDER BY：在线无感的隐形破坏
+### MODIFY ORDER BY：在线没感觉，坑埋在后面
 
 ```sql
-ALTER TABLE t MODIFY ORDER BY (existing_pk_col, new_col);
+ALTER TABLE t ADD COLUMN new_col String, MODIFY ORDER BY (existing_pk_col, new_col);
 ```
 
-ClickHouse 只允许「追加非主键列到 ORDER BY 末尾」，不能修改现有顺序。在线代价：
+ClickHouse 只允许在排序键的末尾追加列，而且追加的必须是同一条 ALTER 里新加的列，现有的顺序不能改。在线上它只改元数据，老 part 的物理排序不变，新写入的 part 按新的 ORDER BY 排。
 
-- 只改元数据
-- 老 part 的物理排序不变
-- 新写入的 part 按新 ORDER BY 排序
+看着挺好，可代价挪到了别处。新老 part 的排序不一致，有些查询就用不上主键索引加速了。BACKUP 的兼容性也被破坏了，老 backup 想合并回当前 schema 的线上表会失败，下面 BACKUP 那一节细说。
 
-看起来很美。但代价转移到了：
-
-- **新老 part 排序不一致**，部分查询走不上 primary index 加速
-- **BACKUP 兼容性破坏**：老 backup 还原到当前 schema 的 live 表会失败（schema 不匹配，详见第四章）
-
-### 3.6 MODIFY TTL：版本相关的炸弹
-
-部分版本上 `ALTER MODIFY TTL` 会触发**所有 part** 的 TTL 表达式重评估：
+### MODIFY TTL 会顺手跑一次全表 mutation
 
 ```sql
 ALTER TABLE t MODIFY TTL event_time + INTERVAL 60 DAY TO VOLUME 'cold';
 ```
 
-理论上：只影响「未来何时移到冷盘」的判断。实际行为：
+按直觉，改 TTL 只影响以后什么时候往冷盘移。可 `materialize_ttl_after_modify` 默认是开的，MODIFY TTL 以后会自动跑一次 MATERIALIZE TTL，对所有 part 重新评估一遍 TTL，这本身就是一次 mutation。重评估期间，part 可能在热盘和冷盘之间来回搬，又是前面说的 storage policy 漂移。
 
-- 23.x 之前部分版本上会扫所有 part 重新评估 TTL move 条件
-- 重评估期间可能触发 part 在 hot/cold 之间反复横跳——再次警告 storage policy 漂移
-- 24.x+ 改善但仍要在测试集群上验证
+所以 MODIFY TTL 之前先想清楚要不要对老数据生效。不需要的话，可以在这条 ALTER 上设 `materialize_ttl_after_modify = 0`；要生效，就挑窗口执行，必要时先 `SYSTEM STOP MOVES` 防止漂移，TTL 调完再 `SYSTEM START MOVES`。不同版本的细节还是要在测试集群上验一遍。
 
-**实操建议**：MODIFY TTL 之前先看具体版本的行为，必要时 `SYSTEM STOP MOVES` 防漂移，TTL 调整完再 `SYSTEM START MOVES`。
+## BACKUP/RESTORE 上的 ALTER
 
----
+### BACKUP 是自描述的快照
 
-## 四、场景二：BACKUP/RESTORE 上的 ALTER
-
-### 4.1 核心模型：BACKUP 是自描述快照
-
-BACKUP 文件包含：
+BACKUP 出来的东西长这样：
 
 ```
 backup_2026_01.zip / backup_2026_01/
@@ -237,45 +147,29 @@ backup_2026_01.zip / backup_2026_01/
 └── .backup                          # 全局描述
 ```
 
-这个结构有两个关键属性：
+每个 part 都自带 `columns.txt`，记着这个 part 物理上存了哪些列；整个 backup 也自带 `<table>.sql`，是当时完整的 schema。所以线上表不管怎么 ALTER，都写不到 backup 里去，backup 写完就是只读的冷数据快照。
 
-1. **每个 part 自描述**：`columns.txt` 记录这个 part 物理存了哪些列
-2. **整个 backup 自描述**：`<table>.sql` 是当时的完整 schema
+### 三种恢复方式，schema 兼容性各不一样
 
-这意味着 **live 表的任何 ALTER 都不会写到 backup 里**——backup 是冷数据的快照，写完就只读。
-
-### 4.2 三条 RESTORE 路径与各自的 schema 兼容性
-
-**路径 A：还原到新表名（最安全，总能成功）**
+第一种是恢复到一张新表，最安全，总能成功：
 
 ```sql
 RESTORE TABLE default.events AS default.events_restored
   FROM S3('s3://bucket/backup_2026_01/', '...');
 ```
 
-- ClickHouse 用 backup 里的老 SQL 创建 `events_restored`
-- 表结构 = 老 schema
-- 老数据原样还原
-- 不依赖当前 live 表是什么样
+ClickHouse 用 backup 里那份老 SQL 建出 `events_restored`，表结构就是老 schema，老数据原样恢复，跟现在的线上表长什么样没关系。合规审计、查历史数据，凡是「我只想看老数据」的场景，都走这条，最稳。
 
-**适用场景**：合规审计、历史数据查询、任何「我只想看老数据」的场景。这是最稳的路径。
-
-**路径 B：合并进当前 live 表**
+第二种是合并进当前的线上表：
 
 ```sql
 RESTORE TABLE default.events FROM S3(...)
   SETTINGS allow_non_empty_tables = 1;
 ```
 
-ClickHouse 行为：
+ClickHouse 会拿 backup 的 schema 跟当前表的 schema 比。差别只是线上表多了几个带 DEFAULT 或者 Nullable 的列，可以通过，老 part 靠读时现算；差别是改了类型、删了列、改了 ORDER BY，就会失败。这种方式用得很少，大多数时候走第一种更稳。
 
-- 比较 backup schema (S0) vs 当前表 schema (S1)
-- 差异**只是 live 表多了几个有 DEFAULT/Nullable 的列**：通过，老 part 走读时合成
-- 差异是 MODIFY type / DROP COLUMN / MODIFY ORDER BY：失败
-
-**适用场景**：很少。大多数情况下走路径 A 更稳。
-
-**路径 C：只还原结构 + 选择性 ATTACH PART**
+第三种是只恢复结构，再挑着 ATTACH PART：
 
 ```sql
 RESTORE TABLE default.events_restored
@@ -285,69 +179,37 @@ RESTORE TABLE default.events_restored
 ALTER TABLE events_restored ATTACH PART '20260101_1_100_2';
 ```
 
-精细化操作，适合「我只想要某几个分区」。和路径 A 是同源思路，操作粒度更细。
+这是精细活，适合只要某几个分区的情况，思路跟第一种一样，只是粒度更细。
 
-### 4.3 哪些 ALTER 真正破坏 backup 可恢复性
+### 哪些 ALTER 真会影响恢复
 
-**完全不破坏**（路径 A 永远能用）：
+恢复到新表这条路，线上表做了什么 ALTER 都不影响，ADD COLUMN、MATERIALIZE COLUMN、DROP COLUMN 都一样，backup 自带 schema，跟线上表是两个世界。
 
-- ADD COLUMN（不 MATERIALIZE）
-- MATERIALIZE COLUMN（live 表的 mutation 不影响 backup）
-- DROP COLUMN
-- 任何对 live 表的 ALTER
+合并回原表这条路，改类型、删列、改列名都会让它失败。
 
-只要走路径 A 用 backup 自带的 schema 还原到新表名，永远成功——backup 是独立宇宙。
+有几种情况两条路都会受影响：表改了名，backup 里的表名和线上对不上，可以手工改元数据，但很麻烦；改了引擎；改了 ORDER BY 以后还想恢复回原表。
 
-**只破坏路径 B**：
+### 破坏性 ALTER 之前，重做一次 base BACKUP
 
-- MODIFY COLUMN type
-- DROP COLUMN（schema 不再匹配）
-- RENAME COLUMN
+合规归档的场景下，真正的保障不是 backup 文件在那儿，是恢复演练能跑通。
 
-**严重情况下两条路径都受影响**：
+我建议的节奏是：每次做破坏性的 ALTER（改类型、改 ORDER BY、改引擎）之前，先做一次完整的 base BACKUP，打上「post-alter-X」这样的标记，在测试集群上完整地 RESTORE 演练一遍，演练过了才去生产上执行 ALTER，ALTER 做完再做一次 base BACKUP。这样不管什么时候出事，最近的那份 base BACKUP 都跟当前线上表的 schema 是兼容的。
 
-- 表 RENAME（backup 文件名 vs live 表名对不上，可手工修元数据但麻烦）
-- MODIFY ENGINE
-- MODIFY ORDER BY 后想还原回原表
+### Glacier 取回还得多等一阵
 
-### 4.4 演练原则：破坏性 ALTER 之前重做 base BACKUP
+如果 backup 已经在 Glacier Deep Archive 上了，真正恢复之前还有 12 到 48 小时的 `restore-object` 等待。这段时间正好拿来做演练和准备。老 backup 的 schema 可能早就跟现在的线上表差得很远了，演练的时候一定要确认好走哪种恢复方式。
 
-合规归档场景下，**真正的安全保证不是「backup 文件存在」，而是「恢复演练能跑通」**。建议的节奏：
+## S3 Engine 加 Parquet 上的 ALTER
 
-1. 每次破坏性 ALTER（MODIFY type / MODIFY ORDER BY / 改引擎）之前
-2. 做一次完整 base BACKUP，标记 「post-alter-X」
-3. 在测试集群上做一次完整 RESTORE 演练
-4. 演练通过后才执行生产 ALTER
-5. ALTER 完成后再做一次 base BACKUP
+### ClickHouse 只是来查的，数据不归它管
 
-这样不管什么时候出事，最近的 base BACKUP 都和当前 live 表 schema 兼容。
+S3 Engine 加 Parquet 最大的不同是，Parquet 文件不属于 ClickHouse。它们是业务通过 `INSERT INTO FUNCTION s3()`，或者 Spark、Flink、自研管道这些外部工具写出来的，ClickHouse 只是个查询前端。
 
-### 4.5 Glacier 取回的连带成本
+所以 ClickHouse 这边的 ALTER 基本碰不到 S3 上的 Parquet 文件，ClickHouse 本来就不管这些文件。schema 变更真正靠的，是 Parquet 文件自己。
 
-如果 backup 已经在 Glacier Deep Archive 上：
+### Parquet 自描述，按列名对应
 
-- 真正还原前还有 12-48h 的 `restore-object` 等待
-- 这个等待期是做演练和准备的最佳窗口
-- 老 backup 的 schema 可能和当前 live 表早就漂得很远，演练阶段必须确认走哪条 RESTORE 路径
-
----
-
-## 五、场景三：S3 Engine + Parquet 上的 ALTER
-
-### 5.1 模型差异：ClickHouse 是查询者，不是数据 owner
-
-S3 Engine + Parquet 的核心差异是：**Parquet 文件不属于 ClickHouse**。它们由业务通过 `INSERT INTO FUNCTION s3()` 或外部工具（Spark / Flink / 自研管道）生产，ClickHouse 只是个查询前端。
-
-这意味着：
-
-- **ClickHouse 端的 ALTER 几乎不影响 S3 上的 Parquet 文件**——因为 ClickHouse 根本不管这些文件
-- **Schema 演化的真正机制在 Parquet 文件本身**
-
-### 5.2 Parquet 的 schema 自描述与列名映射
-
-Parquet 在文件 footer 里完整存了 schema：列名、类型、压缩 codec、统计信息。
-
-ClickHouse 读取时**按列名匹配** ClickHouse 表的列定义和 Parquet 文件里的列。这是 schema 演化最关键的一点。
+Parquet 在文件的 footer 里存了完整的 schema：列名、类型、压缩 codec、统计信息。ClickHouse 读的时候，是按列名去对应表定义里的列和 Parquet 文件里的列的。这是整个 Parquet 方案能平滑演进的关键。
 
 ```sql
 -- ClickHouse 表定义
@@ -360,47 +222,21 @@ CREATE TABLE events_archive (
 SETTINGS use_hive_partitioning = 1;
 ```
 
-读老 Parquet 文件时：
+读老的 Parquet 文件时，`event_time`、`user_id`、`event_type` 在文件里都有，直接读；`new_field` 老文件里没有，就用 DEFAULT 填，NULL 或者空字符串。这跟 ClickHouse 自己的读时现算是一回事，只不过是在文件格式这一层做的。
 
-- `event_time / user_id / event_type` 在 Parquet 里有对应列 → 直接读
-- `new_field` 在老 Parquet 里没有 → 用 DEFAULT 填充（NULL 或空字符串）
+### 几种 ALTER 在 Parquet 上的表现
 
-**这就是 Parquet 方案 schema 演化的核心机制——和 ClickHouse 自己的「读时合成」是同一个语义，只是发生在文件格式层。**
+ADD COLUMN：在 ClickHouse 的表上加列只改元数据，瞬时完成；老的 Parquet 文件没有这列，读的时候返回 DEFAULT；新写出来的文件有没有这列，看业务的写入逻辑，一般业务管道会同步加上。完全兼容。
 
-### 5.3 三种 ALTER 在 Parquet 方案上的具体表现
+改类型：在 ClickHouse 表上改类型只改元数据，Parquet 文件里的列类型没变，读的时候 ClickHouse 会试着把 Parquet 的类型转成表上声明的类型。整数之间扩位，比如 Int32 转 Int64，是安全的；Int 转 Float、String 转 Int 这种会失败或者截断。所以能转的，比如提高精度、加减 Nullable，交给 ClickHouse 自动转；不能转的，就得在写出端把 Parquet 的列类型也改了，或者干脆另起一列。
 
-**ADD COLUMN**：
+DROP COLUMN：在 ClickHouse 表上删列只改元数据，老的 Parquet 里还有这一列的数据，只是 ClickHouse 不读了，新写的文件也不再写这列。老文件里这列的数据会一直占着 S3 的空间，这跟 S3 Disk 不一样，Parquet 没有 ClickHouse 那种异步清理。真想把空间腾出来，得业务自己把老文件重写一遍。
 
-- 在 ClickHouse 的 S3 Engine 表上 ADD COLUMN：纯元数据，瞬时
-- 老 Parquet 文件没有这列：读时返回 DEFAULT
-- 新写入的 Parquet 文件：取决于业务的写入逻辑——一般业务管道会同步加这列写出来
-- **完美兼容**
+RENAME COLUMN：在 ClickHouse 表上改列名只改元数据，可 Parquet 是按列名对应的，改了名以后老文件里这一列就读不到了。要么让写出端同步改名，新文件用新列名，要么在视图层做个映射。
 
-**MODIFY COLUMN type**：
+### 和 Hive 分区配合
 
-- 在 ClickHouse 表上改类型：纯元数据
-- Parquet 文件本身的列类型没变
-- 读时 ClickHouse 尝试把 Parquet 的类型转成 ClickHouse 表声明的类型
-- 类型转换支持范围：Int 之间扩位（Int32 → Int64）安全；Int → Float、String → Int 这种转换**会失败或截断**
-- 实操中：能转的（升精度、Nullable 加减）走 ClickHouse 自动；不能转的，业务需要在写出端把 Parquet 的列类型也改了，或者另起一列
-
-**DROP COLUMN**：
-
-- 在 ClickHouse 表上 DROP：纯元数据
-- 老 Parquet 还有这列文件，但 ClickHouse 不读了
-- 新 Parquet 不写这列了
-- 老 Parquet 上这列的存储**继续占着 S3 空间**——这是和 S3 Disk 不同的地方，Parquet 没有 ClickHouse 的异步清理机制
-- 真要释放空间：业务自己重写老 Parquet 文件（partition compaction）
-
-**RENAME COLUMN**：
-
-- 在 ClickHouse 表上改列名：纯元数据
-- 但 Parquet 是按列名匹配的——改了列名后老 Parquet 里这列就读不到了
-- 实操：要么改 Parquet 写出端同步改名（新文件用新列名），要么用视图层做映射
-
-### 5.4 与 Hive Partitioning 的协同
-
-`use_hive_partitioning=1` 模式下，分区列从路径解析：
+开了 `use_hive_partitioning=1`，分区列是从路径里解析出来的：
 
 ```
 s3://bucket/events/dt=2026-04-29/hour=10/file.parquet
@@ -408,79 +244,36 @@ s3://bucket/events/dt=2026-04-29/hour=10/file.parquet
                        dt=2026-04-29  hour=10
 ```
 
-加分区列、改分区方式时：
+要加分区列、改分区方式的时候，老文件的路径不用动，它们的 dt 照样按老路径解析，新文件按新的路径写就行，不需要重写任何文件。分区演进在 Parquet 上也几乎没有代价，这是它结构上的一个优势。
 
-- ClickHouse 端 ADD COLUMN dt 即可
-- **老 Parquet 文件路径不变**——它们的 dt 还是按老路径解析
-- 完美兼容，无需重写文件
+### Parquet 也有搞不定的
 
-这是 Parquet 方案的一个**结构性优势**：分区演化也几乎零代价。
+也不是所有 ALTER 都这么顺。`String` 改成 `LowCardinality(String)` 这种 ClickHouse 特有的类型，Parquet 表达不了，只能在 ClickHouse 这边声明。嵌套结构的改造，Parquet 虽然支持 Struct、List，但跨版本演进比平铺的列复杂得多。还有业务那边的改造成本，你想让新写出来的文件带上新列，就得去改业务管道，这个工作量是实打实的，只是它发生在 ClickHouse 之外。
 
-### 5.5 Parquet 方案的 schema 演化局限
-
-并不是所有 ALTER 都自动友好：
-
-1. **复杂类型变更**：`String` → `LowCardinality(String)` 这种 ClickHouse 特有类型，Parquet 没法表达，只能在 ClickHouse 侧做声明
-2. **嵌套结构改造**：Parquet 支持嵌套（Struct/List），但跨版本演化比扁平列复杂
-3. **业务双写期成本**：如果你想让「新写入的 Parquet 文件有新列」，必须改业务管道。这个改造的工作量是真实存在的，只是它发生在 ClickHouse 之外
-
----
-
-## 六、三种方案的 schema 演化友好度对比
+## 三种方案放一起比
 
 <figure class="dfig">
-<img class="dfig-l" src="/diagrams/alter-02.light.svg" alt="六、三种方案的 schema 演化友好度对比">
-<img class="dfig-d" src="/diagrams/alter-02.dark.svg" alt="六、三种方案的 schema 演化友好度对比">
+<img class="dfig-l" src="/diagrams/alter-02.light.svg" alt="三种方案对 schema 变更的友好度：Parquet 最友好，BACKUP 次之，S3 Disk 最差">
+<img class="dfig-d" src="/diagrams/alter-02.dark.svg" alt="三种方案对 schema 变更的友好度：Parquet 最友好，BACKUP 次之，S3 Disk 最差">
 </figure>
 
-排序结论：**Parquet > BACKUP > S3 Disk**，但每种方案都有不同维度的代价转移。
+排下来是 Parquet 最友好，BACKUP 其次，S3 Disk 最差，不过每种方案都是把代价挪到了不同的地方。
 
-**为什么 Parquet 最友好**：
+Parquet 最友好，是因为数据文件自描述、按列名读，从架构上就把 schema 演进这件事解决了，ClickHouse 只是个读的人，ALTER 用不着去碰数据。Iceberg、Delta Lake、Hudi 这些湖仓格式之所以会出现，正是为了这个。
 
-- 数据文件自描述 + 按列名读取，是 schema evolution 这个工程问题的**架构级解决方案**
-- ClickHouse 端只是个 reader，ALTER 不需要管数据
-- 这恰恰是 Iceberg / Delta Lake / Hudi 等湖仓格式诞生的核心动机
+BACKUP 其次。backup 是冻住的冷数据快照，跟线上表完全分开。代价不是没有，而是挪到了恢复演练上，你得确保关键时刻有一条路能恢复出来。恢复到新表这条路几乎什么情况都能用，但业务那边得能读老 schema。
 
-**为什么 BACKUP 次之**：
+S3 Disk 最差。数据说到底还是 ClickHouse 自己的 part，schema 变更得走 ClickHouse 自己的 mutation，在 100T 的 S3 上，带宽、限流、ZK、storage policy 漂移，哪一样都可能出问题，代价大还没准。等于是把业务管道改造的复杂度，换成了运维窗口里调度 mutation 的复杂度。
 
-- backup 是冷数据的冻结快照，与 live 表完全解耦
-- 代价不是「不存在」，而是「转移到了恢复演练」——必须确保关键时刻能用某条路径恢复
-- 路径 A（恢复到新表名）几乎万能，但需要业务侧做适配以读老 schema
+## 实操上怎么做
 
-**为什么 S3 Disk 最不友好**：
+加列优先用 Nullable 或者常量 DEFAULT，三种方案下都是只改元数据、老数据读时兜底。100T 的表上，永远别一次性跑 MATERIALIZE COLUMN，要跑就按分区拆开。改类型、改 ORDER BY、改引擎这种结构性的 ALTER，按月排期，评估、演练、维护窗口、重做 backup，一步都不能省，不是想改就改的。
 
-- 数据本质上还是 ClickHouse 自己的 part，schema 演化要走 ClickHouse 自己的 mutation 路径
-- mutation 在 100T S3 上代价巨大且不确定（带宽、限流、ZK、storage policy 漂移）
-- 等于把「业务管道演化的复杂度」转移到了「运维窗口的 mutation 调度」
+DDL 工具也得管起来。很多团队的 DDL 工具是「加列加立即 MATERIALIZE」一起发的，在冷热分层的场景下必须改：加列只发 `ADD COLUMN`，不带 `MATERIALIZE`；业务真要 materialize（很少见），单独审批，按分区分批跑；DDL 工具上再加一条 lint 规则，100T 以上的表不允许 `MODIFY COLUMN type` 和不限定分区的 `MATERIALIZE COLUMN`，真要做得人工审批。
 
----
+每次破坏性的 ALTER 之前，先在测试集群上建一张同结构的影子表，灌 1% 的抽样数据，热的冷的都要有，把计划中的 ALTER 跑一遍，看 mutation 的进度、S3 的 IO 模式、storage policy 的行为，估一估放到生产 100T 上要花多少，有 backup 的话再确认一下 RESTORE 的兼容性。
 
-## 七、实操建议
-
-### 7.1 通用原则
-
-1. **加列首选 Nullable 或 DEFAULT 常量**——三个方案下都是「瞬时元数据 + 读时合成兜底」
-2. **永远不在 100T 表上跑 MATERIALIZE COLUMN**——除非按分区拆成多次
-3. **结构性 ALTER（MODIFY type / MODIFY ORDER BY / 改引擎）按月度排期**——不是「想改就改」，而是评估、演练、维护窗口、重做 backup 的完整流程
-
-### 7.2 DDL 工具治理
-
-很多团队的 DDL 工具是「加列 + 立即 MATERIALIZE」的组合。在冷热分层场景下必须改造：
-
-- 加列只发 `ADD COLUMN`，不带 `MATERIALIZE`
-- 如果业务真要 materialize（少见），走单独审批，按分区批量执行
-- DDL 工具上线一个 lint 规则：100T 以上的表禁用 `MODIFY COLUMN type` 和无作用域限定的 `MATERIALIZE COLUMN`，要做必须人工审批
-
-### 7.3 影子表演练
-
-每次破坏性 ALTER 之前：
-
-1. 在测试集群上建一张同结构的影子表，灌 1% 抽样数据（覆盖热 + 冷）
-2. 执行计划中的 ALTER，观察 mutation 进度、S3 IO 模式、storage policy 行为
-3. 估算扩展到生产 100T 的代价
-4. 确认 RESTORE 兼容性（如果有 backup）
-
-### 7.4 三种方案的 schema 漂移管理
+三种方案各自要盯的东西也不一样：
 
 | 方案 | 漂移管理重点 |
 |---|---|
@@ -488,20 +281,12 @@ s3://bucket/events/dt=2026-04-29/hour=10/file.parquet
 | BACKUP | 每次破坏性 ALTER 前后做 base BACKUP，定期演练恢复 |
 | Parquet | 业务管道双写期管理，老文件的 schema 元数据归档 |
 
-### 7.5 几个具体技术点
+还有几个零碎的点。加列前后查一下 `SELECT * FROM system.mutations WHERE NOT is_done`，确认没有正在跑的 mutation。改类型用前面那个加新列、双写、按分区 materialize、删老列的办法，别直接改。别定期对冷数据跑 `OPTIMIZE TABLE ... FINAL DEDUPLICATE`，它会把整张表重新 merge 一遍，冷盘上就是全量的 GET 和 PUT。ZK 上 mutations 节点的数量，交给 `finished_mutations_to_keep` 这类表设置去控制，别手工去删 ZK 节点。ALTER 到底是不是真在改数据，`system.mutations` 是唯一靠得住的地方，碰上 ALTER 卡住，先查这张表。
 
-- 加列前后 `SELECT * FROM system.mutations WHERE NOT is_done` 检查无 in-flight mutation
-- MODIFY type 用「加新列 + 双写 + 分区 materialize + 删老列」四步法替代直接改
-- 定期对冷数据执行 `OPTIMIZE TABLE ... FINAL DEDUPLICATE` 是禁忌——会触发全表 mutation
-- ZooKeeper 上 `/clickhouse/tables/.../mutations/` 节点定期清理，避免 ZK 元数据膨胀
-- `system.mutations` 是 ALTER 是否真在改数据的唯一可靠信号源——任何「ALTER 卡住」问题先查这张表
+## 最后
 
----
+schema 变更有多难，取决于老数据放在哪儿。
 
-## 八、一句话总结
+S3 Disk 把数据留在 ClickHouse 手里，改 schema 就得走 ClickHouse 的 mutation，数据量一大，代价又高又没准。BACKUP 把冷数据冻成自描述的快照，改 schema 跟线上表完全没关系，代价挪到了演练上。Parquet 把数据放在开放格式里，schema 演进是文件格式自带的本事，代价挪到了业务管道的改造上。
 
-**Schema 演化的难度，等于「老数据存在哪里」的函数。**
-
-S3 Disk 把数据放在 ClickHouse 的管控范围内，演化要走 ClickHouse 的 mutation 机制，在大数据量下代价高且不确定；BACKUP 把冷数据冻结成自描述快照，演化与 live 表完全解耦，代价转移到演练频次；Parquet 把数据放在开放格式里，schema 演化是文件格式自带的能力，代价转移到业务管道改造。
-
-冷热分层的真正成本不是写入和查询，而是「3 年后我加一列时，会不会出事」。提前想清楚这一点再选方案，比 100T 数据已经落地之后再后悔，便宜 3 个数量级。
+冷热分层真正的成本，往往不在写入和查询，而在三年以后要加一列的时候会不会出事。这件事选方案之前就该想清楚，100T 数据落了地再后悔，代价要大得多。

@@ -4,67 +4,29 @@ title: 从 S3 Disk 到 Parquet：冷数据为什么要脱离主线
 
 # 从 S3 Disk 到 Parquet：冷数据为什么要脱离主线
 
-> S3 Disk 的思路是让 ClickHouse 把 S3 当一块慢盘，代价是把 MergeTree 的整套机制都带到了对象存储上：part、merge、mutation、副本、启动校验。换个思路 —— 不让 ClickHouse 管冷数据。
->
-> **阅读对象**：冷数据规模还在涨、已经开始拖累主集群，或者冷数据需要被 ClickHouse 以外的引擎读取的团队。
+S3 Disk 的思路，是让 ClickHouse 把 S3 当成一块慢盘来用。
 
----
+这样改造成本是低，可它也把 MergeTree 的一整套机制都搬到了对象存储上：part、merge、mutation、副本、metadata、启动校验，还有 list 和 delete。
 
-## 引言
+冷数据越攒越多，很多团队就会碰上这样的局面：冷数据明明没几个人查，却一直拖累着 ClickHouse 主集群；或者冷数据还要查，可查的方式已经不适合放在 MergeTree 主线里了。
 
-S3 Disk 的核心思路是：让 ClickHouse 把 S3 当成一块慢盘。
+这时候可以换个思路：不让 ClickHouse 管冷数据了，把它导出成 Parquet 放在 S3 上。ClickHouse 照样能通过 S3 Engine 或者 `s3()` 表函数去查它，Spark、Trino、DuckDB、Python 也都能直接读。
 
-这个思路改造成本低，但也把 MergeTree 的一整套机制带到了对象存储上：part、merge、mutation、副本、metadata、启动校验、list/delete。
+这么做不是为了赶什么新概念，是为了把数据从某个引擎的内部格式里放出来。
 
-当冷数据规模继续增长，很多团队会遇到一个问题：冷数据明明很少查，却还在拖累 ClickHouse 主集群；或者冷数据仍然要查，但查询模式已经不适合 MergeTree 主线。
+## S3 Disk 的问题出在哪
 
-这时可以换一个思路：**不要让 ClickHouse 管理冷数据，把冷数据导出成 Parquet 放在 S3 上。**
+S3 Disk 的坑，说到底都是因为 ClickHouse 想把 S3 当本地盘用。
 
-ClickHouse 仍然可以通过 S3 Engine 或 `s3()` 表函数查询它；Spark、Trino、DuckDB、Python 也可以直接读它。
+MergeTree 在本地盘上跑得好，是因为本地盘禁得起频繁地建删小文件、做 merge、随机读 mark 和列文件、快速校验 part、在副本之间传 part。S3 完全是另一回事：对象是不可变的，rename 不便宜，list 又慢又容易成瓶颈，小对象一多成本就上去了，每次远端 GET 都要付一个 RTT，它更擅长的是大文件的顺序读写。
 
-这不是为了追求新概念，而是为了把数据从某个引擎的内部格式里释放出来。
+所以数据在 S3 Disk 上待得久了，问题就一个个冒出来：S3 上还在 merge，GET、PUT、DELETE 请求数飙升；每个 part 拆成一堆小对象；Keeper 的元数据跟着 part 一起涨；新加一个副本初始化代价很大；S3 不可达还会影响启动；冷查询也越来越难管。
 
----
+Parquet 方案就是干脆绕开这些机制，S3 就当 S3 用，文件就是文件。
 
-## 一、S3 Disk 的问题从哪里来
+## 三种方案的边界
 
-S3 Disk 的几乎所有坑，都来自一句话：
-
-> ClickHouse 试图把 S3 当本地盘用。
-
-MergeTree 在本地盘上工作得很好，因为本地盘适合：
-
-- 频繁创建和删除小文件
-- merge part
-- 随机读 mark 和列文件
-- 快速校验 part
-- 副本之间传输 part
-
-S3 的模型完全不同：
-
-- 对象是不可变语义
-- rename 不便宜
-- list 慢且容易成为瓶颈
-- 小对象多了成本很高
-- 每次远端 GET 都有 RTT
-- 对象存储更适合大文件顺序读写
-
-所以当数据长期留在 S3 Disk 上时，常见问题会逐步出现：
-
-- S3 上继续 merge，GET/PUT/DELETE 飙升
-- 每个 part 拆成大量小对象
-- Keeper/ZooKeeper 元数据随 part 增长
-- 新副本初始化成本很高
-- S3 不可达影响启动
-- 冷查询治理越来越复杂
-
-Parquet 方案的本质是绕开这些机制：S3 就是 S3，文件就是文件。
-
----
-
-## 二、三种方案的边界
-
-先把 S3 Disk、BACKUP、Parquet 放在一张表里（前两个方案分别在系列第一、第三篇展开）：
+把 S3 Disk、BACKUP、Parquet 放在一起比一比：
 
 | 维度 | [S3 Disk](/clickhouse/cold-storage/s3-disk) | [BACKUP/RESTORE](/clickhouse/cold-storage/backup-restore) | S3 Engine + Parquet |
 |---|---|---|---|
@@ -76,13 +38,9 @@ Parquet 方案的本质是绕开这些机制：S3 就是 S3，文件就是文件
 | 元数据压力 | 仍在 ClickHouse 主线 | DROP 后释放 | 脱离主线 |
 | 适合场景 | 在线冷查 | 超冷合规归档 | 开放冷数据、跨引擎 |
 
-简单判断：
+冷数据偶尔在线查，又不想改架构，先用 S3 Disk；冷数据几乎不查，只为合规留着，用 BACKUP/RESTORE；冷数据还要查，还要给好几个引擎用，再考虑 Parquet。
 
-- 冷数据偶尔在线查，且不想改架构：先用 S3 Disk
-- 冷数据几乎不查，只为合规保留：用 BACKUP/RESTORE
-- 冷数据仍要查，还要给多引擎使用：考虑 Parquet
-
-生产里也可以组合：
+生产上也可以组合着来：
 
 ```text
 < 30 天       本地 NVMe
@@ -91,13 +49,11 @@ Parquet 方案的本质是绕开这些机制：S3 就是 S3，文件就是文件
 > 1~3 年      BACKUP 到 Glacier / Deep Archive
 ```
 
-每层用最合适的工具，而不是一套方案打到底。
+每一层用最合适的工具，没必要一套方案用到底。
 
----
+## 基本架构
 
-## 三、Parquet 方案的基本架构
-
-核心流程：
+流程是这样的：
 
 ```text
 热表 MergeTree
@@ -109,9 +65,9 @@ ClickHouse S3 Engine / s3Cluster 查询
 Spark / Trino / DuckDB / Python 复用
 ```
 
-冷数据不再由 MergeTree 管理。ClickHouse 只在查询时读取 Parquet。
+冷数据不归 MergeTree 管了，ClickHouse 只在查询的时候去读 Parquet。
 
-一个典型视图：
+一个典型的视图：
 
 ```sql
 CREATE OR REPLACE VIEW logs_archive AS
@@ -124,21 +80,17 @@ FROM s3Cluster(
 SETTINGS use_hive_partitioning = 1;
 ```
 
-如果路径是 Hive 风格：
+路径如果是 Hive 风格的：
 
 ```text
 s3://bucket/archive/logs/year=2024/month=04/day=27/part-0001.parquet
 ```
 
-配合 `use_hive_partitioning = 1`，ClickHouse 可以从路径里识别 `year`、`month`、`day` 等虚拟列，从而减少无关 prefix 的扫描。
+开着 `use_hive_partitioning = 1`，ClickHouse 能从路径里认出 `_year`、`_month`、`_day` 这些虚拟列（名字前面带下划线），查询带上这些条件，就能少扫很多不相干的 prefix。新版本里这个设置默认就是开的。
 
----
+## 联合视图，让业务少操心分层
 
-## 四、联合视图：让业务少感知分层
-
-业务不应该记住「90 天内查热表，90 天外查归档表」。
-
-可以建一个统一视图：
+业务方不应该去记「90 天以内查热表，90 天以外查归档表」这种事。可以建一个统一的视图：
 
 ```sql
 CREATE OR REPLACE VIEW logs AS
@@ -151,15 +103,13 @@ FROM logs_archive
 WHERE event_time <= today() - 90;
 ```
 
-关键是两个子查询都写上时间边界。这样查询优化器有机会跳过不相关分支。
+两个子查询都得写上时间边界，优化器才有机会把不相干的那一支跳过去。
 
-实际生产里建议再加查询网关或 SQL 模板，强制冷查询带时间条件。否则 `**/*.parquet` 会触发大范围 list，Parquet 方案也会被用坏。
+生产上最好再加一层查询网关或者 SQL 模板，强制冷查询带时间条件。不然 `**/*.parquet` 一扫就是一大片 list，Parquet 方案也会被用坏。
 
----
+## 怎么导出
 
-## 五、如何导出 Parquet
-
-最简单的方式是 `INSERT INTO FUNCTION s3()`：
+最简单的是 `INSERT INTO FUNCTION s3()`：
 
 ```sql
 INSERT INTO FUNCTION s3(
@@ -180,68 +130,26 @@ WHERE toDate(event_time) = '2024-04-27'
 ORDER BY user_id, event_time;
 ```
 
-导出前 `ORDER BY` 很重要。
-
-如果常见查询是：
+导出前的 `ORDER BY` 很重要。常见的查询要是这样的：
 
 ```sql
 WHERE user_id = 'xxx'
   AND event_time BETWEEN ... AND ...
 ```
 
-那么导出时按 `user_id, event_time` 排序，可以让 Parquet row group 的 min/max 范围更集中，提升跳过无关 row group 的概率。
+那导出时就按 `user_id, event_time` 排序，Parquet 每个 row group 的 min/max 范围会更集中，跳过无关 row group 的机会就大。
 
-导出流程不要直接写正式路径。更稳的做法是：
+导出也别直接往正式路径里写。稳一点的做法是先写到 tmp 路径，校验行数、大小，抽几条数据看看，给这一批打上成功的标记，再挪到或者登记到正式路径上，最后校验都过了，才去 DROP 热表的分区。S3 上没有真正便宜的 rename，数据量大的时候，用「写到临时 prefix 再放一个成功标记文件」的办法，别一个个文件去 mv。
 
-```text
-1. 写入 tmp 路径
-2. 校验行数、大小、抽样数据
-3. 标记本批次成功
-4. 再移动或注册到正式路径
-5. 校验通过后再 DROP 热表分区
-```
+## 文件怎么组织，决定了查得快不快
 
-S3 上没有真正便宜的 rename，大规模场景可以用「写临时 prefix + 成功标记文件」的方式，而不是逐文件 mv。
+Parquet 方案好不好用，主要看文件是怎么组织的。
 
----
+路径用 Hive 风格，比如 `archive/logs/year=2024/month=04/day=27/`。单个文件控制在 128MB 到 512MB，太小了 list 慢、对象多，太大了并行度上不去，失败重试也麻烦。row group 可以先从 100 万行左右开始，再按字段宽度和查询方式去调。按常用的过滤字段排序，审计按用户查就按 `user_id, event_time`，日志按服务查就按 `service, event_time`。压缩用 zstd，压缩率和读取性能之间比较平衡，也是 ClickHouse 导出 Parquet 的默认值。还有，别让 `**/*.parquet` 不带条件地全扫，视图是方便了业务，可查询还是得要求带时间范围或者分区条件。
 
-## 六、文件组织决定查询性能
+## 查询相关的设置
 
-Parquet 方案好不好用，主要取决于文件组织。
-
-推荐规则：
-
-1. **Hive 风格路径**
-
-```text
-archive/logs/year=2024/month=04/day=27/
-```
-
-2. **单文件大小 128MB ~ 512MB**
-
-太小会 list 慢、对象数多；太大并行度低，也不利于失败重试。
-
-3. **Row group 大小按查询模式调整**
-
-可以从 100 万行左右开始，根据字段宽度和查询模式调优。
-
-4. **按常见过滤字段排序**
-
-审计按用户查，就按 `user_id, event_time`；日志按服务查，就按 `service, event_time`。
-
-5. **压缩用 zstd**
-
-zstd 通常能在压缩率和读取性能之间取得较好平衡。
-
-6. **避免全局 `**/*.parquet` 无条件扫描**
-
-视图可以方便业务，但查询治理仍然必须要求时间范围或分区条件。
-
----
-
-## 七、查询优化设置
-
-冷查询 profile 可以单独配置：
+冷查询可以单独配一个 profile：
 
 ```xml
 <profiles>
@@ -251,7 +159,6 @@ zstd 通常能在压缩率和读取性能之间取得较好平衡。
     <input_format_parquet_max_block_size>65536</input_format_parquet_max_block_size>
 
     <s3_max_get_rps>200</s3_max_get_rps>
-    <s3_max_connections>32</s3_max_connections>
 
     <max_threads>8</max_threads>
     <max_memory_usage>10000000000</max_memory_usage>
@@ -260,126 +167,56 @@ zstd 通常能在压缩率和读取性能之间取得较好平衡。
 </profiles>
 ```
 
-> 关于 native Parquet reader：旧的 `input_format_parquet_use_native_reader` 这个名字虽然能在文档里查到，但实际功能并未完成，新版本中实验性 native reader 走的是 `_v3` 后缀的 setting（25.x 起）。生产中**不要依赖某个特定版本的 native reader 开关**——版本演进还在进行，按当前 ClickHouse 版本的 release notes 确认。
+`input_format_parquet_filter_push_down` 是关键，它根据 WHERE 条件跳过整个 row group，新版本里默认就开着。以前有人在 profile 里写 `s3_max_connections`，这个设置在新版本里已经标成废弃了，写了也不起作用，我就从上面去掉了。
 
-`input_format_parquet_filter_push_down` 是关键，它让 WHERE 条件尽量下推到 Parquet 读取层。
+native Parquet reader 这块还在变。旧的 `input_format_parquet_use_native_reader` 在文档里查得到，但功能一直没做完，新版本实验性的 native reader 走的是带 `_v3` 后缀的设置。生产上别依赖某个版本的 native reader 开关，用哪个版本就去看哪个版本的 release notes。
 
-另外，S3 表引擎在较新版本中也支持本地 filesystem cache 相关能力，可以按版本文档启用 `enable_filesystem_cache`、`filesystem_cache_name` 等配置。不要把 Parquet 方案简单理解成「完全无缓存」，只是它的缓存和 S3 Disk 的 cache disk 不是同一个心智模型。
+另外，S3 表引擎在新一些的版本里也能用本地的 filesystem cache，可以按文档开 `enable_filesystem_cache`、`filesystem_cache_name` 这些设置。所以 Parquet 方案也不是完全没缓存，只是它的缓存跟 S3 Disk 的 cache disk 不是一回事。
 
----
+## 好处
 
-## 八、优势
+好处很直接。没有 part 的 merge 了，没有 ReplicatedMergeTree 的副本同步了，冷数据也不再拖累 Keeper 的元数据，S3 上的对象数能降下来不少。Spark、Trino、DuckDB、Python 都能读，数据的生命周期也可以交给 S3 Lifecycle 或者数据湖的治理系统去管。
 
-Parquet 方案的优势很直接：
+110TB 这个量级的数据，Parquet 加 zstd 往往比多副本的 ClickHouse part 省不少存储。具体省多少要看字段类型、压缩算法、排序方式和副本数，没法一概而论，但省下 30% 到 60% 并不少见。
 
-- 不再有 ClickHouse part merge
-- 不再有 ReplicatedMergeTree 副本同步
-- 冷数据不再拖累 Keeper 元数据
-- S3 对象数可以显著下降
-- Spark、Trino、DuckDB、Python 都能读
-- 数据生命周期可以交给 S3 Lifecycle 或数据湖治理系统
+更要紧的是开放。S3 Disk 里的数据是 ClickHouse 的，Parquet 里的数据才是业务自己的。
 
-对 110TB 级别的数据，Parquet + zstd 往往能比多副本 ClickHouse part 节省不少存储。具体比例取决于字段类型、压缩算法、排序方式和副本数，不能一概而论，但 30%~60% 的存储改善并不少见。
+## 代价
 
-更重要的是开放性。
+Parquet 也不是什么都好，它会带来新的工程负担。
 
-S3 Disk 里的数据属于 ClickHouse；Parquet 里的数据属于业务。
+首先没有 ACID。导出到一半失败了，可能留下半批文件，所以 tmp 路径、成功标记、批次台账、幂等重跑一样都少不了。
 
----
+它也不支持 mutation。Parquet 文件一般是按分区整个重写，适合只追加的日志、审计、行为数据，不适合经常 UPDATE、DELETE 的。
 
-## 九、代价
+schema 演进得有人管。热表加了列，老的 Parquet 文件里没有这列，读取这一层得能接受缺的字段是 NULL，数据字典和 schema 的版本也得记下来。
 
-Parquet 不是银弹。
+list S3 照样会慢。路径组织得不好，或者查询不带分区条件，还是会扫一大堆 prefix。
 
-它会带来新的工程负担：
+查询也照样得管。Parquet 能少读一些没用的数据，可挡不住用户不带条件地全表扫，冷查询该限流还得限流，该限并发、限时间范围的也一样。
 
-### 没有 ACID
+## 从 S3 Disk 迁过来
 
-导出过程中失败，可能留下半批文件。必须有 tmp 路径、成功标记、批次台账和幂等重跑。
+别一口气切过去，分三步走。
 
-### 不支持 mutation
+第一步是旁路导出。原来的 S3 Disk 路径不动，加一个定时任务，把每天的冷数据导出成 Parquet。这一步不是为了马上切流，是为了验证：行数对不对得上，schema 兼不兼容，查询结果一不一致，文件大小合不合理，常见的查询有没有变快或者变稳。
 
-Parquet 文件通常按分区整体重写。适合 append-only 日志、审计、行为数据，不适合频繁 UPDATE/DELETE。
+第二步是用联合视图灰度。建好 `UNION ALL` 视图，让一部分只读查询走 Parquet。先切审计、离线分析、低频的查询，核心的线上看板放到最后。
 
-### Schema 演进要管
+第三步才是释放 S3 Disk 上的数据。确认 Parquet 这边能用了，再去清理 S3 Disk 上对应的分区。清理之前，Parquet 的台账要完整，行数要校验过，业务要已经切过来，恢复的路径要清楚，S3 Lifecycle 也要配好。
 
-热表加列后，老 Parquet 文件没有新列。读取层要能接受缺失字段为 NULL，数据字典和 schema 版本也要记录。
+## 什么时候直接上 Iceberg
 
-### List S3 仍然会慢
+S3 Engine 加 Parquet，可以看成一个轻量版的湖仓。
 
-路径组织不好，或者查询不带分区条件，仍然会扫大量 prefix。
+要是已经碰上多个引擎并发写、需要 ACID 的表提交、要做分区演进、要快照和 time travel、要统一的 catalog，或者文件数和小文件合并已经需要系统地管起来了，光靠散落的 Parquet 文件就不够了。这时候该认真考虑 Iceberg、Hudi、Delta Lake 这类开放表格式。
 
-### 查询治理仍然必要
+ClickHouse 继续管热数据和高性能的 OLAP 查询，冷数据进 Iceberg，由 Spark、Trino、ClickHouse 这些引擎一起用。
 
-Parquet 可以减少不必要读取，但挡不住用户无条件全表扫。冷查询仍然要限流、限并发、限时间范围。
+## 最后
 
----
+S3 Disk 是从本地盘走向对象存储的第一步，它保住了 ClickHouse 的使用体验，也把 MergeTree 的复杂性一起带到了对象存储上。
 
-## 十、从 S3 Disk 迁移到 Parquet
+Parquet 是另一条路，不再把 S3 装成本地盘，就老老实实拿它存大文件、开放格式和长期数据。冷数据还要在线查、要给别的团队用、又不想再给主集群的元数据添压力，S3 Engine 加 Parquet 是条很实在的路。
 
-不要一次性切换。
-
-推荐三阶段：
-
-### 阶段一：旁路导出
-
-保持原 S3 Disk 路径不变，新增定时任务，把每天的冷数据导出成 Parquet。
-
-目标不是立刻切流，而是验证：
-
-- 行数是否一致
-- schema 是否兼容
-- 查询结果是否一致
-- 文件大小是否合理
-- 常见查询是否变快或更稳定
-
-### 阶段二：联合视图灰度
-
-建 `UNION ALL` 视图，让部分只读查询走 Parquet。
-
-先切审计、离线分析、低频查询，不要先切核心线上看板。
-
-### 阶段三：释放 S3 Disk 数据
-
-确认 Parquet 数据可用后，再清理对应 S3 Disk 分区。
-
-清理前要确认：
-
-- Parquet 台账完整
-- 行数校验通过
-- 业务已经切流
-- 恢复路径明确
-- S3 Lifecycle 已配置
-
----
-
-## 十一、什么时候直接上 Iceberg
-
-S3 Engine + Parquet 可以理解成轻量版湖仓。
-
-如果你已经遇到下面的问题，单纯散文件 Parquet 可能不够：
-
-- 多引擎并发写入
-- 需要 ACID 表提交
-- 需要分区演进
-- 需要快照和 time travel
-- 需要统一 catalog
-- 文件数量和小文件合并需要系统治理
-
-这时应该认真考虑 Iceberg、Hudi、Delta Lake 这类开放表格式。
-
-ClickHouse 可以继续负责热数据和高性能 OLAP 查询；冷数据进入 Iceberg，由 Spark/Trino/ClickHouse 等多个引擎共享。
-
----
-
-## 结语
-
-S3 Disk 是从本地盘走向对象存储的第一步。它保留了 ClickHouse 的使用体验，也继承了 MergeTree 在对象存储上的复杂性。
-
-Parquet 是另一种思路：不再把 S3 伪装成本地盘，而是承认 S3 就适合存大文件、开放格式和长期数据。
-
-如果冷数据仍然要在线查、要跨团队复用、要脱离 ClickHouse 主集群的元数据压力，S3 Engine + Parquet 是一条务实的路线。
-
-它不是为了替代 ClickHouse，而是为了让 ClickHouse 回到自己最擅长的位置：管理热数据、服务高性能查询。
-
-冷数据应该属于业务，不应该永久锁在某个引擎的内部格式里。
+这么做也不是要替掉 ClickHouse，是让它回去干它最擅长的事：管热数据，扛高性能的查询。冷数据是业务的，没必要一直锁在某个引擎的内部格式里。

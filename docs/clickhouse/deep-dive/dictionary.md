@@ -4,26 +4,15 @@ title: ClickHouse 字典：省掉的 JOIN，多付的内存
 
 # ClickHouse 字典：省掉的 JOIN，多付的内存
 
-> 字典把「反复 JOIN 小维表」换成「一次加载、全局共享、O(1) 查找」—— 代价是双缓冲刷新时 2.2~2.5 倍的内存尖刺，以及一条你迟早会撞上的规模上限。
->
-> **阅读对象**：在 ClickHouse 里反复 JOIN 小维表，或者被字典刷新的内存尖刺打过的工程师。
+在 ClickHouse 里反复 JOIN 小维表的，迟早会有人跟你说：用字典啊，比 JOIN 快多了。这话没错。可字典刷新的时候内存会冲到稳态的两倍多，到了一定规模它就装不下了，这些很少有人一起说。这篇从字典是什么讲起，一直讲到 LAYOUT 怎么选、刷新和删除怎么处理、分布式下怎么省内存，最后是监控和排障。
 
----
+篇幅很长，建议按右边的目录挑着看。
 
-## 一、字典是什么
+## 字典是什么
 
-**ClickHouse 字典是一份由 ClickHouse 管理、常驻内存的查找表，可以用一个 key 在毫秒级（甚至微秒级）拿到对应的一行或几列数据。**
+说白了，字典就是一份由 ClickHouse 自己管理、常驻内存的 k-v 查找表，给一个 key，毫秒级甚至微秒级就能拿到对应的一行或者几列。你可以把它想成编程语言里的 `HashMap<Key, Value>`，只不过 value 可以有好几列；也可以想成 Redis 的 Hash，只不过加载和刷新都是 ClickHouse 自己做；或者就是关系库里的维表，只是不用每次 JOIN 都去磁盘上扫一遍。
 
-类比：
-- 编程语言里的 `HashMap<Key, Value>`，只是 value 可以是多列
-- Redis 里的 Hash，只是 ClickHouse 自己加载、自己刷新
-- 关系型数据库里的「维表」，只是不需要每次 JOIN 都去磁盘扫
-
-### 为什么需要它
-
-考虑事实表 `events`（几十亿行）+ 维表 `users`（几百万行），传统 JOIN 每次都要把右表读出来、建 hash 表，即使维表没变。
-
-字典做法：
+为什么需要它？假设有一张事实表 `events`，几十亿行，一张维表 `users`，几百万行。传统的 JOIN 每次都要把右表读出来、建一遍 hash 表，哪怕维表根本没变过。换成字典是这样：
 
 ```sql
 SELECT
@@ -34,27 +23,13 @@ WHERE action = 'click'
 GROUP BY city;
 ```
 
-`users_dict` **一次性常驻内存**，所有查询共享，`dictGet` 是 O(1) 哈希查找。维表更新由 ClickHouse 按 `LIFETIME` 自动刷新。
+`users_dict` 一次加载、常驻内存，所有查询共享，`dictGet` 就是一次 O(1) 的哈希查找。维表有更新，ClickHouse 按 `LIFETIME` 自己去刷。字典最核心的价值就在这：把反复 JOIN 小维表，变成一次加载、全局共享、O(1) 查找。
 
-**这就是字典最核心的价值：把「反复 JOIN 小维表」优化成「一次加载、全局共享、O(1) 查找」。**
+## 定义一个字典要回答三个问题
 
----
+数据从哪里来，是 `SOURCE`，可以是 MySQL、PostgreSQL、ClickHouse 表、HTTP、文件等等；在内存里怎么存，是 `LAYOUT`，哈希表、扁平数组、LRU 缓存、区间结构都有；多久刷新一次，是 `LIFETIME`。再加上 schema，也就是 `PRIMARY KEY` 和属性列，一个字典就齐了。
 
-## 二、字典的三大组成
-
-定义一个字典本质上就是回答三个问题：
-
-| 部分 | 回答的问题 | 例子 |
-|---|---|---|
-| **SOURCE** | 数据从哪里来？| MySQL、PostgreSQL、ClickHouse 表、HTTP、文件 |
-| **LAYOUT** | 在内存里怎么存？| 哈希表、扁平数组、LRU 缓存、区间树 |
-| **LIFETIME** | 多久刷新一次？| 每 300 秒重新加载 |
-
-加上 schema 描述（`PRIMARY KEY` 和属性列），一个字典就齐了。
-
----
-
-## 三、最小可用示例
+一个最小的例子：
 
 ```sql
 -- 源表
@@ -81,7 +56,7 @@ LAYOUT(HASHED())
 LIFETIME(MIN 300 MAX 600);
 ```
 
-查询两种方式：
+查的时候有两种方式：
 
 ```sql
 -- A. dictGet 函数（高频生产用法）
@@ -92,9 +67,9 @@ SELECT dictGet('users_dict', ('city', 'vip_level'), toUInt64(1001));
 SELECT * FROM users_dict WHERE user_id = 1001;
 ```
 
-⚠️ `dictGet` 的 key 类型要严格匹配，经常需要 `toUInt64(...)` 显式转换。
+`dictGet` 的 key 类型是严格匹配的，经常得写个 `toUInt64(...)` 显式转一下，这个坑很容易踩。
 
-### dictGet 家族
+`dictGet` 是一族函数：
 
 | 函数 | 用途 |
 |---|---|
@@ -104,30 +79,22 @@ SELECT * FROM users_dict WHERE user_id = 1001;
 | `dictHas` | 判断 key 是否存在 |
 | `dictGetHierarchy` | 用于层级字典（取祖先链路）|
 
----
+## 多大的维表适合做字典
 
-## 四、容量规划
+判断适不适合，光看行数不够。行数决定加载要多久；每行多宽，尤其是有几个字符串列，决定内存；多久变一次，决定刷新的成本。
 
-判断「字典适不适合」要看三个维度，不只看行数：
-
-| 维度 | 关心什么 | 决定 |
-|---|---|---|
-| 行数 | 多少个 key | 加载时间 |
-| 单行宽度 | 每行字节数（字符串列关键）| 内存占用 |
-| 更新频率 | 多久变一次 | 刷新成本 |
-
-### 按 LAYOUT 给出的容量推荐
+按 LAYOUT 大致的容量参考：
 
 | LAYOUT | 推荐量级 | 说明 |
 |---|---|---|
-| `flat` | ≤ 几十万，极限 500 万 | 数组大小由 **最大 key 值** 决定 |
+| `flat` | ≤ 几十万，极限 500 万 | 数组大小由最大 key 值决定 |
 | `hashed` | 几百万到几千万 | 通用首选 |
-| `sparse_hashed` | 千万到亿级 | 省 30% 内存 |
+| `sparse_hashed` | 千万到亿级 | 省 30% 左右内存 |
 | `complex_key_hashed` | 同 hashed，略高 | 复合 key |
 | `cache` / `ssd_cache` | 上亿到几十亿 | 必须有热点分布 |
 | `direct` | 任意 | 每次直查源，极小众 |
 
-### 经验阈值
+按维表规模的经验做法：
 
 | 维表规模 | 推荐方案 |
 |---|---|
@@ -135,26 +102,15 @@ SELECT * FROM users_dict WHERE user_id = 1001;
 | 10 万 ~ 1000 万 | `hashed` / `sparse_hashed` |
 | 1000 万 ~ 1 亿 | `sparse_hashed`，算好预算 |
 | 1 亿 ~ 10 亿 | `cache` / `ssd_cache`，要有热点 |
-| > 10 亿且无热点 | **不要用字典**，改用 JOIN 或表设计 |
+| > 10 亿且无热点 | 不要用字典，改用 JOIN 或表设计 |
 
-### 红线指标
+碰到下面任何一条，就该停下来重新掂量掂量了：单个字典的内存超过节点物理内存的 10~20%（经验上单字典别超过 8~16 GB）；加载时间超过 LIFETIME 的一半；源库扛不住全量拉取；维表的更新频率到了秒级。
 
-满足任一条就要重新评估：
+经验上，几十万到几千万行、单个字典内存控制在 4~8 GB 以内，用起来最舒服。
 
-1. 单字典内存 > 节点物理内存的 10~20%(经验线：单字典 ≤ 8~16 GB)
-2. 加载时间 > LIFETIME 的一半
-3. 源库扛不住全量拉取
-4. 维表更新频率到秒级
+## 字典怎么刷新
 
-### 一句话
-
-> 几十万到几千万行、单字典内存控制在 4~8 GB 以内，是字典最舒服的甜蜜区。
-
----
-
-## 五、更新与刷新机制
-
-### 1. LIFETIME 自动刷新
+### LIFETIME
 
 ```sql
 LIFETIME(300)                    -- 固定 300 秒
@@ -162,24 +118,17 @@ LIFETIME(MIN 300 MAX 600)        -- 300~600 随机
 LIFETIME(0)                      -- 永不自动刷新
 ```
 
-**关键：`MIN/MAX` 区间的作用是字典间错峰，不是 key 间错峰**(`cache` 例外，见后)。建议 `MAX ≈ MIN × 1.2 ~ 1.5`。
+`MIN/MAX` 是干嘛的？看代码，每次刷新完，ClickHouse 在 `[MIN, MAX]` 之间均匀随机挑一个时间作为下一次刷新的时刻（`ExternalLoader::calculateNextUpdateTime`）。它打散的是字典和字典之间的刷新时间，集群里每个节点也各自随机，所以节点之间也错开了，免得所有节点同一时刻一起去打源库。它不是在打散 key，`cache` 是个例外，后面说。我一般建议 `MAX` 取 `MIN` 的 1.2~1.5 倍。刷新出错时，下一次的时间会改走退避逻辑，不再按这个区间算。
 
-### 2. 双缓冲机制
+### 双缓冲
 
-刷新过程：
+刷新的过程是这样的：后台线程从 SOURCE 全量（或者增量）拉数据，在内存里另建一个新版本 V2，建好以后原子地切换指针，`dictGet` 立刻指向 V2，再把旧的 V1 释放掉。
 
-```
-1. 后台线程：从 SOURCE 全量（或增量）拉数据
-2. 在内存里构建新版本 V2
-3. 原子地切换指针：dictGet 立刻指向 V2
-4. 释放旧版本 V1
-```
+所以刷新的时候 `dictGet` 不会阻塞，也不会读到半成品；刷新失败了，旧版本接着服务，数据不会丢，只是在日志里记个错。代价是这段时间里内存瞬间翻倍，下一节专门讲。
 
-- 刷新过程中 `dictGet` 不会阻塞、不会读到半成品
-- 内存瞬时翻倍（2x 尖刺，见第六节）
-- 刷新失败时旧版本继续服务，不会丢数据
+### 增量更新
 
-### 3. 增量更新（大字典必备）
+字典大了，增量更新基本是必备的：
 
 ```sql
 SOURCE(MYSQL(
@@ -189,24 +138,22 @@ SOURCE(MYSQL(
 ))
 ```
 
-实际下发 SQL:
+实际下发给源库的 SQL 大致是：
+
 ```sql
 SELECT * FROM users WHERE updated_at >= (T_last - update_lag);
 ```
 
-⚠️ 增量更新两个大坑：
-- **拿不到删除**：删除没有更新事件 → 字典里脏数据残留 → 解法：软删除 + 定期全量
-- **首次加载仍是全量**:`update_field` 只优化后续刷新
+增量有两个大坑。一是拿不到删除，源里删掉的行没有更新事件，字典里就一直留着，解法是软删除加定期全量。二是第一次加载还是全量，`update_field` 只管后面的刷新。
 
-### 4. 手动控制
+### 手动控制
 
 ```sql
 SYSTEM RELOAD DICTIONARY users_dict;     -- 同步全量刷新
-SYSTEM RELOAD DICTIONARY users_dict ASYNC;
 SYSTEM RELOAD DICTIONARIES;              -- 慎用，触发所有
 ```
 
-### 5. 状态监控（第一张要记住的表）
+### 先记住这张表
 
 ```sql
 SELECT
@@ -221,20 +168,11 @@ FROM system.dictionaries
 WHERE name = 'users_dict';
 ```
 
----
+## 内存尖刺
 
-## 六、内存尖刺
+双缓冲意味着刷新时 V1 和 V2 同时在内存里，理论上是两倍，实际一般是 2.2~2.5 倍。多出来的部分有好几个来源：构建过程中流式拉取的临时 Block 缓冲；哈希表 rehash 那一瞬间的翻倍；String 列分配内存带来的碎片，大概 10~20%；还有多个字典同时刷新叠在一起，这个就得靠 `MIN/MAX` 去错开。
 
-### 一定会有，而且常常超过 2x
-
-**双缓冲机制必然导致 V1 + V2 共存，理论 2x，实际 2.2 ~ 2.5x**，放大因子：
-
-1. 构建过程中的临时缓冲（Block 流式拉取）
-2. 哈希表 rehash 的瞬时翻倍
-3. String 列内存分配的碎片（10~20%）
-4. 多个字典同时刷新叠加（必须用 `MIN/MAX` 错峰）
-
-### 千万级字典的实际数字
+拿一个千万级的字典估一下：
 
 ```
 1000 万行，key 8 字节 + 3 String 列 60 字节 + 数值 8 字节
@@ -243,16 +181,9 @@ WHERE name = 'users_dict';
 刷新尖刺峰值 ≈ 3 GB，持续 30 秒 ~ 几分钟
 ```
 
-### 降低尖刺的方案（代价从小到大）
+怎么压这个尖刺？成本最低的是错峰，写 `LIFETIME(MIN 300 MAX 600)`，别写 `LIFETIME(300)`。换 `sparse_hashed`，稳态省三成左右，尖刺的绝对值也跟着降。上增量更新，尖刺的幅度不变，但持续时间很短，撞上 OOM 的概率小很多。换成 `cache` 就没有全量重建了，也就没有尖刺，代价是要回源。实在不行，就老老实实给字典预留三倍的内存。
 
-1. **错峰刷新**(0 成本):`LIFETIME(MIN 300 MAX 600)`，**不要写 `LIFETIME(300)`**
-2. **`sparse_hashed`**：稳态省 30%，尖刺绝对值跟降
-3. **增量更新**：幅度不变但**持续时间极短**，撞 OOM 概率大降
-4. **换 `cache`**：无全量重建，完全无尖刺（但回源风险）
-5. **限制并发加载**:`<max_concurrent_loads>` 全局参数
-6. **预留 3x 内存余量**
-
-### 监控指标
+监控上，稳态看 `system.dictionaries`，真实的尖刺看节点 RSS：
 
 ```sql
 -- 稳态
@@ -264,82 +195,49 @@ FROM system.asynchronous_metrics
 WHERE metric IN ('MemoryResident', 'MemoryTracking', 'jemalloc.resident');
 ```
 
-把 `MemoryResident` 曲线画出来，会清楚看到字典刷新时刻的锯齿状尖刺。
+把 `MemoryResident` 的曲线画出来，字典刷新的时刻会是一个个很清楚的锯齿。
 
----
+## LIFETIME 在不同 LAYOUT 下不是一个意思
 
-## 七、LIFETIME 在不同 LAYOUT 下的语义
-
-**常见误解：`LIFETIME(MIN/MAX)` 是打散 key 的过期时间。** 实际不是。
+很多人以为 `LIFETIME(MIN/MAX)` 是给每个 key 打散过期时间的，其实不是。
 
 | LAYOUT | LIFETIME 控制的是 | 是否打散 key | 会不会一直刷新 | 会不会某些 key 长期不刷 |
 |---|---|---|---|---|
-| `flat` / `hashed` / `sparse_hashed` / `complex_key_hashed` / `range_hashed` | **整个字典下次刷新的时刻**(每轮重新随机) | ❌ | ❌ 有明确间隔 | ❌ 全量替换，所有 key 同步 |
-| `cache` / `ssd_cache` | **每个 key 独立的 TTL** | ✅ | ❌ 只在 miss 时回源 | ⚠️ 冷门 key 可能长期不刷（但没人查也不算陈旧）|
+| `flat` / `hashed` / `sparse_hashed` / `complex_key_hashed` / `range_hashed` | 整个字典下次刷新的时刻（每轮重新随机） | 否 | 否，有明确间隔 | 否，全量替换，所有 key 同步 |
+| `cache` / `ssd_cache` | 每个 cell 独立的过期时间 | 是 | 否，只在 miss 时回源 | 冷门 key 可能长期不刷（但没人查也不算陈旧）|
 | `direct` | 无意义 | — | — | — |
-| `LIFETIME(0)` | 永不自动刷新 | — | ❌ 永远不刷 | ✅ 所有 key 永远不刷 |
+| `LIFETIME(0)` | 永不自动刷新 | — | 永远不刷 | 所有 key 永远不刷 |
 
-### 对 `hashed` 家族
+对 `hashed` 这一家子，整个字典是一个刷新单位，每轮刷完才决定下一轮的时间，有 MIN 兜底，不会一直刷。
 
-整个字典作为单位刷新，MIN/MAX 是**字典之间错峰**，不是 key 之间错峰。每轮刷新结束才决定下一轮时间，有 MIN 保底间隔。
+对 `cache` 这一家子，LIFETIME 管的是每个 cell，数据进 cell 以后超过 lifetime 就算过期，下次有人查再回源。冷门 key 可能在缓存里挂很久，但只有被查到的时候才会更新。源里查不到的 key 也会被记成一个默认 cell 缓存起来，免得反复回源。
 
-### 对 `cache` 家族
+## 字典会不会自己过期
 
-每个 key 写入缓存时被分配一个 [MIN, MAX] 区间内的随机 TTL，过期后下次访问回源。**冷门 key 可能在缓存里「挂」很久，但只在被查询时才更新**。「不存在的 key」也有 TTL 缓存，避免反复回源。
+说字典会不会过期，其实可能是三个问题。
 
----
+第一个，单个 key 会不会自动过期。只有 `cache` 和 `ssd_cache` 会，按 lifetime 加上缓存淘汰；`hashed` 一家是整体快照，没有单 key 过期；`direct` 本来就不缓存。
 
-## 八、自动 expire 机制
+第二个，整个字典长时间没人用，会不会自己卸载。默认不会。字典加载以后就常驻内存，直到 `DROP DICTIONARY` 或者 `DETACH DICTIONARY`，或者进程重启。新一些的版本还有 `SYSTEM UNLOAD DICTIONARY` 可以手动卸载。懒加载（`dictionaries_lazy_load`）只管第一次什么时候加载，管不了加载以后什么时候释放。
 
-「expire」有三种含义，逐个回答：
+第三个，数据旧了会不会自动刷新，那就是前面的 `LIFETIME` 加 `invalidate_query`，严格说这叫刷新，不叫过期。
 
-### 含义 A：单 key 自动过期
+所以别为了以防万一建一大堆字典，每个都吃内存，又不会自己释放；用不上的字典主动 `DROP` 掉。
 
-| LAYOUT | 支持 |
-|---|---|
-| `cache` / `ssd_cache` | ✅ 按 TTL + LRU |
-| `hashed` 家族 | ❌ 整体快照模型 |
-| `direct` | ❌ 不缓存 |
+## 全量刷新和删除
 
-### 含义 B：整个字典空闲自动卸载
-
-**❌ 默认没有。** 字典加载后常驻内存，直到：
-- `DROP DICTIONARY` / `DETACH DICTIONARY`
-- 进程重启
-- `SYSTEM DROP DICTIONARY CACHE`（仅对 cache 有效）
-
-懒加载（`dictionaries_lazy_load`）只控制**首次加载时机**，不解决「加载后释放」。
-
-### 含义 C：数据陈旧自动刷新
-
-就是第五节的 `LIFETIME` + `invalidate_query`，严格说不叫过期叫刷新。
-
-### 运维含义
-
-- 不要「以防万一」创建大量字典，每个都吃内存且永不释放
-- 不用的字典主动 `DROP DICTIONARY`
-
----
-
-## 九、全量刷新与删除清理
-
-### 区分全量 vs 增量
+先分清全量和增量：
 
 | 刷新类型 | 下发 SQL | 删除能否被感知 |
 |---|---|---|
-| 全量 | `SELECT * FROM users` | ✅ 源里没了就没了 |
-| 增量 | `SELECT * FROM users WHERE updated_at >= ...` | ❌ 删除没有更新事件 |
+| 全量 | `SELECT * FROM users` | 能，源里没了就没了 |
+| 增量 | `SELECT * FROM users WHERE updated_at >= ...` | 不能，删除没有更新事件 |
 
-什么决定全量还是增量：
-- 没配 `update_field` → 永远全量
-- 配了 `update_field` → 首次全量，后续增量
-- `SYSTEM RELOAD DICTIONARY` → **永远全量**
+没配 `update_field`，永远是全量；配了，第一次全量，后面增量；`SYSTEM RELOAD DICTIONARY` 永远是全量。
 
-### 全量如何自动清理删除
+全量刷新怎么把删除清掉的？双缓冲切换时，V2 是源表最新的快照，V1 里有、V2 里没有的 key，随着 V1 释放就自然没了。
 
-双缓冲切换时，V2 是源表最新快照，V1 里有但 V2 里没有的 key，切换后释放 → 自然消失。
-
-### 生产标准模式：**增量 + 定期全量**
+所以生产上我推荐增量加定期全量：
 
 ```sql
 SOURCE(MYSQL(
@@ -352,70 +250,46 @@ LAYOUT(SPARSE_HASHED())
 LIFETIME(MIN 300 MAX 360);
 ```
 
-配套 crontab：每天凌晨低峰 `SYSTEM RELOAD DICTIONARY users_dict;`
+再配一个 crontab，每天凌晨低峰执行一次 `SYSTEM RELOAD DICTIONARY users_dict;`。增量管性能，全量管正确。
 
-**增量保性能，全量保正确性。**
-
-### 其他删除感知方案
+别的能感知删除的办法也有：
 
 | 方案 | 删除感知延迟 | 复杂度 | 备注 |
 |---|---|---|---|
 | 纯全量 | 平均 LIFETIME/2 | 低 | 频繁尖刺 |
-| 增量 + 每日全量 | 最长 24h | 低 | **推荐** |
+| 增量 + 每日全量 | 最长 24h | 低 | 推荐 |
 | 增量 + 源表软删除 | 几分钟 | 中（改业务）| 字典中过滤 is_deleted |
 | 增量 + `invalidate_query` | 看检测查询 | 中 | 行数变化触发全量 |
 | Binlog CDC → CH 表 | 秒级 | 高 | 引入 CDC 组件 |
 | `cache` + 短 TTL | 平均 TTL/2 | 低 | 自然反映 |
 
----
+## SOURCE 选哪个
 
-## 十、SOURCE 类型
-
-按「数据从哪来」四大类：
-
-### 数据库类
+数据库类的：
 
 | SOURCE | 适用 | 注意 |
 |---|---|---|
 | `CLICKHOUSE` | 同/异集群 CH 表 | 性能最好，本地表可省 host/port |
-| `MYSQL` | 业务维表 | N 节点 = N 倍并发到 MySQL,DATETIME 时区坑 |
+| `MYSQL` | 业务维表 | N 节点 = N 倍并发到 MySQL，DATETIME 时区坑 |
 | `POSTGRESQL` | PG 维表 | 类型映射比 MySQL 干净 |
 | `MONGODB` | Mongo 文档 | 类型映射弱，生产少用 |
-| `REDIS` | 配合 cache 用 | 只支持 simple / hash_map,schema 受限 |
+| `REDIS` | 配合 cache 用 | 只支持 simple / hash_map，schema 受限 |
 | `ODBC` | SQL Server / Oracle 等 | 需要 `clickhouse-odbc-bridge` |
 
-### 文件类
+文件类的：
 
 | SOURCE | 适用 | 注意 |
 |---|---|---|
-| `FILE` | 静态码表 | **每个节点都要有文件**，推荐打镜像 |
+| `FILE` | 静态码表 | 每个节点都要有文件，推荐打进镜像 |
 | `HDFS` / `S3` | T+1 数仓产出 | Parquet 比 CSV 快很多 |
 
-### HTTP 类
+HTTP 的写法是 `SOURCE(HTTP(url '...' format 'CSV'))`，适合配置中心、算法平台这类。接口必须幂等、每次返回全量，数据量到了千万级就别走 HTTP 了，改放 S3。
 
-```sql
-SOURCE(HTTP(url '...' format 'CSV'))
-```
+还有 `EXECUTABLE` 和 `EXECUTABLE_POOL`，复杂度高，安全风险也大，绝大多数团队都不该用，真需要自定义逻辑，部署一个 HTTP 服务更规矩。
 
-- 适合配置中心、算法平台
-- 大数据量（千万+）不推荐，建议改 S3
-- 接口必须幂等且全量返回
+几个通用的 SOURCE 参数：`update_field` 开增量，`update_lag` 是增量回拉的秒数，`invalidate_query` 用来感知源有没有变，`where` 过滤部分行，`query` 可以自定义 SELECT，能 JOIN 多张源表，但代价大。
 
-### 可执行类
-
-`EXECUTABLE` / `EXECUTABLE_POOL`：复杂度极高、安全风险大，**99% 团队不该用**，改用 HTTP 服务更标准。
-
-### 通用 SOURCE 参数
-
-| 参数 | 作用 |
-|---|---|
-| `update_field` | 启用增量 |
-| `update_lag` | 增量回拉秒数 |
-| `invalidate_query` | 源变更感知 |
-| `where` | 部分行过滤 |
-| `query` | 自定义 SELECT（支持 JOIN 多源表，但代价大）|
-
-### 选型决策
+怎么选：
 
 | 场景 | 推荐 |
 |---|---|
@@ -425,21 +299,17 @@ SOURCE(HTTP(url '...' format 'CSV'))
 | 静态码表 | `FILE` 或代码 hardcode |
 | T+1 数仓 | `S3` / `HDFS`（Parquet）|
 | 配置中心 | `HTTP` |
-| 自定义脚本 | 部署 HTTP 服务，**不要**用 `EXECUTABLE` |
+| 自定义脚本 | 部署 HTTP 服务，不要用 `EXECUTABLE` |
 
----
+## 启动时什么时候加载
 
-## 十一、启动加载时机
-
-### 默认是懒加载
+默认是懒加载：
 
 ```xml
 <dictionaries_lazy_load>true</dictionaries_lazy_load>
 ```
 
-服务启动只解析 DDL，字典第一次被使用时同步加载。
-
-### 三种策略
+server 启动时只解析定义，字典第一次被用到时才同步加载。配合 `wait_dictionaries_load_at_startup`（默认 true），一共三种策略：
 
 | 策略 | `lazy_load` | `wait_dictionaries_load_at_startup` | 启动行为 |
 |---|---|---|---|
@@ -447,11 +317,9 @@ SOURCE(HTTP(url '...' format 'CSV'))
 | 启动时同步预加载 | false | true | 启动阻塞至全部加载完 |
 | 启动时异步加载 | false | false | 启动不阻塞，后台并发加载 |
 
-### 懒加载的隐藏成本
+懒加载的成本是藏起来的。千万级的字典，第一次查询可能卡几十秒到几分钟，P99 一下就上去了；高并发的服务一重启，好几个查询同时卡在同一个字典的加载上。
 
-千万级字典首次查询可能卡几十秒到几分钟，**P99 尖刺**。高并发服务重启后瞬时多个查询全卡在同一字典加载。
-
-### 生产推荐：懒加载 + 启动后预热
+所以我推荐懒加载，再加一个启动后的预热：
 
 ```bash
 # 健康检查通过后预热关键字典
@@ -467,7 +335,7 @@ clickhouse-client -q "
 # 应该返回空
 ```
 
-### 启动状态查询
+启动后看状态：
 
 ```sql
 SELECT name, status, formatReadableSize(bytes_allocated) AS mem,
@@ -476,11 +344,9 @@ FROM system.dictionaries
 ORDER BY status != 'LOADED' DESC, loading_duration DESC;
 ```
 
----
+## XML 还是 DDL
 
-## 十二、XML 配置文件 vs SQL DDL
-
-### XML 方式：天然热更新
+XML 的写法：
 
 ```xml
 <dictionaries>
@@ -497,49 +363,26 @@ ORDER BY status != 'LOADED' DESC, loading_duration DESC;
 </dictionaries>
 ```
 
-- 后台线程每 5 秒（`dictionaries_config_reload_interval`）扫描文件 mtime
-- 改 XML 推送后**几秒自动生效**，无需重启或执行 SQL
-- 安全部署：写临时文件 + `mv` 替换，避免读到中间状态
-- 语法错文件被忽略，旧定义继续工作，看日志报错
+XML 天然是热更新的，后台线程大约每 5 秒检查一次配置文件（`ExternalLoader` 里写死的 `check_period_sec = 5`），改了推上去几秒就生效，不用重启，也不用执行 SQL。推的时候先写临时文件再 `mv` 过去，免得读到写了一半的文件。文件语法写错了会被忽略，旧定义接着用，错误在日志里。
 
-### SQL DDL 方式
-
-```sql
-CREATE OR REPLACE DICTIONARY users_dict ( ... ) ... ;
-```
-
-执行立即生效。无 `ALTER DICTIONARY` 增量修改，只能整体替换。
-
-### 对比
+DDL 的写法是 `CREATE OR REPLACE DICTIONARY users_dict ( ... ) ... ;`，执行就生效。没有 `ALTER DICTIONARY`，改只能整体替换。
 
 | 维度 | XML | SQL DDL |
 |---|---|---|
-| 热更新机制 | 文件扫描，5 秒 | 执行 SQL 立即 |
-| 集群同步 | ⚠️ 每节点都要有文件 | ✅ Replicated DB 自动同步 |
+| 热更新机制 | 文件扫描，约 5 秒 | 执行 SQL 立即 |
+| 集群同步 | 每节点都要有文件 | Replicated DB 自动同步 |
 | 版本控制 | XML 进 Git | 管理 migration SQL |
-| 权限控制 | ❌ 无 | ✅ 标准 SQL 权限 |
-| 归属数据库 | ❌ 无 | ✅ 按 db 隔离 |
+| 权限控制 | 无 | 标准 SQL 权限 |
+| 归属数据库 | 无 | 按 db 隔离 |
 | 审计 | 文件系统日志 | query log |
 
-### 推荐
+我一般建议用 DDL，不用改配置文件，权限、审计、集群同步都更完善，字典还能像表一样用 SELECT 去查，重命名也方便。运维侧自己管的、偏基础设施的字典，用 XML 也没问题，XML 是长期支持的，不用担心哪天被废弃。
 
-- **新项目优先 SQL DDL**：权限、审计、集群同步都更完善
-- **基础设施型字典用 XML**：运维侧自治、配置管理友好
-- XML 长期支持，不用担心被废弃
+## Named Collection
 
----
+Named Collection 经常和字典放在一起说，可它不是字典，它是一个给连接配置起名字、方便复用的容器，有点像 AWS 的 named profile，或者 K8s 的 Secret 加 ConfigMap。里面存的是 host、port、user、password、bucket、url 这些连接信息。
 
-## 十三、Named Collection
-
-### 定位
-
-**Named Collection 是「连接配置的命名复用容器」，不是字典。**
-
-类比：AWS named profile、K8s Secret + ConfigMap。
-
-存储：host、port、user、password、bucket、url 等「连接信息」。
-
-### 解决什么问题
+它解决的是密码到处硬编码的问题：
 
 ```sql
 -- 没有 NC 时，密码到处硬编码
@@ -555,7 +398,7 @@ CREATE DICTIONARY users_dict ...
 SOURCE(MYSQL(NAME 'mysql_prod' table 'users'));
 ```
 
-### 使用场景
+用得上它的地方很多：
 
 | 场景 | 例子 |
 |---|---|
@@ -567,45 +410,28 @@ SOURCE(MYSQL(NAME 'mysql_prod' table 'users'));
 | BACKUP | `BACKUP ... TO S3(s3_backup, ...)` |
 | Kafka | `ENGINE = Kafka(kafka_prod, ...)` |
 
-### Named Collection vs Dictionary
+和字典对比一下：
 
 | 维度 | Named Collection | Dictionary |
 |---|---|---|
 | 本质 | 配置参数集合 | 内存查找表 |
 | 存什么 | 连接信息 | 数据行 |
-| 占内存 | ❌ 几乎不 | ✅ GB 级 |
+| 占内存 | 几乎不占 | GB 级 |
 | 引用方式 | 名字嵌入 SQL | `dictGet(...)` |
-| 周期刷新 | ❌(改 XML 才变) | ✅ |
+| 周期刷新 | 不刷新（改配置才变） | 按 LIFETIME 刷新 |
 | 解决问题 | 配置复用 + 凭证脱敏 | 维表 JOIN 性能 |
 
-**核心区分：Named Collection 告诉 CH 「怎么连接源」，字典告诉 CH 「把源数据拉进来怎么用」。**
+简单说，Named Collection 告诉 ClickHouse 怎么连到源，字典告诉它把源里的数据拉进来以后怎么用。
 
-### 适合做「地址管理」
+拿它来管地址是正合适的，但别存业务上的地址数据（比如用户收货地址），别拿它做动态服务发现（配置是静态的），也别拿它替代密钥管理系统，写在配置文件里的密码仍然是明文。它的好处在于改密码只改一处；dev、staging、prod 用同名的 NC，SQL 可以一字不改；`query_log` 里看到的是 `NAME 'xxx'` 而不是密码；权限可以用 `GRANT NAMED COLLECTION` 收住。
 
-是的，这是 NC 的主战场。但要避免误用：
-- ❌ 不要存业务地址数据（用户收货地址）
-- ❌ 不要做动态服务发现（配置是静态的）
-- ❌ 不要替代密钥管理系统（NC 里的密码仍是文件系统明文）
+## 分布式下的分片字典
 
-### 生产价值
+字典是每个节点本地的资源。10 个分片，每个节点一份 10GB 的字典，集群就是 100GB。可事实表要是按 `cityHash64(user_id)` 分了片，每个分片其实只用得到 1/N 的字典数据。
 
-- 单点变更（改密码改一处）
-- 环境隔离（dev/staging/prod 用同名 NC 不同 XML,SQL 同构）
-- 凭证脱敏（query_log 看到的是 `NAME 'xxx'`，不是密码）
-- 权限收敛（`GRANT NAMED COLLECTION USAGE/ADMIN`）
-- 热更新（XML 改了 5 秒生效）
+ClickHouse 没有原生的分片字典语法，但可以在 source 上做文章。
 
----
-
-## 十四、分布式场景：分片字典
-
-### 默认行为的浪费
-
-字典是**每节点本地资源**。10 分片 × 10GB 字典 = 100GB 总内存。但事实表按 `cityHash64(user_id)` 分片时，每个分片实际只需要 1/N 的字典数据。
-
-ClickHouse **没有原生「分片字典」语法**，但可以通过 source 端设计实现。
-
-### 方案 A：本地表做 source（推荐）
+推荐的做法是用本地表做 source：
 
 ```sql
 -- 1. 本地维表（每个分片只有自己那 1/N）
@@ -626,11 +452,9 @@ LAYOUT(SPARSE_HASHED())
 LIFETIME(MIN 300 MAX 360);
 ```
 
-效果：每节点字典只有 1/N 数据，集群内存从 N 份降到 1 份。
+这样每个节点的字典只有 1/N 的数据，整个集群的内存从 N 份降到 1 份。前提是事实表的 sharding key、维表的 sharding key、字典的 key，三者必须一致。
 
-**前提：事实表 sharding key = 维表 sharding key = 字典 key，三者一致。**
-
-### 方案 B:source 用过滤查询 + macros
+另一种做法是在 source 里用过滤查询配合 macros：
 
 ```sql
 SOURCE(MYSQL(
@@ -639,55 +463,31 @@ SOURCE(MYSQL(
 ))
 ```
 
-每分片下发不同 SQL。问题：
-- Hash 函数两边要字面一致（MySQL 没原生 `cityHash64`）
-- 分片数硬编码，扩容要改所有定义
-- MySQL 这边 `cityHash64(user_id)` 不是索引列 → 全表扫描
+每个分片下发不同的 SQL。问题是两边的 hash 函数得字面一致，MySQL 里没有原生的 `cityHash64`；分片数是写死的，一扩容所有定义都得改；`cityHash64(user_id)` 在 MySQL 那边也走不了索引，每次都是全表扫。生产上前一种做法安全得多。
 
-生产里 **方案 A 远比方案 B 安全**。
+分片字典真正要命的是静默默认值。`dictGet` 查到了不属于本分片的 key，它不报错，直接返回类型默认值，业务那边就是悄悄地算错了。所以 `dictGet` 的 key 必须严格来自 sharding key，测试的时候用 `dictHas` 校验一下。还有几个小问题：事实表里的 `cityHash64(user_id)` 和维表 Distributed 引擎里的表达式要一字不差；同一个分片的两个副本，字典各刷各的，可能有几分钟的版本差，对副本一致性敏感的业务要心里有数；调试的时候 `SELECT * FROM users_dict` 看到的只是本分片那一片。
 
-### 真正属于分片字典自身的陷阱
+至于扩容以后要重新均衡数据，那不是分片字典特有的问题，所有按分片组织的数据都一样，这个应该在集群规划层面去解决。
 
-1. **静默默认值**(核心特性):`dictGet` 错分片不报错，返回该类型的默认值 → 业务侧静默错误
-   - 应对：`dictGet` 的 key 必须严格来自 sharding key;测试用 `dictHas` 校验
-2. **Hash 表达式必须字符串字面一致**：事实表的 `cityHash64(user_id)` 和维表 Distributed 引擎里的表达式要一字不差
-3. **副本间字典刷新不同步**：同分片两副本可能看到不同版本的字典（几分钟时间差），副本一致性敏感的业务要意识到
-4. **调试可见性**:`SELECT * FROM users_dict` 看到的只是本分片切片
+什么时候值得做？集群至少 4 个分片，维表至少一千万行，事实表的 sharding key 正好就是 `dictGet` 的 key，集群拓扑也稳定。反过来，维表的查询 key 五花八门、没有统一的 sharding key，或者维表就几十万行、全量复制也不贵，或者业务上没法严格保证 `dictGet` 的 key 来自哪里，就别折腾了。
 
-> 注：「扩容需要数据再均衡」不是分片字典特有的问题，这是 sharded 数据结构（包括 Replacing、Aggregating 引擎）的通用集群治理问题，应在集群规划层面解决，不属于字典讨论范围。
-
-### 什么时候做、什么时候不做
-
-✅ 适合：
-- 集群 ≥ 4 分片
-- 维表 ≥ 1 千万行
-- 事实表 sharding key 就是 `dictGet` 的 key
-- 集群拓扑稳定
-
-❌ 不适合：
-- 维表查询 key 多样（没有统一 sharding key）
-- 维表小（几十万行），全量复制成本低
-- 业务侧无法严格保证 `dictGet` key 来源
-
-### 折中：用 Distributed 表做 source
+有个折中，用 Distributed 表做 source：
 
 ```sql
 SOURCE(CLICKHOUSE(TABLE 'users_distributed'))
 ```
 
-等于没优化（每分片拉全量），但避免静默错误，适合「维表小、风险敏感」。
+等于没优化，每个分片照样拉全量，但不会有静默错误，适合维表小、又怕出错的场景。
 
----
+## dictGet 的进阶用法
 
-## 十五、`dictGet` 函数族 + SQL 中字典的高级用法
-
-### 1. `dictGet` 完整语法
+### 多属性用 Tuple
 
 ```
 dictGet(dict_name, attr_name_or_tuple, key_or_tuple [, default])
 ```
 
-**多属性 Tuple 形式是关键性能优化**:
+一次取多个属性，一定要用 Tuple：
 
 ```sql
 -- 5 次哈希查找
@@ -697,9 +497,9 @@ SELECT dictGet(d,'a',k), dictGet(d,'b',k), dictGet(d,'c',k), ...
 SELECT dictGet(d, ('a','b','c','d','e'), k)
 ```
 
-宽字典查询能节省 80% 字典访问开销。
+宽字典的查询，能省掉大部分字典访问的开销。
 
-### 2. 默认值的三种语义
+### 默认值的三种语义
 
 ```sql
 dictGet('users_dict', 'city', toUInt64(99999))                       -- 类型默认值 ''
@@ -707,15 +507,11 @@ dictGetOrDefault('users_dict', 'city', toUInt64(99999), 'Unknown')   -- 显式�
 dictGetOrNull('users_dict', 'city', toUInt64(99999))                 -- 返回 NULL
 ```
 
-生产推荐：
-- 分片字典场景用 `dictGetOrDefault` 显式化「不在本分片」
-- 下游需要 `coalesce` 判断用 `dictGetOrNull`
+分片字典的场景用 `dictGetOrDefault`，把不在本分片这件事显式地暴露出来；下游需要用 `coalesce` 判断的，用 `dictGetOrNull`。
 
-### 3. 类型化变体
+`dictGetString`、`dictGetUInt64` 这些是老写法，新版本通用的 `dictGet` 已经能自己推导类型了，`dictGetStringOrDefault` 这种带 OrDefault 后缀的还挺常用。
 
-`dictGetString` / `dictGetUInt64` / ... 是老写法，新版本通用 `dictGet` 已能自动推导类型。`dictGetStringOrDefault` 等带 OrDefault 后缀仍常用。
-
-### 4. 辅助函数族
+### 辅助函数
 
 | 函数 | 用途 |
 |---|---|
@@ -725,7 +521,7 @@ dictGetOrNull('users_dict', 'city', toUInt64(99999))                 -- 返回 N
 | `dictGetHierarchy(dict, key)` | 层级：祖先链（自己到根）|
 | `dictIsIn(dict, child, ancestor)` | 层级：是否在子树下 |
 
-`dictHas` 典型用法：
+`dictHas` 常见的用法：
 
 ```sql
 -- 验证分片字典 key 覆盖
@@ -740,9 +536,9 @@ FROM events WHERE dictHas('users_dict', user_id)
 GROUP BY city;
 ```
 
-### 5. 层级字典：树形 lookup
+### 层级字典
 
-`HIERARCHICAL` 修饰符把某列声明为父指针：
+`HIERARCHICAL` 把某一列声明成父指针：
 
 ```sql
 CREATE DICTIONARY dept_dict
@@ -757,16 +553,16 @@ LAYOUT(HASHED())
 LIFETIME(MIN 300 MAX 600);
 ```
 
-经典查询 —— 「按任意层级聚合」:
+最典型的是按任意层级聚合：
 
 ```sql
 SELECT sum(sales) FROM employees
 WHERE dictIsIn('dept_dict', dept_id, toUInt64(2));   -- 整个 R&D 体系
 ```
 
-替代递归 CTE / 打平祖先列表，性能高 1~2 个数量级。
+比递归 CTE 或者把祖先列表打平，要快一到两个数量级。
 
-### 6. 区间字典：`range_hashed` + 时间点
+### 区间字典
 
 ```sql
 CREATE DICTIONARY price_dict
@@ -781,14 +577,9 @@ LIFETIME(MIN 600 MAX 900);
 SELECT dictGet('price_dict', 'price', toUInt64(1001), toDate('2026-06-15'));
 ```
 
-替代「按 start_date <= date < end_date JOIN」的复杂自连接。
+用来替代按 `start_date <= date < end_date` 去 JOIN 的那种复杂自连接。区间两端类型要一致，是闭区间 `[start, end]`；区间有重叠时，命中哪一个由 `range_lookup_strategy` 决定，后面 LAYOUT 那节说。
 
-约束：
-- 区间不能重叠（否则未定义）
-- 两端类型一致
-- 闭区间 `[start, end]`
-
-### 7. IP 字典
+### IP 字典
 
 ```sql
 LAYOUT(IP_TRIE())
@@ -798,11 +589,9 @@ PRIMARY KEY prefix
 SELECT dictGet('ip_dict', 'country', tuple(IPv4StringToNum('1.2.3.4')));
 ```
 
-百万级 CIDR，单次查找 < 100ns,**自动最长前缀匹配**。
+自动做最长前缀匹配，百万级的 CIDR 查起来也很快。
 
-### 8. 字典作为表用
-
-三种姿势：
+### 把字典当表用
 
 ```sql
 -- A. 直接 SELECT(调试)
@@ -816,22 +605,22 @@ SELECT * FROM events
 WHERE user_id IN (SELECT user_id FROM users_dict WHERE vip_level > 2);
 ```
 
-生产高频仍用 `dictGet`，以上方式适合调试和过渡。
+这几种适合调试和过渡，生产上高频用的还是 `dictGet`。
 
-### 9. 字典 vs JOIN 取舍
+### 字典和 JOIN 怎么取舍
 
 | 场景 | 选择 |
 |---|---|
 | `dictGet` 取少量属性 + GROUP BY | 字典完胜 JOIN |
 | `dictGet` 做过滤 | 字典完胜 |
 | 取维表多列做投影 | Tuple 形式 `dictGet` |
-| 多对多关系 | **JOIN**(字典做不到) |
+| 多对多关系 | JOIN（字典做不到） |
 | ANTI / OUTER JOIN 语义 | JOIN 更直观 |
 | 维表大于事实表 | JOIN（字典装不下）|
 
-### 10. 性能陷阱
+### 几个性能上的坑
 
-**不要在 JOIN ON 里用 `dictGet`**:
+别在 JOIN ON 里调 `dictGet`，每一行算一次，哈希 JOIN 也用不上了：
 
 ```sql
 -- 反例：每行算一次，关闭哈希 JOIN
@@ -843,15 +632,9 @@ SELECT ... FROM (
 ) e JOIN other USING col;
 ```
 
-**同一行取多属性必须 Tuple**：已在 1 节强调。
+能放到 GROUP BY 之后再调字典函数的，就放到后面，先聚合把行数降下来，再去查字典，调用次数会少很多。同一行要取多个属性，用 Tuple，前面说过了。key 类型要严格匹配，养成写 `toUInt64(id)` 的习惯。分布式查询里 `dictGet` 是在每个分片本地执行的，分片字典能成立靠的就是这一点。`dictGet` 本身是向量化批处理的，一次给一万个 key 就返回一万个 value，`cache` miss 的时候也是批量打包回源。
 
-**key 类型严格匹配**：养成 `toUInt64(id)` 习惯，避免隐式转换的边界问题。
-
-**分布式查询中 `dictGet` 在每个分片本地执行**：这是分片字典优化能成立的根本。
-
-**`dictGet` 是向量化批处理**：一次给一万个 key 返回一万个 value，性能受内存带宽而非 IPS 限制；`cache` miss 时**批量打包回源**自带防雪崩。
-
-### 11. 实战：嵌套调用与数组属性
+### 嵌套调用和数组属性
 
 ```sql
 -- 嵌套（每层独立哈希查找，能合表就合）
@@ -870,60 +653,43 @@ SELECT count() FROM events
 WHERE has(dictGet('user_tags_dict', 'tags', user_id), 'vip');
 ```
 
-### 一句话
+## LAYOUT 怎么选
 
-> **`dictGet` 是字典在 SQL 里的主入口，Tuple 多属性 / 默认值控制 / `dictHas` 组合是日常基本功；`HIERARCHICAL` / `range_hashed` / `ip_trie` 解决树形 / 时间区间 / IP 段三种特殊但高频的查找模式；真正的性能秘诀是「批量化、属性 Tuple 化、key 类型严格、不要在 JOIN ON 里调用」。**
+LAYOUT 说白了，就是字典在内存里的存储方式。它决定了数据结构、查找复杂度、内存占用、怎么刷新、要不要回源，以及支持什么类型的 key。
 
----
+### flat
 
-## 十六、LAYOUT 详解与选型
+扁平数组，key 直接当下标，`arr[key]` 一次内存访问，是所有 LAYOUT 里最快的。
 
-LAYOUT 不是配置项，是字典的「形状本身」，决定数据结构、查找复杂度、内存占用、刷新模型、是否回源、支持的 key 类型。
+致命的约束是数组大小由最大的 key 值决定，跟行数无关。key 是 `[1, 2, 3, 99999999]`，数组就得开一亿长，里面全是空洞。key 超过上限会直接报错，默认 `MAX_ARRAY_SIZE` 是 500000，可以调：
 
-### 1. `flat`：最快的字典，但有硬约束
+```sql
+LAYOUT(FLAT(INITIAL_ARRAY_SIZE 50000 MAX_ARRAY_SIZE 5000000))
+```
 
-**内部：扁平数组，key 直接作为下标**。`arr[key]` 一次内存访问，所有 LAYOUT 里最快。
+适合小整数枚举，比如国家代码、错误码，几千到几万条；key 是 `UInt64`、很稀疏或者超过一百万行的，就别用了。
 
-致命约束：**数组大小由 max key 值决定，不是行数**。key=[1,2,3,99999999] → 数组开 1 亿长度，内存全空洞。
+### hashed
 
-安全规则：
-- key 是 `UInt8`/`UInt16`/`UInt32`，或密集自增 ID 知道上界
-- 默认 `max_array_size = 500000`，可调
+开放寻址的哈希表，通用首选，几乎所有维表场景都可以先从它开始，几十万到几千万行都行。内存大约是 `(key + attrs) × 1.5 ~ 2.0`，多出来的是哈希表本身的开销。
 
-适合：小整数枚举（国家代码、错误码），几千到几万。
-不适合：`UInt64` / 稀疏 / 行数 > 100 万。
-
-### 2. `hashed`：通用首选
-
-**内部：HashMap，开链冲突，装载因子约 0.5**。查找一次哈希 + 1~2 次内存访问。
-
-内存 ≈ `(key + attrs) × 1.5 ~ 2.0`（哈希表 overhead）。
-
-适合：**几乎所有维表场景的默认选择**，几十万到几千万。
-
-进阶参数（23.x+）：
 ```sql
 LAYOUT(HASHED(
-    PREALLOCATE 1
-    SHARDS 8                  -- 内部分片并行加载
+    SHARDS 8                       -- 内部分片并行加载
+    SHARD_LOAD_QUEUE_BACKLOG 10000
+    MAX_LOAD_FACTOR 0.5            -- 取值 [0.5, 0.99]，默认 0.5
 ))
 ```
 
-`SHARDS` 让大字典加载从几分钟降到几十秒，千万级以上推荐开。
+`SHARDS` 默认是 1，开大了可以并行加载，大字典的加载时间能从几分钟降到几十秒，千万级以上建议开。`MAX_LOAD_FACTOR` 调大更省内存，但查找会变慢。老版本里还有个 `PREALLOCATE` 参数，现在的文档已经不提了，别再往上写。
 
-### 3. `sparse_hashed`：大字典省内存版
+### sparse_hashed
 
-**内部：Google sparse hash，分组按需分配，装载因子可到 0.8**。
+稀疏哈希表，用 CPU 换内存。经验上比 `hashed` 省三到四成内存，查找和加载慢一些，实际业务里基本感觉不到，刷新尖刺的绝对值也跟着降。它更慢，所以开 `SHARDS` 的收益比 `hashed` 更大。我的建议是字典到了五百万行以上，直接用 `sparse_hashed`。
 
-- 比 `hashed` 省 30~40% 内存
-- 查找慢 10~20%，加载慢 20~30%(实战感知不到)
-- **刷新尖刺绝对值也跟着降**
+### complex_key_hashed
 
-规则：**字典 ≥ 500 万行直接用 `sparse_hashed`，不犹豫**。
-
-### 4. `complex_key_hashed`：复合 key
-
-**内部：HashMap,key 序列化为字节串**。
+复合 key 用的，key 会被序列化成字节串：
 
 ```sql
 PRIMARY KEY user_id, product_id
@@ -932,42 +698,38 @@ LAYOUT(COMPLEX_KEY_HASHED())
 SELECT dictGet('d', 'score', tuple(toUInt64(1001), toUInt64(2002)));
 ```
 
-比单 key 慢约 30%，内存多存序列化字节串。对应 sparse 变体：`COMPLEX_KEY_SPARSE_HASHED`。
+比单 key 慢一些，内存也要多存序列化的字节串。对应的稀疏版本是 `COMPLEX_KEY_SPARSE_HASHED`。
 
-### 5. `range_hashed`：区间字典
+另外还有 `hashed_array` 和 `complex_key_hashed_array`：每个属性单独存在一个数组里，key 放在哈希表里，value 是属性数组的下标，属性多的时候比较省内存。
 
-**内部：HashMap + 每个 key 的排序区间列表**，二分查找区间。
+### range_hashed
+
+哈希表，每个 key 下挂一串排好序的区间，查的时候二分：
 
 ```sql
 LAYOUT(RANGE_HASHED(
     range_lookup_strategy 'max'                 -- 多区间命中策略
-    convert_null_range_bound_to_open 1          -- NULL 端点 = 无穷（23.x+）
+    convert_null_range_bound_to_open 1          -- NULL 端点 = 无穷
 ))
 RANGE(MIN start_date MAX end_date)
 ```
 
-`range_lookup_strategy`：
-- `min`（默认）：取 start 最小
-- `max`：取 start 最大（「取最新生效版本」）
+`range_lookup_strategy` 默认是 `min`，多个区间同时命中时取 start 最小的那个；设成 `max` 取 start 最大的，也就是取最新生效的版本。复合 key 的版本是 `COMPLEX_KEY_RANGE_HASHED`。
 
-复合 key 版：`COMPLEX_KEY_RANGE_HASHED`。
+### ip_trie
 
-### 6. `ip_trie`：IP CIDR 专属
-
-**内部：Patricia Trie，自动最长前缀匹配**。复杂度 O（IP 位数），和数据量无关。
+IP CIDR 专用的前缀树，自动最长前缀匹配，查找复杂度只跟 IP 位数有关，跟数据量无关，GeoIP 场景就选它。
 
 ```sql
 LAYOUT(IP_TRIE())
 PRIMARY KEY prefix
 ```
 
-百万级 CIDR 单次 < 100ns。GeoIP 场景必选。
+为什么不用 `range_hashed`？IP 段没有天然的分组 key，CIDR 又是最长前缀匹配，语义上就不一样。
 
-为什么不用 `range_hashed`：IP 段没有自然分组 key + CIDR 是最长前缀匹配，语义不同。
+### polygon
 
-### 7. `polygon`：地理多边形
-
-**内部：R-Tree 或网格索引**。给定经纬度，查它落在哪个预定义多边形。
+给一个经纬度，查它落在哪个预先定义好的多边形里：
 
 ```sql
 LAYOUT(POLYGON(STORE_POLYGON_KEY_COLUMN 1))
@@ -975,64 +737,53 @@ LAYOUT(POLYGON(STORE_POLYGON_KEY_COLUMN 1))
 SELECT dictGet('districts', 'name', tuple(116.40, 39.90));
 ```
 
-替代 ST_Contains JOIN，快几个数量级。
+用来替代 ST_Contains 那种 JOIN，快好几个数量级。
 
-### 8. `cache`：亿级维表的杀手锏
+### cache
 
-**内部：分片 LRU（典型 256 shard），每个 cell 含 key + value + 过期时间戳 + LRU 链指针**。
+固定容量的缓存，按 cell 存，每个 cell 有自己的过期时间：
 
 ```sql
 LAYOUT(CACHE(
-    SIZE_IN_CELLS 1000000                   -- 缓存容量（cell 数）
+    SIZE_IN_CELLS 1000000                   -- 缓存容量（cell 数），会向上取整到 2 的幂
     MAX_THREADS_FOR_UPDATES 4               -- 回源并发上限
     ALLOW_READ_EXPIRED_KEYS 1               -- 过期 key 异步刷新而非阻塞
 ))
 LIFETIME(MIN 300 MAX 600)                   -- 单 key TTL
 ```
 
-性能：
-- hit 微秒级，miss **毫秒到几十毫秒**(取决于源库)
-- **命中率是 cache 的生命线**
+命中是微秒级的，miss 就是毫秒到几十毫秒，取决于源库。命中率就是 `cache` 的命。
 
-回源风暴风险：
-```
-1000 个 key 同时 miss → 1000 个并发 SELECT 打 MySQL → 源库挂
-```
+最怕的是回源风暴：一千个 key 同时 miss，一千个并发 SELECT 打到 MySQL 上，源库直接挂。应对办法是用 `MAX_THREADS_FOR_UPDATES` 限住回源并发；开 `ALLOW_READ_EXPIRED_KEYS 1`，过期了先返回旧值，后台异步去刷；业务侧对查询限流；源库前面再挡一层 ProxySQL 之类的限流。
 
-应对：
-1. `MAX_THREADS_FOR_UPDATES` 限制并发
-2. `ALLOW_READ_EXPIRED_KEYS 1`：过期先返回旧值，异步刷新
-3. 业务侧查询限流
-4. 源库前加 ProxySQL 限流
+说实话，`cache` 我是不太愿意推荐的，性能受命中率影响太大，参数也不好调。只有维表大到别的 layout 装不下、访问又有明显热点的时候，才值得用它。
 
-### 9. `ssd_cache`：磁盘扩展
+### ssd_cache
+
+内存加 SSD 两层：
 
 ```sql
 LAYOUT(SSD_CACHE(
-    PATH '/var/lib/clickhouse/ssd_cache_dict/'
-    MAX_PARTITIONS_COUNT 16
     BLOCK_SIZE 4096
     FILE_SIZE 16777216
+    READ_BUFFER_SIZE 1048576
+    PATH '/var/lib/clickhouse/user_files/test_dict'
 ))
 ```
 
-内存 + 磁盘两层 LRU,**重启后磁盘缓存保留**(相对 `cache` 的最大优势)。
+`BLOCK_SIZE` 建议和 SSD 的页大小一致，`FILE_SIZE` 是缓存文件的上限。注意缓存内容是每台机器本地的，server 重启或者换机器以后就没了，别指望它重启后还热着。磁盘 IO 比内存慢两个数量级，P99 不如纯 `cache`。
 
-代价：磁盘 IO 慢两个数量级，P99 不如纯 `cache`。
+### direct
 
-### 10. `direct`：不缓存直查
+每次 `dictGet` 都直接去源里 SELECT，本地什么都不存。只适合源极快、调用极少、合规上不允许缓存这种非常小众的情况，任何高频查询都别用。
 
-每次 `dictGet` 直接 SELECT 源，无本地存储。
-
-适合（极小众）：源极快 + 调用频率极低 + 合规要求不能缓存。
-不适合：任何高频查询。
-
-### 11. complex_key 系列对照
+### 单 key 和复合 key 的对照
 
 | 单 key | 复合 key |
 |---|---|
 | `HASHED` | `COMPLEX_KEY_HASHED` |
 | `SPARSE_HASHED` | `COMPLEX_KEY_SPARSE_HASHED` |
+| `HASHED_ARRAY` | `COMPLEX_KEY_HASHED_ARRAY` |
 | `RANGE_HASHED` | `COMPLEX_KEY_RANGE_HASHED` |
 | `CACHE` | `COMPLEX_KEY_CACHE` |
 | `SSD_CACHE` | `COMPLEX_KEY_SSD_CACHE` |
@@ -1040,7 +791,7 @@ LAYOUT(SSD_CACHE(
 
 `flat` 和 `ip_trie` 没有复合版本。
 
-### 12. 选型决策流程
+### 选型顺序
 
 ```
 IP 段查找？             → ip_trie
@@ -1058,77 +809,67 @@ IP 段查找？             → ip_trie
 其他？                   → 不要用字典，改 JOIN 或物化视图
 ```
 
-### 13. 全面对照表
-
 | LAYOUT | 数据结构 | 查找复杂度 | 内存特征 | 刷新模型 | 适用场景 |
 |---|---|---|---|---|---|
 | `flat` | 扁平数组 | O(1)，最快 | 由 max key 决定 | 全量替换 | 小整数 key 枚举 |
-| `hashed` | HashMap | O(1) | 行数 × 1.7 | 全量替换 | 通用首选 |
-| `sparse_hashed` | sparse HashMap | O(1) 稍慢 | 行数 × 1.2 | 全量替换 | 大字典 |
-| `complex_key_hashed` | HashMap + 序列化 | O(1) 略慢 | 多存 key 字节串 | 全量替换 | 复合 key |
-| `range_hashed` | HashMap + 区间列表 | O(log m) | 多存区间字段 | 全量替换 | 时间段 / 数值段 |
-| `ip_trie` | Patricia Trie | O（IP 位数）| 紧凑前缀压缩 | 全量替换 | CIDR / GeoIP |
-| `polygon` | R-Tree / 网格 | O(log n) | 几何顶点存储 | 全量替换 | 地理判定 |
-| `cache` | 分片 LRU | hit O(1) / miss 回源 | 固定 cell 数 | 单 key TTL | 亿级 + 热点 |
-| `ssd_cache` | 内存 + SSD LRU | 内存 O(1) / SSD ms | 固定容量 | 单 key TTL | 重启不丢热点 |
+| `hashed` | 哈希表 | O(1) | 行数 × 1.7 | 全量替换 | 通用首选 |
+| `sparse_hashed` | 稀疏哈希表 | O(1) 稍慢 | 行数 × 1.2 | 全量替换 | 大字典 |
+| `complex_key_hashed` | 哈希表 + 序列化 | O(1) 略慢 | 多存 key 字节串 | 全量替换 | 复合 key |
+| `range_hashed` | 哈希表 + 区间列表 | O(log m) | 多存区间字段 | 全量替换 | 时间段 / 数值段 |
+| `ip_trie` | 前缀树 | O（IP 位数）| 紧凑前缀压缩 | 全量替换 | CIDR / GeoIP |
+| `polygon` | 多边形索引 | O(log n) | 几何顶点存储 | 全量替换 | 地理判定 |
+| `cache` | 固定 cell 缓存 | hit O(1) / miss 回源 | 固定 cell 数 | 单 key TTL | 亿级 + 热点 |
+| `ssd_cache` | 内存 + SSD | 内存 O(1) / SSD ms | 固定容量 | 单 key TTL | 内存装不下的热点 |
 | `direct` | 无 | 完全回源 | 0 | 不缓存 | 合规 / 极低频 |
 
-### 一句话
+大部分场景 `hashed` 和 `sparse_hashed` 就够了；时间段、IP 段、地理位置这三种特殊的查找各有专用的 layout；`cache` 只留给亿级、有热点的维表。
 
-> **`hashed`/`sparse_hashed` 覆盖 90% 场景；`cache` 解决 5% 的亿级热点；`range_hashed`/`ip_trie`/`polygon` 是为时间段 / IP 段 / 地理三种 lookup 模式定制的高性能数据结构；`flat`/`direct` 是边缘选择。能记住「`sparse_hashed` 是大字典默认，`cache` 要有热点才用，特殊查找模式找专用 layout」,90% 的选型就对了。**
+## 监控和排障
 
----
+### 四张系统表
 
-## 十七、生产监控与故障排查
-
-### 1. 核心系统表：四张牌
-
-#### `system.dictionaries` —— 字典本身的状态（最重要）
+最重要的是 `system.dictionaries`，字典本身的状态全在这：
 
 ```sql
 SELECT
     database, name, status, type,
     element_count, load_factor, bytes_allocated,
-    query_count, found_rate, hit_rate_time, miss_rate_time,
+    query_count, found_rate, hit_rate,
     last_successful_update_time, loading_start_time, loading_duration,
-    last_exception, source
+    error_count, last_exception, source
 FROM system.dictionaries
 WHERE database = currentDatabase();
 ```
 
-`status` 状态机：
+`status` 的几个状态：
 
 | status | 含义 | 处置 |
 |---|---|---|
 | `LOADED` | 已加载，正常服务 | 健康 |
 | `LOADING` | 正在加载（首次或刷新）| 等待 |
-| `FAILED` | 加载失败，旧版本还在 | **报警**，看 `last_exception` |
+| `FAILED` | 加载失败，旧版本还在 | 报警，看 `last_exception` |
 | `FAILED_AND_RELOADING` | 失败后重试 | 关注 |
 | `NOT_LOADED` | 懒加载下未被使用过 | 通常正常 |
 | `LOADED_AND_RELOADING` | 已加载，正在刷新 | 健康 |
 
-#### `system.asynchronous_metrics` —— 节点级聚合
+节点级的看 `system.asynchronous_metrics`：
 
 ```sql
 SELECT metric, value FROM system.asynchronous_metrics
 WHERE metric LIKE '%Dictionar%';
 ```
 
-关键：
-- `NumberOfDictionariesLoaded`
-- `DictionaryMaxLastSuccessfulUpdateTime`
-- `MemoryDictionariesBytes`（评估字典是否吃了过多内存的总入口）
+这里有两个指标：`DictionaryMaxUpdateDelay` 是所有字典里最大的更新延迟（秒），`DictionaryTotalFailedUpdates` 是所有字典自上次成功加载以来累计的失败次数。字典一共吃了多少内存，直接对 `system.dictionaries` 的 `bytes_allocated` 求和就行。
 
-#### `system.events` —— 累积计数
+`cache` 的累计计数在 `system.events` 里：
 
 ```sql
 SELECT event, value FROM system.events WHERE event LIKE 'Dict%';
 ```
 
-`DictCacheRequests` / `DictCacheHits` / `DictCacheMisses` / `DictCacheRequestTimeNs`。
-命中率 = Hits / Requests。
+常看的是 `DictCacheRequests`、`DictCacheKeysRequested`、`DictCacheKeysHit`、`DictCacheKeysRequestedMiss`、`DictCacheKeysExpired`、`DictCacheRequestTimeNs`，命中率就是 `DictCacheKeysHit / DictCacheKeysRequested`。
 
-#### `system.query_log` —— 查询级溯源
+想知道哪条业务 SQL 卡在字典上、哪个用户在高频用某个字典，翻 `system.query_log`：
 
 ```sql
 SELECT query_start_time, query_duration_ms, query, user
@@ -1137,9 +878,7 @@ WHERE query LIKE '%dictGet%' AND event_date = today()
 ORDER BY query_duration_ms DESC LIMIT 20;
 ```
 
-定位：哪条业务 SQL 卡在字典上、哪个用户高频使用某字典。
-
-### 2. 关键指标矩阵
+### 指标阈值
 
 | 指标 | 来源 | 健康 | 警戒 | 报警 |
 |---|---|---|---|---|
@@ -1150,17 +889,14 @@ ORDER BY query_duration_ms DESC LIMIT 20;
 | `element_count` | dictionaries | 与预期一致 | 突减 > 10% | 突减 > 30% |
 | `found_rate`（cache）| dictionaries | > 95% | 80~95% | < 80% |
 | `last_successful_update_time` | dictionaries | < LIFETIME × 2 | < × 5 | > × 10 |
-| `MemoryDictionariesBytes` | async_metrics | < 节点 30% | > 50% | > 70% |
+| `sum(bytes_allocated)` | dictionaries | < 节点 30% | > 50% | > 70% |
 | `MemoryResident` | async_metrics | < max_mem × 70% | > 85% | > 95% |
 
-容易忽视的：
-- `found_rate < 80%`（cache）：回源风暴正在发生
-- `loading_duration ≈ LIFETIME.MIN`：加载追不上刷新周期
-- `element_count` 突降：源表被误删数据
+容易被忽略的有三个：`cache` 的 `found_rate` 掉到 80% 以下，说明回源风暴正在发生；`loading_duration` 接近 LIFETIME.MIN，说明加载已经追不上刷新周期了；`element_count` 突然掉下去，多半是源表的数据被人误删了。
 
-### 3. 典型故障诊断剧本
+### 常见故障怎么查
 
-#### 故障 1:`dictGet` 返回空 / 默认值
+`dictGet` 返回空或者默认值：
 
 ```sql
 -- 字典是否加载
@@ -1175,9 +911,9 @@ SELECT count() FROM users_dict;
 SELECT count() FROM users_source;
 ```
 
-根因：FAILED / key 类型不匹配 / 分片字典 key 路由错 / LOADING 中。
+一般是字典 FAILED 了、key 类型不匹配、分片字典的 key 路由错了，或者还在 LOADING。
 
-#### 故障 2:节点 OOM
+节点 OOM：
 
 ```sql
 SELECT name, formatReadableSize(bytes_allocated) AS mem
@@ -1188,28 +924,24 @@ SELECT name, lifetime_min, lifetime_max,
 FROM system.dictionaries ORDER BY last_successful_update_time DESC LIMIT 20;
 ```
 
-根因：单字典过大 / 多字典刷新撞车 / 源表数据爆炸 / 查询 + 尖刺叠加。
+原因无非是单个字典太大、几个字典刷新撞到了一起、源表数据暴涨，或者查询和刷新尖刺叠在了一起。临时处置可以先把出问题的字典摘掉：
 
-临时处置：
 ```sql
-SYSTEM DROP DICTIONARY CACHE;            -- 仅 cache 字典
 DETACH DICTIONARY problematic_dict;
 ```
 
-#### 故障 3:`cache` 回源风暴
+新一些的版本也可以用 `SYSTEM UNLOAD DICTIONARY problematic_dict` 先把它从内存里卸掉。
+
+`cache` 回源风暴：
 
 ```sql
-SELECT name, found_rate, query_count
+SELECT name, found_rate, hit_rate, query_count
 FROM system.dictionaries WHERE type LIKE '%Cache%'
 ORDER BY query_count DESC;
-
-SELECT name, miss_rate_time FROM system.dictionaries
-WHERE type LIKE '%Cache%';
 ```
 
-根因：大范围扫描查询 / cache 容量太小 / 没配 `ALLOW_READ_EXPIRED_KEYS` / 源库本身慢。
+常见原因是有大范围扫描的查询、缓存容量太小、没开 `ALLOW_READ_EXPIRED_KEYS`，或者源库本身就慢。处置是把容量和回源并发调起来，打开过期读：
 
-处置：
 ```sql
 CREATE OR REPLACE DICTIONARY xxx ...
 LAYOUT(CACHE(
@@ -1219,7 +951,7 @@ LAYOUT(CACHE(
 ));
 ```
 
-#### 故障 4:数据陈旧
+数据陈旧：
 
 ```sql
 SELECT name, last_successful_update_time,
@@ -1228,11 +960,9 @@ SELECT name, last_successful_update_time,
 FROM system.dictionaries WHERE name = 'users_dict';
 ```
 
-根因：LIFETIME 周期未到 / 增量 `update_lag` 窗口外 / 源表 `update_field` 未更新 / 刷新失败 / 增量场景下的删除。
+可能是 LIFETIME 还没到，增量的 `update_lag` 窗口外的数据没拉到，源表的 `update_field` 没跟着更新，刷新失败了，或者干脆就是增量场景下的删除。处置就是 `SYSTEM RELOAD DICTIONARY users_dict;`。
 
-处置：`SYSTEM RELOAD DICTIONARY users_dict;`
-
-#### 故障 5:启动后 P99 暴涨
+重启后 P99 暴涨：
 
 ```sql
 SELECT name, status, loading_start_time, loading_duration
@@ -1243,24 +973,20 @@ WHERE last_successful_update_time > now() - INTERVAL 1 MINUTE
 ORDER BY loading_duration DESC;
 ```
 
-根因：懒加载 + 首次查询触发同步加载。
+基本就是懒加载加第一次查询触发了同步加载，用前面说的启动脚本预热，再让健康检查等字典加载完才放流量。
 
-处置：启动脚本预热 + 健康检查门控。
-
-#### 故障 6:整点 MySQL CPU 飙满
+整点 MySQL CPU 飙满：
 
 ```sql
 SELECT name, lifetime_min, lifetime_max
 FROM system.dictionaries WHERE lifetime_min = lifetime_max;
 ```
 
-根因：多个字典 `LIFETIME` 固定值 → 整点同时全量 SELECT。
+好几个字典都写了固定的 `LIFETIME`，到点一起去全量 SELECT。改成 `LIFETIME(MIN X MAX Y)` 错开，再配上 `update_field` 走增量。
 
-处置：改成 `LIFETIME(MIN X MAX Y)` 错峰 + 配 `update_field` 走增量 + `<max_concurrent_loads>` 限并发。
+### 报警和巡检
 
-### 4. 报警规则模板
-
-#### 必须立即报
+报警规则的思路大致是这样，指标名要换成你自己采集出来的名字：
 
 ```yaml
 - alert: DictionaryFailed
@@ -1270,7 +996,7 @@ FROM system.dictionaries WHERE lifetime_min = lifetime_max;
 
 - alert: DictionaryMemoryHigh
   expr: |
-    clickhouse_memory_dictionaries_bytes
+    sum(clickhouse_dictionary_bytes_allocated)
       / clickhouse_max_server_memory_usage > 0.5
   for: 5m
   severity: warning
@@ -1289,7 +1015,7 @@ FROM system.dictionaries WHERE lifetime_min = lifetime_max;
   severity: warning
 ```
 
-#### 周期巡检（每日）
+每天巡检一次：
 
 ```sql
 SELECT
@@ -1306,9 +1032,9 @@ WHERE
 ORDER BY status != 'LOADED' DESC;
 ```
 
-### 5. 调试小工具 SQL
+### 几条调试用的 SQL
 
-#### 字典访问 Top N
+字典访问的 Top N：
 
 ```sql
 SELECT
@@ -1320,7 +1046,7 @@ WHERE event_date >= today() - 1 AND query LIKE '%dictGet%'
 GROUP BY dict_name ORDER BY calls DESC LIMIT 20;
 ```
 
-#### 源表大小
+源表多大：
 
 ```sql
 SELECT table, sum(rows) AS rows,
@@ -1330,7 +1056,7 @@ WHERE active AND table = 'users_source'
 GROUP BY table;
 ```
 
-#### 集群副本一致性
+集群里各个副本的字典是不是一致，`element_count` 差得多，就是刷新不同步：
 
 ```sql
 SELECT hostName(), name, element_count, last_successful_update_time
@@ -1338,9 +1064,7 @@ FROM clusterAllReplicas('my_cluster', system.dictionaries)
 WHERE name = 'users_dict';
 ```
 
-副本间 `element_count` 差异大 → 副本刷新不同步。
-
-#### 强制刷新观察耗时
+强制刷新一次，看要多久：
 
 ```sql
 SELECT now();
@@ -1349,7 +1073,7 @@ SELECT now(), loading_duration
 FROM system.dictionaries WHERE name = 'users_dict';
 ```
 
-### 6. 症状 → 根因 → 处置对照表
+### 症状对照
 
 | 症状 | 最可能根因 | 一线处置 |
 |---|---|---|
@@ -1361,15 +1085,9 @@ FROM system.dictionaries WHERE name = 'users_dict';
 | 副本间结果不一致 | 副本刷新时差 | 接受时差或对齐刷新窗口 |
 | 字典内存稳态翻倍 | 源表数据爆炸 | 看 `element_count` 历史，源侧治理 |
 
-### 一句话
+## 附录：速查
 
-> **字典生产监控核心是 `system.dictionaries`，四个高价值字段：`status` / `last_exception` / `bytes_allocated` / `found_rate`。配齐「加载失败、内存超限、命中率暴降、刷新追不上周期」四类报警 + 每日巡检 SQL,90% 故障在变成事故前就被捕获。处置记住三招：`SYSTEM RELOAD DICTIONARY` 强刷新、错峰 `LIFETIME` 治尖刺、`ALLOW_READ_EXPIRED_KEYS` 治 cache 风暴。**
-
----
-
-## 附录：速查表
-
-### 字典选型一句话
+### 选哪个 LAYOUT
 
 | 需求 | 选择 |
 |---|---|
@@ -1377,13 +1095,13 @@ FROM system.dictionaries WHERE name = 'users_dict';
 | 大维表省内存 | `sparse_hashed` |
 | key 是密集整数 | `flat` |
 | 复合 key | `complex_key_hashed` |
-| 区间查找（年龄段、IP 段范围）| `range_hashed` |
+| 区间查找（年龄段、价格生效期）| `range_hashed` |
 | IP 段 | `ip_trie` |
 | 地理多边形 | `polygon` |
 | 亿级 + 有热点 | `cache` / `ssd_cache` |
 | 每次现查 | `direct` |
 
-### 必备 SQL
+### 常用 SQL
 
 ```sql
 -- 字典状态总览
@@ -1418,22 +1136,12 @@ LAYOUT(SPARSE_HASHED())           -- 千万级默认选择
 LIFETIME(MIN 300 MAX 360);        -- 窄区间随机错峰
 ```
 
-配套：
-- 启动脚本预热关键字典
-- 监控 `system.dictionaries.last_exception` 报警
-- 每日凌晨低峰 `SYSTEM RELOAD` 全量，清理删除
+再配上启动后预热关键字典、`last_exception` 报警、每天凌晨低峰全量 `SYSTEM RELOAD` 一次清掉删除。内存预算按单个字典稳态的三倍去留，这里面包括了 2.5 倍的尖刺和一点余量。
 
-### 内存预算口诀
+## 最后
 
-> 单字典稳态 × 3 = 实际要预留的内存（含 2.5x 尖刺 + 余量）
-
-### 必避的坑
-
-1. `LIFETIME(300)` 而不是 `LIFETIME(MIN 300 MAX 360)` → 字典间叠加尖刺
-2. 大字典懒加载 + 不预热 → 首次查询卡几分钟
-3. 配了 `update_field` 但不做定期全量 → 删除残留
-4. 分片字典假设 `dictGet` key 一定来自 sharding key，实际不严格满足 → 静默默认值
+字典这东西，用对了是真香，一个 `dictGet` 能把一个要建 hash 表的 JOIN 变成一次内存查找。可它的成本不在查的时候，在刷的时候，也在规模上来以后。最容易踩的几个坑：`LIFETIME` 写成固定值，几个字典的尖刺叠在一起把节点打爆；大字典懒加载又不预热，重启后第一个查询卡几分钟；配了 `update_field` 却从不做全量，删掉的数据一直在字典里；还有分片字典，以为 `dictGet` 的 key 一定来自 sharding key，结果不是，返回一堆默认值，谁也没发现。
 
 ---
 
-> 后续话题：LAYOUT 各类型的内部实现与选型细节、`dictGet` 函数族 + SQL 高级用法、生产监控与故障排查。
+**相关**：[物化视图：三种机制，以及 100T 表上的 POPULATE](/clickhouse/deep-dive/materialized-view) · [到底要不要写 UDF](/clickhouse/deep-dive/udf)

@@ -147,8 +147,8 @@ export default defineConfig({
           collapsed: false,
           items: [
             { text: '概览', link: '/systems/kernel/' },
-            { text: '采集器被两家客户判了死刑，然后我们翻了案', link: '/systems/kernel/ext3-jbd-memcg-oom-deadlock' },
-            { text: '限了 CPU 配额，它还是把整机卡死了 22 秒', link: '/systems/kernel/xfs-soft-lockup-cond-resched' },
+            { text: 'ext3 + memcg 的 OOM 死锁', link: '/systems/kernel/ext3-jbd-memcg-oom-deadlock' },
+            { text: 'XFS soft lockup 卡死整机', link: '/systems/kernel/xfs-soft-lockup-cond-resched' },
           ],
         },
         {
@@ -156,8 +156,8 @@ export default defineConfig({
           collapsed: false,
           items: [
             { text: '概览', link: '/systems/agent/' },
-            { text: '内存泄漏排查：为什么 valgrind 查不出内存池里的泄漏', link: '/systems/agent/memory-leak-tool-blind-spots' },
-            { text: '明明加了 -gdwarf-4，core 里还是没有行号', link: '/systems/agent/dwarf-version-mismatch' },
+            { text: '内存泄漏：valgrind 的盲区', link: '/systems/agent/memory-leak-tool-blind-spots' },
+            { text: 'DWARF 版本不匹配，core 没有行号', link: '/systems/agent/dwarf-version-mismatch' },
             {
               text: 'Fluent Bit 源码笔记',
               collapsed: false,

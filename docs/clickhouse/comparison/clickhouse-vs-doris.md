@@ -252,7 +252,7 @@ CK 把对象存储当成一块盘。在 `storage_configuration` 里把 S3/HDFS �
 TTL event_time + INTERVAL 30 DAY TO VOLUME 's3'
 ```
 
-好处是 TTL 能指定业务字段，事件时间过了 30 天就下沉，什么时候变冷由业务语义决定，非常贴合真实需求。代价是强绑定：既然对象存储是一块盘，那它不可达就等于本地盘坏了，S3/HDFS 挂掉时 CK 可能直接起不来，故障从「部分历史数据查不到」升级成「整个服务不可用」。这个坑我在 [metadata 明明在本地，为什么 ClickHouse 说 S3 上找不到](/clickhouse/troubleshooting/s3-unreachable-startup) 那篇里实打实踩过。
+好处是 TTL 能指定业务字段，事件时间过了 30 天就下沉，什么时候变冷由业务语义决定，非常贴合真实需求。代价是强绑定：既然对象存储是一块盘，那它不可达就等于本地盘坏了，S3/HDFS 挂掉时 CK 可能直接起不来，故障从「部分历史数据查不到」升级成「整个服务不可用」。这个坑我在 [S3 不可达时起不来：metadata 明明在本地，它却说 S3 上找不到](/clickhouse/troubleshooting/s3-unreachable-startup) 那篇里实打实踩过。
 
 Doris 把对象存储当成一种资源，`RESOURCE` → `STORAGE POLICY` → `TABLE`。看起来只是命名不同，实际影响很大：资源不可用时，只是放在这个资源上的那部分数据查不到，服务照常跑。但 Doris 也有两个坑：表一旦绑定了 resource 就换不了，前期规划错了后期改不了；冷却判定看的是 `visableVersion` 的时间，也就是数据什么时候写进来的，不是业务时间，你回补一批三个月前的数据，它会被当成新数据留在热存储里。
 
@@ -325,7 +325,7 @@ MCP 生态 CK 积累更深：官方 MCP Server 下载量超过 22 万次，Cloud
 
 CK 的运维痛点，摊开讲有这么几条。加节点要改配置文件，集群拓扑写在 `config.xml`/`metrika.xml` 里，加一个节点就要改配置、分发到每一台机器，Doris 只要一条 `ALTER SYSTEM ADD BACKEND "host:port";`。CK 不感知拓扑变化，这个下一节专门讲。元数据也是各节点各管各的，Doris 的 FE 自带元数据管理，基于 BDB JE 做复制，不依赖外部组件。
 
-不过说到 CK 依赖 ZooKeeper，得说句公道话。早年 CK 把分布式 DDL、表和 part 信息全存在 ZK 里，ZK 经常成为瓶颈，这个批评当时完全成立（我在 [znode 爆炸与线程池](/clickhouse/troubleshooting/znode-explosion) 里就写过一次 ZK 被打爆的事故）。但 CK 自 21.x 起就在推自研的 ClickHouse Keeper，C++ 重写、Raft 共识、兼容 ZK 协议，到 24.x 基本取代了 ZooKeeper，还能内嵌在 clickhouse-server 进程里跑，不用再单独维护一套 Java 服务。所以「CK 依赖 ZooKeeper」也是一条正在过时的批评。
+不过说到 CK 依赖 ZooKeeper，得说句公道话。早年 CK 把分布式 DDL、表和 part 信息全存在 ZK 里，ZK 经常成为瓶颈，这个批评当时完全成立（我在 [znode 爆炸：根子在 ClickHouse 的后台线程池](/clickhouse/troubleshooting/znode-explosion) 里就写过一次 ZK 被打爆的事故）。但 CK 自 21.x 起就在推自研的 ClickHouse Keeper，C++ 重写、Raft 共识、兼容 ZK 协议，到 24.x 基本取代了 ZooKeeper，还能内嵌在 clickhouse-server 进程里跑，不用再单独维护一套 Java 服务。所以「CK 依赖 ZooKeeper」也是一条正在过时的批评。
 
 即便如此，CK 的运维复杂度还是比 Doris 高。这也正是 ckman、ByteHouse 和各家云厂商魔改版存在的理由。ckman 干的就是这个：可视化部署、滚动升级、节点增删、表与数据治理、备份恢复、监控告警，把原本要手改配置、逐台分发的操作，变成 Web 上点几下。
 

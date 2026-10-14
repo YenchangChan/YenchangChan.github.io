@@ -1,19 +1,19 @@
 # 内核问题定位
 
-两起金融客户的整机 hang 死 / soft lockup。共同点是：**事故初期，采集器都被认定为元凶。**
+两起金融客户的整机 hang 死和 soft lockup。事故刚出来的时候，采集器都被认定成了元凶。
 
-方法是一样的 —— `crash` 解析 vmcore 调用栈，比对发行版内核源码 diff，再结合上游同型补丁交叉验证。
+查的办法差不多：用 `crash` 解析 vmcore 调用栈，比对发行版内核源码的 diff，再拿上游同类补丁去对照。
 
 <div class="posts">
 
 <a class="post" href="/systems/kernel/ext3-jbd-memcg-oom-deadlock">
-<span class="post-t">采集器被两家客户判了死刑，然后我们翻了案</span>
+<span class="post-t">ext3 + memcg 的 OOM 死锁：采集器差点背了锅</span>
 <span class="post-d">jbd 事务与 memory cgroup OOM 互锁。根因是 RedHat 在 3.10.0-862.el7 移植补丁时，把 <code>__GFP_NOFAIL</code> 在 <code>__add_to_page_cache_locked()</code> 里按位与掉了。</span>
 </a>
 
 <a class="post" href="/systems/kernel/xfs-soft-lockup-cond-resched">
-<span class="post-t">限了 CPU 配额，它还是把整机卡死了 22 秒</span>
-<span class="post-d">XFS 在 extent 遍历路径上缺 <code>cond_resched()</code>，非抢占内核下单次调用自旋 22 秒；持有 <code>XFS_ILOCK_EXCL</code> 把单核故障放大成整机夯死。附证据边界说明：这次没拿到栈级实锤。</span>
+<span class="post-t">XFS soft lockup：限了 CPU 配额，整机还是卡死 22 秒</span>
+<span class="post-d">XFS 在 extent 遍历路径上缺 <code>cond_resched()</code>，非抢占内核下单次调用自旋 22 秒；持有 <code>XFS_ILOCK_EXCL</code> 把单核故障放大成整机夯死。这次现场重启了，没拿到调用栈。</span>
 </a>
 
 </div>

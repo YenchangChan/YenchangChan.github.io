@@ -4,151 +4,105 @@ title: chDB + S3 Parquet：把冷数据变成可查询资产
 
 # chDB + S3 Parquet：把冷数据变成可查询资产
 
-> 把冷数据从 ClickHouse 里拆出去，存成开放格式的 Parquet 放进 S3，再用 chDB 作为独立的查询侧。从动机、数据布局、写入、生命周期一直到查询微服务的完整架构。
->
-> **阅读对象**：历史数据已经堆到几十 TB、热查询带不动、又不敢贸然迁移的团队。
+维护 ClickHouse 集群时间一长，几乎一定会碰上这么几件事。
 
----
+一是存储成本控制不住。MergeTree 表越积越大，NVMe SSD 的钱花得心疼，又不敢删。这两年大模型训练、推理井喷，HBM 挤占了 DRAM 产能，QLC、TLC 颗粒被 AI 数据集吃光，DRAM 和企业级 SSD 的价格被推高了好几倍，同样容量的本地存储比两年前贵了 2 到 4 倍，「硬件便宜，堆就是了」这个老想法已经不成立了。
 
-## 引子：为什么要单独写这套架构
+二是冷查询拖累热查询。业务平时只查最近 7 天，偶尔有人查一年前的数据，IO 和内存一下就被吃干净。
 
-如果你正在维护一个 ClickHouse 集群，时间一长几乎一定会遇到这三个问题：
+三是集群越大越脆。节点越多、parts 越多，ZooKeeper 越累，扩容和升级都越来越难。
 
-1. **存储成本失控**：MergeTree 表越积越大，NVMe SSD 的钱花得心疼，但又不敢删——而且这两年大模型训练 / 推理井喷直接把 DRAM 和企业级 SSD 价格推高了数倍（HBM 挤占 DRAM 产能、QLC/TLC 颗粒被 AI 数据集吃光），同样容量的本地存储跟两年前比涨了 2-4 倍，「硬件便宜可以堆」的旧假设已经不成立；
-2. **冷查询拖累热查询**：业务只查最近 7 天，但偶尔有人查 1 年前的数据，把 IO 和内存吃干净；
-3. **集群越大越脆**：节点越多、parts 越多、ZooKeeper 越累，扩容和升级都越来越难。
-
-ClickHouse 官方给出的方案是 **S3 disk / 存储策略**——把冷数据下沉到 S3，存储成本下来了。但这条路把 **S3 拉进了 ClickHouse 的运行时关键路径**，故障域就此扩大。本文要讨论的是另一条路：
-
-> **把冷数据从 ClickHouse 导出成标准 Parquet，存到 S3，由独立的 chDB 微服务负责查询**。
+ClickHouse 官方给的办法是 S3 disk 加存储策略，把冷数据沉到 S3 上，存储成本是下来了。可这条路把 S3 拉进了 ClickHouse 运行时的关键路径，故障域跟着变大了。这篇讲的是另一条路：把冷数据从 ClickHouse 导出成标准的 Parquet 放到 S3，再由一个独立的 chDB 微服务负责查询。
 
 整套架构长这样：
 
 <figure class="dfig">
-<img class="dfig-l" src="/diagrams/chdb-01.light.svg" alt="引子：为什么要单独写这套架构">
-<img class="dfig-d" src="/diagrams/chdb-01.dark.svg" alt="引子：为什么要单独写这套架构">
+<img class="dfig-l" src="/diagrams/chdb-01.light.svg" alt="整体架构：ClickHouse 导出 Parquet 到 S3，chDB 微服务独立查询">
+<img class="dfig-d" src="/diagrams/chdb-01.dark.svg" alt="整体架构：ClickHouse 导出 Parquet 到 S3，chDB 微服务独立查询">
 </figure>
 
-整篇文章按「为什么这样选 → 数据怎么放 → 怎么写出来 → 怎么管生命周期 → 怎么对外提供查询」的顺序展开。
+下面按为什么这么选、数据怎么放、怎么写出来、生命周期怎么管、怎么对外提供查询这个顺序往下写，最后是一组实测数据。
 
----
+## 为什么不用 S3 冷盘
 
-## 一、为什么不用 S3 冷盘：故障域才是决定性问题
+S3 冷盘最大的卖点是无缝：给 ClickHouse 配一个 `<disk type="s3">`，加一条 TTL 自动下沉，业务完全无感。可问题恰恰出在这个无缝上。
 
-S3 冷盘最大的卖点是「无缝」——给 ClickHouse 配一个 `<disk type="s3">`，加一条 TTL 自动下沉，业务无感知。但这个「无缝」恰恰是问题。
-
-### S3 冷盘的隐性耦合
-
-把 S3 配成 ClickHouse 的 disk 后，下面这些事都建立在 S3 可用的前提上：
-
-- 每个冷 part 的 metadata 都引用 `s3://...` 路径；
-- 启动时要读 metadata、stat S3 对象、校验完整性；
-- `ALTER` 冷分区（加列、改类型、改 TTL）要拉回元数据甚至数据；
-- `ALTER UPDATE/DELETE` 打到冷分区要重写 S3 part；
-- `Replicated*MergeTree` 副本之间要互相确认 part 在 S3 的状态。
-
-任何一项遇到问题——S3 限速、区域故障、IAM 凭证过期、网络抖动——都会触发连锁反应：
+把 S3 配成 ClickHouse 的 disk 以后，很多事情都建立在 S3 可用的前提上了。每个冷 part 的 metadata 都引用着 `s3://...` 路径；启动时要读 metadata、stat S3 对象、校验完整性；对冷分区做 `ALTER`，加列、改类型、改 TTL，要把元数据甚至数据拉回来；`ALTER UPDATE/DELETE` 打到冷分区，要重写 S3 上的 part；`Replicated*MergeTree` 的副本之间还要互相确认 part 在 S3 上的状态。S3 限速、区域故障、IAM 凭证过期、网络抖一下，任何一处出问题都会连锁反应：
 
 <figure class="dfig">
-<img class="dfig-l" src="/diagrams/chdb-02.light.svg" alt="S3 冷盘的隐性耦合">
-<img class="dfig-d" src="/diagrams/chdb-02.dark.svg" alt="S3 冷盘的隐性耦合">
+<img class="dfig-l" src="/diagrams/chdb-02.light.svg" alt="S3 冷盘的隐性耦合：S3 出问题后的连锁反应">
+<img class="dfig-d" src="/diagrams/chdb-02.dark.svg" alt="S3 冷盘的隐性耦合：S3 出问题后的连锁反应">
 </figure>
 
-这不是 ClickHouse 的 bug，是架构选择把 S3 拉进了关键路径的必然结果。
+这算不上 ClickHouse 的 bug，把 S3 放进关键路径，就一定会这样。S3 不可达时 ClickHouse 起不来是什么样子，可以看 [S3 不可达时起不来：metadata 明明在本地，它却说 S3 上找不到](/clickhouse/troubleshooting/s3-unreachable-startup)。
 
-### Export 方案的爆炸半径
-
-把同样这件事用「导出 Parquet」做：
-
-- ClickHouse 这边只有「每天一次 INSERT INTO FUNCTION s3(...)」，跑完即断，不持有任何 S3 长连接；
-- S3 上的 Parquet 跟 ClickHouse 没有运行时绑定；
-- chDB 微服务是独立进程，独立读 S3，跟 ClickHouse 互不知道对方存在。
-
-S3 出问题时：
+同样的事情换成导出 Parquet 来做，ClickHouse 这边只剩每天一次 `INSERT INTO FUNCTION s3(...)`，跑完就断，不持有任何 S3 长连接；S3 上的 Parquet 和 ClickHouse 没有运行时的绑定；chDB 微服务是个独立进程，自己去读 S3，和 ClickHouse 谁也不知道谁。S3 出了问题，两种做法的影响范围是这样的：
 
 | 方案 | S3 故障的爆炸半径 |
 |---|---|
 | S3 冷盘 | 冷查询失败 + 热查询变慢/失败 + ClickHouse 重启风险 + ZK 同步异常 |
 | Export to Parquet | 仅冷查询失败 |
 
-后者就是「历史分析查不了」，前者是「整个数据库可能起不来」。**这两件事的严重性差一个数量级以上**。
+后者顶多是历史数据查不了，前者是整个数据库可能起不来，严重程度差了不止一个数量级。
 
-### 其他经常被低估的优势
+### 顺手得到的几样好处
 
-除了故障隔离，export 方案还顺手解锁了几件事：
+除了故障隔离，导出这条路还顺带解决了几件事。
 
-1. **格式开放**：Parquet 是工业标准，DuckDB / Spark / Trino / Presto / Athena / pandas / polars 都能读。哪天 chDB 不合适了，换引擎不用动数据。S3 冷盘的数据是 ClickHouse 内部格式，离开 ClickHouse 就是一堆没人认识的二进制。
-2. **备份简单**：冷数据天然就是冷备，需要灾备时 `aws s3 sync` 到另一个 region 就行，不需要懂 ClickHouse 内部结构。
-3. **Schema 演进自由**：每天的 Parquet 可以有不同 schema，chDB 端做兼容即可。S3 冷盘上的数据必须跟当前表 schema 一致。
-4. **成本独立可观测**：S3 的存储和请求账单跟 ClickHouse 集群完全分开，财务上一眼看清。S3 冷盘的 S3 IO 是后台 merge 触发的，账单跟性能问题揉在一起难拆。
-5. **存储成本不再被副本数放大**——这条尤其在集群场景下被严重低估。`Replicated*MergeTree` 配 S3 冷盘时，**每个 replica 都会向 S3 写自己那一份**：3 副本集群冷数据下沉 = S3 上存 3 份。本来「上 S3 省钱」的初衷被副本系数抵消大半。
-   社区曾用 `allow_remote_fs_zero_copy_replication` 试图解决这个问题（多 replica 共享 S3 上同一份 part），但因为 part 引用计数、删除竞态、metadata 一致性等一系列正确性问题，**官方早已标注为「实验性、不建议生产使用」**——这条路实际上被堵死了。
-   Export 方案下，**每个 shard 只往 S3 写一份**（详见第五章「集群部署」那节，每 shard 选一个 replica 出力），S3 自己的 11 个 9 持久性天然替代了 CK 的多副本——**存储成本省 N×**（N = 副本因子）。
-   一个 CK 内部已占 **50 TB on-disk**（已是 LZ4 压缩后）的 3 副本冷数据集群，实账：
+格式是开放的。Parquet 是工业标准，DuckDB、Spark、Trino、Presto、Athena、pandas、polars 都能读，哪天 chDB 不合适了，换个引擎，数据不用动。S3 冷盘上的数据是 ClickHouse 的内部格式，离开 ClickHouse 就是一堆没人认识的二进制。
 
-   | 维度 | S3 冷盘 | Export Parquet |
-   |---|---|---|
-   | 单份大小 | 50 TB（CK LZ4，跟本地盘一致） | ~30 TB（Parquet+ZSTD，比 CK LZ4 紧约 1.5-2×）|
-   | 副本数 | **× 3** | × 1（S3 自有 11 个 9 持久性兜底） |
-   | S3 实际占用 | **150 TB** | **~30 TB** |
-   | S3 标准价 ~$0.023/GB·月 | ~$3,500/月 | ~$700/月 |
-   | 综合差距 | — | **~5×** |
+备份简单。冷数据本身就是冷备，要做灾备，`aws s3 sync` 到另一个 region 就行，不需要懂 ClickHouse 的内部结构。
 
-   主导项是**副本因子 3×**，加上 Parquet+ZSTD 比 CK 原生 LZ4 多挤一档（columnar + dictionary encoding，列压缩天然比行存友好），合计 4-6× 的实账差距。**日志类高重复文本**差距更大——参见第九节实测：CK 内部 10 GB / Parquet ZSTD 仅 4.5 GB（~2.2×），叠加 3 副本就是 ~7×。
-   一年下来差几万美刀，结合本节开头那个「硬件涨 2-4×」的背景，**这部分省下的钱比「少一台 NVMe 服务器」明显多**。
+schema 可以自由演进。每天的 Parquet 可以有不同的 schema，chDB 那边做兼容就行；S3 冷盘上的数据必须和当前表的 schema 一致。
+
+成本能单独看清楚。S3 的存储和请求账单跟 ClickHouse 集群完全分开，财务上一眼就能看明白。S3 冷盘的 S3 IO 是后台 merge 触发的，账单和性能问题搅在一起，很难拆。
+
+最容易被低估的一条，是存储成本不再被副本数放大，集群场景下尤其明显。`Replicated*MergeTree` 配 S3 冷盘时，每个 replica 都会往 S3 写自己的一份，3 副本集群的冷数据沉下去，S3 上就是 3 份，上 S3 省钱的初衷被副本系数抵掉一大半。社区曾经想用 `allow_remote_fs_zero_copy_replication` 解决，让多个 replica 共用 S3 上的同一份 part，可因为 part 引用计数、删除竞态、metadata 一致性一系列正确性问题，官方早就标成了实验性、不建议生产使用，这条路等于被堵死了。导出方案下，每个 shard 只往 S3 写一份（后面集群部署那一节会讲，每个 shard 选一个 replica 干活），S3 自己 11 个 9 的持久性顶替了 ClickHouse 的多副本，存储省下的就是副本因子那么多倍。
+
+拿一个冷数据在 ClickHouse 里已经占了 50 TB（已经是 LZ4 压缩后的大小）的 3 副本集群算笔账：
+
+| 维度 | S3 冷盘 | Export Parquet |
+|---|---|---|
+| 单份大小 | 50 TB（CK LZ4，跟本地盘一致） | ~30 TB（Parquet+ZSTD，比 CK LZ4 紧约 1.5-2×）|
+| 副本数 | × 3 | × 1（S3 自有 11 个 9 持久性兜底） |
+| S3 实际占用 | 150 TB | ~30 TB |
+| S3 标准价 ~$0.023/GB·月 | ~$3,500/月 | ~$700/月 |
+| 综合差距 | | ~5× |
+
+大头是副本因子的 3 倍，再加上 Parquet 加 ZSTD 比 ClickHouse 默认的 LZ4 又多挤了一档，合起来是 4 到 6 倍。日志这种高重复的文本差距更大，后面实测那一节里，ClickHouse 内部 10 GB 的数据，导成 Parquet ZSTD 只有 4.5 GB，约 2.2 倍，再叠上 3 副本就是 7 倍左右。一年下来差好几万美元，再想想开头说的硬件涨了 2 到 4 倍，这部分省下的钱比少买一台 NVMe 服务器多得多。
 
 ### 要付出的代价
 
-当然，export 方案也要付出对应的成本：
+导出方案当然也有成本：
 
 | 代价 | 严重程度 |
 |---|---|
-| 维护一个 export 脚本 / cron | 低——几十行 SQL + 验证 |
-| 重叠期数据存两份 | 低——1 个月 ClickHouse 存储 |
-| 跨冷热边界的查询要业务层拼接 | 中——但聚合查询通常不跨边界 |
-| chDB 需要独立的查询微服务 | 低——本来就要做 |
-| Schema 升级要同步考虑 chDB 端 | 低——Parquet 兼容性好 |
+| 维护一个 export 脚本 / cron | 低，几十行 SQL + 验证 |
+| 重叠期数据存两份 | 低，1 个月 ClickHouse 存储 |
+| 跨冷热边界的查询要业务层拼接 | 中，但聚合查询通常不跨边界 |
+| chDB 需要独立的查询微服务 | 低，本来就要做 |
+| Schema 升级要同步考虑 chDB 端 | 低，Parquet 兼容性好 |
 
-跟「S3 抖一下整个集群进 ICU」比，这点成本通常是值得的。**在可解耦的地方倾向于解耦**——这是分布式系统设计里普遍奏效的取舍。
+比起 S3 抖一下整个集群进 ICU，这点成本我觉得是值得的。能解耦的地方，我倾向于解耦。
 
----
+## chDB 是什么
 
-## 二、chDB 是什么，凭什么承担「独立查询侧」
+chDB 是 ClickHouse 的进程内嵌入式 OLAP 引擎，可以理解成 ClickHouse 界的 DuckDB 或者 SQLite。它把整个 ClickHouse 查询引擎打包成一个动态库，不用启动任何服务进程，在自己的应用里就能直接跑 ClickHouse SQL。它是 Auxten Wang 在 2023 年发起的，后来被 ClickHouse Inc. 收购，现在由官方维护。解析器、向量化执行引擎、函数库、存储格式都是 ClickHouse 原样的，所以 SQL 百分之百兼容。绑定有 Python、Go、Rust、Node.js、Bun、C/C++，其中 Python 支持得最好。
 
-### 一句话定义
+在这套架构里，它的位置是故意解耦出来的二级存储的读侧。它跟 ClickHouse 是平级的组件，不是 ClickHouse 的附属，边界很干净，将来要替换、扩容、迁移都容易。
 
-**chDB 是 ClickHouse 的进程内嵌入式 OLAP SQL 引擎**，可以把它理解为「ClickHouse 界的 DuckDB / SQLite」。它把整个 ClickHouse 查询引擎打包成一个动态库，让你不用启动任何服务进程，在自己的应用里直接跑 ClickHouse SQL。
+它能做的事里，跟这套架构关系最大的是直接查 S3、HDFS、HTTP 上的 Parquet 或 ORC，不用建表，不用导入：
 
-- 由 Auxten Wang 于 2023 年发起，后被 ClickHouse Inc. 收购，现为官方维护项目；
-- 100% ClickHouse 兼容：复用 ClickHouse 的解析器、向量化执行引擎、函数库和存储格式；
-- 多语言绑定：Python、Go、Rust、Node.js、Bun、C/C++，**Python 是一等公民**。
+```python
+import chdb
+chdb.query("SELECT count() FROM 's3://bucket/path/*.parquet' WHERE x > 0", "Pretty")
+```
 
-### 它在这套架构里的定位
+另外它支持 70 多种数据格式，Parquet、ORC、CSV、JSON、Arrow、Avro、Protobuf 这些；`chdb.session.Session("/path")` 开一个持久化会话，相当于一个本地的 ClickHouse 实例；能直接把 Pandas、Polars、PyArrow 的 DataFrame 当表用 SQL 查，结果走 Arrow 零拷贝返回；ClickHouse 引擎层的设置也都继承下来了，限速、限内存、external spill 一个不少。
 
-不是「一个查询工具」，而是 **「故意解耦的二级存储的读侧」**。它跟 ClickHouse 是对等组件而不是从属关系——这是干净的架构边界，将来要替换、扩容、迁移都容易得多。
+它做不到的事也得先知道。它没有官方的 Java binding，在 Java 为主的技术栈里，就只能作为一个微服务存在。它不是为高并发短查询设计的，单查询很强，但 QPS 上千的小查询场景，不如专门的内存引擎。它冷启动比 DuckDB 慢，动态库 500 MB 左右，第一次加载要几百毫秒到一秒，对 Lambda 不友好。`LIKE '%xxx%'` 这种子串过滤是 Parquet 和 ORC 共同的硬伤，下一节单独说。
 
-### 关键能力
-
-1. **直接查询 S3 / HDFS / HTTP 上的 Parquet/ORC**，无需建表无需导入：
-   ```python
-   import chdb
-   chdb.query("SELECT count() FROM 's3://bucket/path/*.parquet' WHERE x > 0", "Pretty")
-   ```
-2. **支持 70+ 数据格式**：Parquet、ORC、CSV、JSON、Arrow、Avro、Protobuf 等；
-3. **持久化会话**：`chdb.session.Session("/path")` 等同于一个本地 ClickHouse 实例；
-4. **DataFrame 互通**：直接把 Pandas / Polars / PyArrow 当表 SQL 查询，零拷贝（Arrow）返回结果；
-5. **完整继承 ClickHouse 引擎层设置**：限速、限内存、external spill 全都有。
-
-### 它的边界在哪里
-
-同时，有几件 chDB 做不到的事需要事先了解：
-
-- **没有官方 Java binding**——这点直接决定了它在「Java 主导的栈」里只能作为微服务存在；
-- **不是为高并发短查询设计**——单查询性能强，但 QPS 上千的微查询场景不如专门的 in-memory 引擎；
-- **冷启动比 DuckDB 慢**——动态库 ~500 MB，首次加载几百 ms 到 1s，对 Lambda 不友好；
-- **`LIKE '%xxx%'` 等子串过滤是 Parquet/ORC 共同的硬限制**——这一点单列详述（见下一节）。
-
-### 资源画像
+资源上大概是这么个量级：
 
 | 项 | 量级 |
 |---|---|
@@ -158,17 +112,13 @@ S3 出问题时：
 | CPU 利用 | 多线程向量化，会吃满所有核 |
 | 内存 | 大多数算子节制，GROUP BY 高基数 / JOIN 大表时需手动限制 |
 
-**关键认知**：跑 SQL 的实际计算在 C++ 引擎里完成，Python 端只是个遥控器。所以 「Python binding 的 chDB 慢」是误解——只要查询足够「重」，Python 那点边界开销看不见。
+跑 SQL 的计算全在 C++ 引擎里，Python 那边只是个遥控器。所以说 Python binding 的 chDB 慢，是个误解，只要查询够重，Python 那点边界开销根本看不出来。
 
----
+## 单机 chDB 查 100G Parquet，能做到什么程度
 
-## 三、100G S3 Parquet：chDB 的能力边界
+我们的目标场景是单机 chDB，查 S3 上 100 GB 的 Parquet 或 ORC。
 
-我们的目标场景：**单机 chDB，查 S3 上 100 GB 的 Parquet/ORC**。下面把它能干什么、做不到什么、瓶颈在哪讲清楚。
-
-### 关键认知：三层过滤模型
-
-chDB 查 S3 Parquet 时，数据要经过三层漏斗：
+chDB 查 S3 上的 Parquet，数据要过三层漏斗：
 
 <div class="sk sk-steps">
 <div class="sk-box"><span class="sk-t">查询 SQL</span></div>
@@ -185,9 +135,9 @@ chDB 查 S3 Parquet 时，数据要经过三层漏斗：
 <p class="sk-cap">三层都是「先判断要不要读」，真正下载发生在第三层之后</p>
 </div>
 
-每一层都对应一种「跳过数据」的机制，**任何一层失效，下一层都要为它埋单**。所以「存得对不对」决定了 80% 的查询性能（详见第四节）。
+每一层都是一种跳过数据的机制，哪一层失效了，下一层就得替它买单。所以数据存得对不对，决定了八成的查询性能，下一节专门讲。
 
-### 引擎层享受到的优化
+引擎层能享受到的优化：
 
 | 优化 | 效果 | 对 100G S3 的意义 |
 |---|---|---|
@@ -196,17 +146,15 @@ chDB 查 S3 Parquet 时，数据要经过三层漏斗：
 | 多线程并行读取 | 文件级 + row-group 级并发 | 充分吃满 S3 带宽 |
 | 向量化执行 | ClickHouse 原生引擎 | CPU 几乎不会成为瓶颈 |
 
-真正的瓶颈是 S3 出口带宽：同 region EC2 ~1–10 GB/s，本地公网 ~几十 MB/s。
+真正的瓶颈是 S3 的出口带宽：同 region 的 EC2 大概 1 到 10 GB/s，本地走公网也就几十 MB/s。
 
-### LIKE 是 Parquet/ORC 的硬伤
+### LIKE 是 Parquet 和 ORC 的硬伤
 
-这是必须先讲清楚的限制：
+`LIKE 'prefix%'` 这种前缀匹配还好。Parquet 列的 min/max 统计对字符串按字典序算，前缀匹配能转成范围查询，能跳 row group，前提是数据有序。
 
-1. **`LIKE 'prefix%'`（前缀匹配）**：Parquet 列的 min/max 统计对字符串按字典序，前缀匹配能转化成范围查询，能跳 row group。**前提是数据有序**。
-2. **`LIKE '%substring%'`（子串匹配）**：min/max 完全无效；Parquet 的 BloomFilter 也只支持等值。**结果是该列所有 row group 都得从 S3 下载、解压、扫一遍**。`multiSearchAny()` / `position()` / `hasToken()` / 正则——原理一样，**没有索引能用**。
-3. **ORC 的 BloomFilter** 也只支持等值，且要建文件时显式开启。
+`LIKE '%substring%'` 这种子串匹配就没救了。min/max 完全用不上，Parquet 的 BloomFilter 也只支持等值，结果就是这一列所有的 row group 都得从 S3 下载、解压、扫一遍。`multiSearchAny()`、`position()`、`hasToken()`、正则，道理都一样，没有索引可用。ORC 的 BloomFilter 同样只支持等值，还得建文件时显式打开。
 
-对应的策略：
+按查询的频率，可以这么应对：
 
 | 频率 | 建议 |
 |---|---|
@@ -214,11 +162,11 @@ chDB 查 S3 Parquet 时，数据要经过三层漏斗：
 | 反复查、前缀固定 | 改 `startsWith()`，写入时按该列排序 |
 | 反复查子串 / 全文搜索 | Parquet 不合适，导入 chDB 的本地 MergeTree 并建 `tokenbf_v1` / `ngrambf_v1` / inverted index |
 | 字段基数很低 | 提前 ETL 抽成独立列或数组，用等值 / `has()` |
-| **`LIKE '%xxx%' LIMIT N`** 探查类查询 | **直接用，通常秒回**——见下文短路原理 |
+| `LIKE '%xxx%' LIMIT N` 探查类查询 | 直接用，通常秒回，见下面 |
 
-### 例外：`LIKE '%xxx%' LIMIT N` 通常秒回——pipeline 短路
+### LIKE '%xxx%' 加 LIMIT 为什么又能秒回
 
-上面说的「全扫」前提是 **聚合或无界扫描**——`count()`、`GROUP BY`、`SELECT * WHERE ...` 这类必须看完所有数据才能给结果的查询。但**带 `LIMIT N` 的探查类查询是例外**：
+上面说的全扫，指的是聚合或者没有边界的扫描，`count()`、`GROUP BY`、`SELECT * WHERE ...` 这种必须看完所有数据才能出结果的查询。带 `LIMIT N` 的探查类查询是个例外：
 
 ```sql
 SELECT * FROM s3('...50GB-file.parquet')
@@ -227,31 +175,20 @@ LIMIT 10;
 -- 在 50 GB 单文件上常常 < 1s 返回，实际从 S3 拉下来的可能只有几十 MB
 ```
 
-原理是 ClickHouse / chDB 的 **pull-based 向量化 pipeline**：
+原因在 ClickHouse 和 chDB 的 pull 式向量化 pipeline：
 
 <figure class="dfig">
-<img class="dfig-l" src="/diagrams/chdb-04.light.svg" alt="例外：`LIKE '%xxx%' LIMIT N` 通常秒回——pipeline 短路">
-<img class="dfig-d" src="/diagrams/chdb-04.dark.svg" alt="例外：`LIKE '%xxx%' LIMIT N` 通常秒回——pipeline 短路">
+<img class="dfig-l" src="/diagrams/chdb-04.light.svg" alt="pull 式 pipeline：Limit 拿够 N 行后整条链短路">
+<img class="dfig-d" src="/diagrams/chdb-04.dark.svg" alt="pull 式 pipeline：Limit 拿够 N 行后整条链短路">
 </figure>
 
-Limit 算子拿到 N 行后停止向下游拉数据，整条链短路：
+Limit 算子拿到 N 行以后，就不再往下游要数据了。Limit 不拉，Filter 就不拉，Decoder 就不解；S3 Reader 不再发新的 Range GET；后面的 row group 永远不会被下载，文件再大也不读。所以单个 50 GB 文件加子串 LIKE 加 `LIMIT 10` 能秒回，和 LIKE 要全扫并不矛盾，它们说的是两种不同形态的查询。
 
-1. Limit 不再拉 → Filter 不再拉 → Decoder 不再解；
-2. S3 Reader **不再发起新的 Range GET**；
-3. 后续 row group 永不下载，文件再大也不读。
+有几种情况会让短路失效或者打折扣。子串特别少见，命中率不到万分之一，就要扫很多 row group 才凑得够 N 条，接近全扫。`ORDER BY ... LIMIT N` 得先看完所有候选才能排序，LIMIT 推不下去。`OFFSET` 很大的时候，`LIMIT 10 OFFSET 100000` 仍然要先筛出 10 万条命中。还有 `max_threads > 1` 时的超读，多个线程同时扫多个 row group，Limit 喊停的时候已经有 row group 在路上了，实际下载的比理论值多一点，不过还是远小于全扫。
 
-所以「单 50 GB 文件 + 子串 LIKE + `LIMIT 10` 秒回」和「LIKE 全扫」并不矛盾——它们是**不同查询形态**的两种结论。
+### 别让 chDB 把网关打爆
 
-**会让短路失效或退化的场景**：
-
-- **子串极稀有**（命中率 < 1‱）：要扫很多 row group 才凑齐 N 条，退化成接近全扫；
-- **`ORDER BY ... LIMIT N`**：必须先看完所有候选才能排序，LIMIT 推不下去；
-- **大 `OFFSET`**：`LIMIT 10 OFFSET 100000` 仍要筛 10 万条命中；
-- **`max_threads > 1` 的「超读」**：多线程并发扫多个 row group，Limit 喊停时已有 RG 在路上，实际下载略大于理论值（但仍远小于全扫）。
-
-### 限速：让 chDB 不要打爆网关
-
-S3 / 公司出口网关都有带宽和 QPS 限制。chDB 完整支持 ClickHouse 引擎层的所有限速 setting：
+S3 和公司的出口网关都有带宽和 QPS 限制。ClickHouse 引擎层的限速设置，chDB 都能用：
 
 ```sql
 SETTINGS
@@ -263,7 +200,7 @@ SETTINGS
     max_download_threads              = 4
 ```
 
-Session 模式下用 `SET` 一次性灌进去，对会话内所有后续查询生效——这就是 chDB 里的「伪 profile」：
+Session 模式下用 `SET` 一次灌进去，会话里之后的查询都生效，算是 chDB 里的一个伪 profile：
 
 ```python
 from chdb import session
@@ -276,15 +213,13 @@ for stmt in [
     s.query(stmt)
 ```
 
-进程级硬顶用 `max_remote_read_network_bandwidth_for_server`，整个 chDB 进程所有查询的总带宽不破顶，最适合「不要拉爆网关」的诉求。
+要给整个进程封顶，用 `max_remote_read_network_bandwidth_for_server`，chDB 进程里所有查询加起来的带宽不会超过它，最合适不想把网关打爆的场景。不过在 ClickHouse 里它是服务端配置，作为查询级设置已经标成了废弃（`MAKE_DEPRECATED_BY_SERVER_CONFIG`），`SET` 了可能不生效。chDB 里用 `SET` 灌进去到底管不管用，上线前最好拿网卡流量实测一下。
 
----
+## S3 上的数据怎么放
 
-## 四、S3 数据布局：让查询提速 10–100× 的杠杆
+这一节收益最大，也最容易被忽略。存得好，100G 数据一秒查完；存得糟，后面再怎么优化也救不回来。
 
-这是整篇文章里**收益最大、最容易被忽略**的一章。存得好，100G 数据查 1 秒；存得糟，再多优化也救不回来。
-
-### 第一层：S3 Key 组织（Hive 风格分区）
+### S3 key 按 Hive 风格分区
 
 ```
 s3://bucket/events/
@@ -297,7 +232,7 @@ s3://bucket/events/
     ...
 ```
 
-chDB 完整支持 Hive 风格路径分区：
+chDB 完整支持 Hive 风格的路径分区：
 
 ```sql
 SET use_hive_partitioning = 1;
@@ -307,32 +242,32 @@ WHERE dt = '2026-05-01' AND bucket = 5;
 -- dt 和 bucket 被识别成虚拟列，chDB 根本不会去 list 其他分区的文件
 ```
 
-**分区列选择原则**：
+分区列怎么选：
 
 | 适合做分区 | 不适合做分区 |
 |---|---|
-| 时间（dt、hour）—— 第一优选 | user_id / UUID —— 基数爆炸 |
+| 时间（dt、hour），第一优选 | user_id / UUID，基数爆炸 |
 | 地域 / 租户 / 业务线（基数 < 几百） | 任何文本字段的原值 |
 | 数据来源（source、device_type） | 连续数值 |
 
-**经验上限**：分区目录总数不超过几万，否则 S3 LIST 自己就成瓶颈。
+经验上，分区目录总数别超过几万，不然 S3 的 LIST 自己就成了瓶颈。
 
-#### 案例：日志场景下 IP 字段适合做分区吗？基数 1-5 万
+#### 日志里的 IP 适合做分区吗
 
-这是个常被问到的边界情况——**单独看基数像在阈值上，组合看就爆炸**。
+常有人问，日志场景下 IP 字段基数 1 到 5 万，能不能做分区？单看基数，好像就卡在阈值上，可跟时间一组合就炸了。
 
-**1. 分区目录数的实际乘积**
+先看分区目录数的乘积：
 
 | 配置 | 分区目录总数 | 状态 |
 |---|---|---|
 | 只 `ip=x.x.x.x/` | 5 万 | 卡在「几万」上限 |
-| `dt=YYYYMMDD/ip=.../`，1 个月 | 30 × 5 万 = **150 万** | ❌ S3 LIST 超时 |
-| `dt=.../ip=.../`，1 年 | 365 × 5 万 = **1825 万** | ❌❌ 灾难 |
-| `dt=.../hour=HH/ip=.../`，1 月 | 30 × 24 × 5 万 = **3600 万** | ❌❌❌ 别想 |
+| `dt=YYYYMMDD/ip=.../`，1 个月 | 30 × 5 万 = 150 万 | S3 LIST 超时 |
+| `dt=.../ip=.../`，1 年 | 365 × 5 万 = 1825 万 | 灾难 |
+| `dt=.../hour=HH/ip=.../`，1 月 | 30 × 24 × 5 万 = 3600 万 | 别想了 |
 
-单一维度 5 万本身就已经在 S3 LIST 性能拐点上——`ListObjectsV2` 单页返回 1000 个 key，5 万 IP 要 50 次 paginated 请求，光 LIST 就 ~20-30 s。和 dt 一组合就直接物理不可行。
+单一维度 5 万本身就在 S3 LIST 的性能拐点上了。`ListObjectsV2` 一页返回 1000 个 key，5 万个 IP 要翻 50 页，光 LIST 就得 20 到 30 秒。再和 dt 一组合，物理上就不可行了。
 
-**2. 日志里 IP 通常严重倾斜（Pareto/Zipf）**
+再看分布。日志里的 IP 通常严重倾斜：
 
 ```
 头部 100 个 IP（CDN/网关/爬虫/大客户）  ──► 占 80% 流量
@@ -340,20 +275,20 @@ WHERE dt = '2026-05-01' AND bucket = 5;
 尾部 4.9 万 IP（个人用户/扫描器）         ──► 占 5%
 ```
 
-结果是分区策略最糟糕的形态：**头部分区单文件 1-10 GB**（写一次很久），**尾部 4.9 万分区每个 1-100 KB**（典型小文件问题，S3 GET 风暴）。
+这是分区最糟糕的形态：头部的分区单个文件 1 到 10 GB，写一次要很久；尾部 4.9 万个分区每个只有 1 到 100 KB，典型的小文件问题，S3 GET 风暴。
 
-**3. 查询模式通常不匹配**
+查询模式通常也对不上：
 
 | 典型查询 | IP 分区是否帮到忙 |
 |---|---|
-| 「查这个 IP 最近 7 天的所有日志」（安全追溯） | ✅ 7 个分区命中 |
-| 「Top 50 IP by traffic」 | ❌ 必须扫所有 IP 分区 |
-| 「某网段 10.0.0.0/24 的请求」（CIDR） | ❌ 分区只支持等值/IN，CIDR 没救 |
-| 「异常 IP 列表关联请求」 | ❌ 反向流，没法用分区 |
+| 「查这个 IP 最近 7 天的所有日志」（安全追溯） | 能，命中 7 个分区 |
+| 「Top 50 IP by traffic」 | 不能，必须扫所有 IP 分区 |
+| 「某网段 10.0.0.0/24 的请求」（CIDR） | 不能，分区只支持等值/IN |
+| 「异常 IP 列表关联请求」 | 不能，反向流，用不上分区 |
 
-日志场景里「按具体 IP 查」通常只占 10-20%，给这部分查询的福利付出全局存储代价不划算。
+日志场景里按具体 IP 查的，一般只占一到两成，为这部分查询付出全局的存储代价，不划算。
 
-**4. 推荐做法：`dt` 分区 + `ORDER BY ip` 排序**
+我的建议是按 `dt` 分区，再按 `ip` 排序：
 
 ```sql
 INSERT INTO FUNCTION s3('s3://.../dt={_partition_id}/data.parquet', ...)
@@ -363,19 +298,17 @@ ORDER BY ip, event_time    -- ← 排序键, 不是分区列
 SETTINGS output_format_parquet_row_group_size_bytes = 134217728;
 ```
 
-查询效果（基于本章三层过滤模型）：
+套用前面的三层漏斗，效果是这样：
 
 | 查询 | 用到的层 | 效率 |
 |---|---|---|
-| 特定 IP + 日期 | dt 路径裁剪 → row-group min/max skip | **跟分区一样快**（1000:1 跳过）|
+| 特定 IP + 日期 | dt 路径裁剪 → row-group min/max skip | 跟分区一样快（1000:1 跳过）|
 | Top IP | dt 路径裁剪 → 全文件扫 | 跟分区一样 |
-| CIDR 范围查询 | dt 路径裁剪 → ip 排序后**变成 row-group 范围裁剪** | **比分区还快**（分区版根本做不到 CIDR）|
+| CIDR 范围查询 | dt 路径裁剪 → ip 排序后变成 row-group 范围裁剪 | 比分区还快，分区版根本做不到 CIDR |
 
-**核心洞察**：分区只支持等值匹配，排序键支持等值 + 范围 + 前缀。**ip 做排序键比做分区更通用**。
+分区只能做等值匹配，排序键能做等值、范围和前缀，所以 ip 做排序键比做分区用处更广。
 
-**5. 中间路线：哈希桶（如果 IP 等值查询真的高频）**
-
-如果统计显示「按具体 IP 查」占 50%+，可以引入低基数哈希桶：
+如果统计下来按具体 IP 查的真占了一半以上，可以折中一下，加一个低基数的哈希桶：
 
 ```sql
 PARTITION BY concat(
@@ -384,56 +317,50 @@ PARTITION BY concat(
 )
 ```
 
-16 个桶 × 30 天 = 480 分区/月，可控；查具体 IP 时 chDB 算一下哈希，只读 1 个桶；查 Top 时仍要全扫，但桶级并行更均匀。
+16 个桶乘 30 天，一个月 480 个分区，可控。查具体 IP 时 chDB 算一下哈希，只读一个桶；查 Top 还是要全扫，但按桶并行会更均匀。
 
-**判断速查表**
+最后归纳一下：
 
 | 字段特征 | 该不该做分区列 |
 |---|---|
-| 基数 < 几十（地域、租户、event_type） | ✅ 可以直接分区 |
-| 基数几百到几千（小数据源、设备型号） | ⚠️ 跟 dt 组合后看总数，超几万就不行 |
-| **基数几千到几万 + 跟时间组合**（IP、device_id）| ❌ **改用排序键** |
-| 基数 > 10 万（user_id、trace_id） | ❌❌ 必然爆炸，只能排序键 + bloom filter |
-| 任何文本原值、连续数值 | ❌ 同上 |
+| 基数 < 几十（地域、租户、event_type） | 可以直接分区 |
+| 基数几百到几千（小数据源、设备型号） | 跟 dt 组合后看总数，超几万就不行 |
+| 基数几千到几万 + 跟时间组合（IP、device_id）| 不行，改用排序键 |
+| 基数 > 10 万（user_id、trace_id） | 必然爆炸，只能排序键 + bloom filter |
+| 任何文本原值、连续数值 | 同上 |
 
-### 第二层：单个文件多大合适
+### 单个文件多大合适
 
-这一节的建议跟 Hadoop/Spark 时代有重要差别，得讲清楚。**Hive 时代的「128 MB - 1 GB」窄区间**根基是 HDFS block size + Spark 「1 task / 1 file」 的并行模型；**chDB / DuckDB / Trino 等现代 reader 都在 row group 级并行**，文件大小不再决定读侧并行度。所以上界可以拓宽两个数量级，瓶颈从「读不动」转移到「写运维」。
+这点和 Hadoop、Spark 那个年代不一样。Hive 时代讲文件 128 MB 到 1 GB，依据是 HDFS 的 block size 加上 Spark 一个 task 读一个文件的并行模型。chDB、DuckDB、Trino 这些现代的 reader 都是在 row group 级别并行，文件大小不再决定读的并行度。所以上限可以放宽两个数量级，瓶颈从读不动变成了写和运维。
 
 | 文件大小 | 状态 | 说明 |
 |---|---|---|
-| < 64 MB | ❌ 小文件问题 | S3 GET 固定开销（建连、SSL、HEAD）占比过大；LIST 慢 |
-| 64–128 MB | ⚠️ 勉强可用 | 文件内只 0-1 个 row group，零文件内并行 |
-| 128–256 MB | ⚠️ 可用下边界 | 1-2 个 row group |
-| **256 MB – 几十 GB**（推荐区间） | ✅ 甜区 | IO/并行/元数据三者平衡，**读侧零顾虑** |
-| 几十 GB – 100 GB | ⚠️ 可用但有代价 | 读侧仍 OK；写入 10-15 分钟、失败重试痛、footer 几 MB |
-| 100 GB – 1 TB | ❌ 不推荐 | 写入小时级、Schema 修正代价大、footer 解析变慢（0.5-2s） |
-| > 1 TB | ❌❌ 别这么干 | 工程上无意义，详见下文协议上限 |
+| < 64 MB | 小文件问题 | S3 GET 固定开销（建连、SSL、HEAD）占比过大；LIST 慢 |
+| 64–128 MB | 勉强可用 | 文件内只 0-1 个 row group，零文件内并行 |
+| 128–256 MB | 可用下边界 | 1-2 个 row group |
+| 256 MB – 几十 GB（推荐区间） | 甜区 | IO/并行/元数据三者平衡，读侧零顾虑 |
+| 几十 GB – 100 GB | 可用但有代价 | 读侧仍 OK；写入 10-15 分钟、失败重试痛、footer 几 MB |
+| 100 GB – 1 TB | 不推荐 | 写入小时级、Schema 修正代价大、footer 解析变慢（0.5-2s） |
+| > 1 TB | 别这么干 | 工程上无意义，见下文协议上限 |
 
-**怎么拆数十 GB 的分区**：50 GB 当天数据有两种合理方案：
+一天 50 GB 的数据，有两种合理的拆法。要兼容多个 reader，比如还要给 Trino、Spark 用，就拆 64 到 128 个文件，每个 400 到 800 MB；只有 chDB 一个 reader 的话，拆 8 到 16 个文件，每个 3 到 6 GB 也完全行。整天 50 GB 就一个文件，读起来其实也能用，只是写得慢，失败重试痛，下一节会讲。
 
-- **保守派（兼容多 reader / Trino / Spark 协同）**：拆 64-128 个文件，每个 400 MB - 800 MB；
-- **激进派（仅 chDB 单 reader）**：拆 8-16 个文件，每个 3-6 GB，也完全可行；
-- **极端单文件**：50 GB 一个文件**读侧也能用**，只是写入慢、retry 痛——见第五章坑 1。
+简单记：目标文件数大约等于分区数据量除以目标文件大小，最少 1 个，最多几百个，目标文件大小在 256 MB 到 5 GB 之间都说得过去。
 
-**公式记忆**：目标文件数 ≈ 分区数据量 / 目标文件大小，下限 1 个，上限几百个。目标文件大小落在 256 MB - 5 GB 都是合理选择。
+### 单个对象的上限
 
-### 单对象上限：协议物理上限 ≠ 工程推荐
-
-不同 S3 / S3 兼容服务的单对象上限差异很大，但跟前面的「甜区」是两回事——**这是协议/服务策略层面的硬约束**，远高于工程上的推荐上限：
+各家 S3 和 S3 兼容服务的单对象上限差别很大，但这是协议和服务策略层面的硬约束，跟上面说的甜区不是一回事，比工程上推荐的上限高得多：
 
 | 服务 | 单对象上限 | 备注 |
 |---|---|---|
-| **AWS S3** | **5 TiB** (≈ 5.497 TB) | AWS 服务策略，文档明文 |
+| AWS S3 | 5 TiB (≈ 5.497 TB) | AWS 服务策略，文档明文 |
 | Cloudflare R2 / Wasabi / GCS (S3 层) | 5 TiB | 镜像 AWS |
 | Azure Blob (S3 兼容层) | ~4.75 TiB | 跟随 Azure block blob 限制 |
 | Backblaze B2 (S3 兼容) | 10 TB | 略放宽 |
-| **阿里云 OSS / 腾讯云 COS / 华为云 OBS** | **~48.8 TiB** | 放宽到 multipart 协议算术上限 |
-| MinIO / Ceph RGW / SeaweedFS / rustfs 等自建 | 默认 5 TiB，**可配置** | 看部署配置 |
+| 阿里云 OSS / 腾讯云 COS / 华为云 OBS | ~48.8 TiB | 放宽到 multipart 协议算术上限 |
+| MinIO / Ceph RGW / SeaweedFS / rustfs 等自建 | 默认 5 TiB，可配置 | 看部署配置 |
 
-**唯一接近「协议级」的硬约束**是 multipart upload **最多 10000 parts**（这条所有兼容实现都遵守，因为客户端 SDK 硬编码假设），单 part 范围 5 MiB - 5 GiB，算术上限 ~48.8 TiB。AWS 在这之下加了一道 5 TiB 服务策略，中国云厂商没加。
-
-**关键认知**：这些数字跟「建议怎么用」是两回事。
+真正算得上协议级硬约束的，只有 multipart upload 最多 10000 个 part 这一条，所有兼容实现都遵守，因为客户端 SDK 里写死了这个假设。单个 part 5 MiB 到 5 GiB，算下来上限约 48.8 TiB。AWS 在这之下又加了一道 5 TiB 的服务策略，国内几家云厂商没加。
 
 ```
 协议硬上限         5 TiB - 48 TiB ────── 各家服务策略
@@ -442,46 +369,32 @@ PARTITION BY concat(
 甜区下界             ~ 256 MB  ────────── 保证 2+ row group, 避免 S3 GET 开销
 ```
 
-工程上有意义的范围比协议上限**低 2-4 个数量级**。「S3 允许 5 TiB」不代表「你应该这么用」。
+工程上有意义的范围，比协议上限低两到四个数量级。S3 允许 5 TiB，不代表你就该这么用。
 
-### 第三层：Row group + 排序（最关键的一层）
+### row group 和排序，最关键的一层
 
-Row group 是 Parquet 里**最小的 IO + 裁剪单元**，chDB 读 Parquet 时按 row group 并行。
+row group 是 Parquet 里最小的 IO 和裁剪单元，chDB 读 Parquet 时按 row group 并行。推荐 128 MB 一个，这也是多数引擎的默认值。太大，超过 512 MB，min/max 的过滤粒度就粗了，跳不掉数据；太小，低于 32 MB，元数据会膨胀。
 
-- 推荐：**128 MB / row group**（多数引擎默认值）；
-- 太大（> 512 MB）：min/max 统计的过滤分辨率变粗，跳不掉数据；
-- 太小（< 32 MB）：元数据膨胀。
+Parquet 的 min/max 统计是每个 row group 算一个范围。**数据要是乱序写进去的，每个 row group 的范围都横跨全表，等于没有索引。**
 
-**最关键的一句话**：
+举个例子，100 GB 数据，`user_id` 基数 1000 万。乱序写入的话，每个 row group 的 `user_id` 范围都是 `[1, 10000000]`，查 `user_id = 12345` 只能扫全部 row group。按 `user_id` 排好序再写，每个 row group 是一段紧凑的区间，`[12000, 13000]`、`[13000, 14000]`……，只命中一个 row group，裁剪比 1000:1。
 
-> Parquet 的 min/max 统计是「按 row group 算一个范围」——**如果数据乱序，每个 row group 的范围都横跨全表，等于没有索引**。
+排序键这么选：第一排序键用最常拿来做等值或范围过滤的列，比如 user_id、device_id、event_type；第二排序键用次常用的，通常是时间戳；第三个基本没意义了，min/max 只对前缀有效。经常用 `LIKE 'Apple%'` 做前缀匹配的话，就把那个字符串列设成排序键。
 
-举例：100 GB 数据，`user_id` 字段基数 1000 万。
-
-- 乱序写入：每个 row group 的 `user_id` 范围都是 `[1, 10000000]`，查 `user_id = 12345` 必须扫所有 row group；
-- 按 `user_id` 排序后写入：每个 row group 是紧凑区间 `[12000, 13000]`、`[13000, 14000]`...，只命中 1 个 row group，**裁剪比 1000:1**。
-
-**排序键的选择原则**：
-
-1. 第一排序键 = 最高频的等值/范围过滤列（user_id、device_id、event_type）；
-2. 第二排序键 = 次高频列（通常是时间戳）；
-3. 第三排序键基本没意义——min/max 只对前缀有效；
-4. 如果常用 `LIKE 'Apple%'` 前缀匹配，把那个字符串列设为排序键。
-
-### Parquet / ORC 真正可用的「索引」清单
+Parquet 和 ORC 里真正能当索引用的东西：
 
 | 机制 | Parquet | ORC | chDB 利用 | 对什么有效 |
 |---|---|---|---|---|
 | min/max 统计 | 默认开 | 默认开 | row group skip | 范围、等值、前缀 LIKE（数据有序前提下）|
 | Dictionary encoding | 自动 | 自动 | 谓词下推到字典 | 低基数列的等值 |
-| Bloom filter | 需写入时开 | 需写入时开 | 支持读取 | 仅等值 |
-| Page Index | 较新版本 | – | 部分支持 | row group 内更细粒度的 min/max |
-| 倒排索引 / N-gram | 无 | 无 | – | LIKE '%xxx%' 没救 |
-| 位图索引 | 无 | 无 | – | – |
+| Bloom filter | 写入时生成 | 需写入时开 | 支持读取 | 仅等值 |
+| Page Index | 较新版本 | 无 | 部分支持 | row group 内更细粒度的 min/max |
+| 倒排索引 / N-gram | 无 | 无 | 无 | LIKE '%xxx%' 没救 |
+| 位图索引 | 无 | 无 | 无 | 无 |
 
-**Bloom Filter 什么时候开**：高基数、常做等值查询、无法做主排序键的列（典型如 trace_id）。已经按某列排序了的话，bloom 是冗余。
+bloom filter 适合的是基数高、常做等值查询、又没法当主排序键的列，典型的就是 trace_id。已经按某一列排过序了，再给它建 bloom 就多余了。
 
-### 压缩选择
+### 压缩怎么选
 
 | 压缩 | 比例 | 解压速度 | 适用 |
 |---|---|---|---|
@@ -491,13 +404,13 @@ Row group 是 Parquet 里**最小的 IO + 裁剪单元**，chDB 读 Parquet 时�
 | LZ4 | 低 | 最快 | 本地盘、CPU 紧张 |
 | Gzip | 高 | 慢 | 不推荐 |
 
-S3 场景下 ZSTD 几乎总是最优——网络是瓶颈，压缩比直接换成「少传字节」。
+S3 场景下网络是瓶颈，压缩比直接换成少传的字节，所以 ZSTD 几乎总是最好的选择。
 
-### Anti-Patterns 清单
+### 常见的错误做法
 
 | 反模式 | 后果 |
 |---|---|
-| 一个分区一个 100 GB+ 巨型文件 | **写入慢（小时级）+ 失败重试代价大 + Schema 修正影响面广**；读侧 row-group 级并行其实仍可，但日导出超 100 GB 建议再加一层哈希桶拆分 |
+| 一个分区一个 100 GB+ 巨型文件 | 写入慢（小时级）+ 失败重试代价大 + Schema 修正影响面广；读侧 row-group 级并行其实仍可，但日导出超 100 GB 建议再加一层哈希桶拆分 |
 | 一个分区 10 万个 1MB 小文件 | LIST/GET 风暴 |
 | 按 `user_id` 做分区 | 几千万个分区，LIST 自己就超时 |
 | `dt/hour/region/source/type` 五层嵌套 | 分区目录爆炸 |
@@ -505,38 +418,36 @@ S3 场景下 ZSTD 几乎总是最优——网络是瓶颈，压缩比直接换�
 | 用 Gzip | 解压慢，没换来更好压缩比 |
 | 关掉 statistics（某些 Spark 配置默认关） | row-group skip 完全失效 |
 
-**自检命令**：
+写完可以这么自查：
 
 ```bash
 parquet-tools meta s3://bucket/events/dt=2026-05-01/bucket=0/data.parquet | head -50
 # 看 row group 数量、每个 row group 的 statistics(min/max) 是否存在
 ```
 
----
+## 从 ClickHouse 直接写 Parquet 到 S3
 
-## 五、ClickHouse 直写 Parquet 到 S3：参考配置
+数据本来就在 ClickHouse 里，这是最常见的情况，直接用 `s3()` 表函数加 INSERT 写到 S3 就行。只是默认行为跟上一节说的理想布局差得有点远，有几个旋钮得自己拧。
 
-如果你原始数据已经在 ClickHouse 里——这是最常见的场景——可以直接用 `s3()` 表函数 + INSERT 把数据写到 S3。但默认行为和上一节的「理想布局」差得有点远，要主动控制几个旋钮。
+### 为什么不走 Spark 中转
 
-### 先回答方案选择：为什么 CK 直写，不走 Spark/调度器中转
-
-很多团队第一反应是「我有 Spark 集群，让 Spark 从 CK 读再写 S3」。**对「数据已在 CK、纯归档导 Parquet 到 S3」的场景，CK 直写几乎全方位更优**：
+很多团队的第一反应是：我有 Spark 集群，让 Spark 从 ClickHouse 读出来再写 S3。可数据已经在 ClickHouse 里、只是归档成 Parquet 放 S3 的话，ClickHouse 直接写几乎处处都更好：
 
 | 维度 | CK 直写 | Spark / 调度器中转 |
 |---|---|---|
-| 数据跳数 | **1 跳**（CK→S3） | 2-3 跳（CK→Spark→S3） |
-| 调度机 / Spark 带宽 | **0** | 等于全量数据 |
+| 数据跳数 | 1 跳（CK→S3） | 2-3 跳（CK→Spark→S3） |
+| 调度机 / Spark 带宽 | 0 | 等于全量数据 |
 | 中间组件 | cron + 几十行 Python | 一套 Spark 集群 |
 | 类型保真 | CK 原生输出 | 中间环节可能丢精度（DateTime64 / Decimal） |
 | 排序保留 | `ORDER BY` 直接生效 | 要重排 |
 | 失败排查链路 | 一段 | 三段 |
 | 集群伸缩性 | 见下文「集群部署」 | initiator 漏斗效应 |
 
-Spark/Flink 真正合适的反例放在本章末尾的「什么时候不走 ClickHouse 直写」。**纯归档不要绕 Spark**。
+Spark、Flink 真正合适的场景，放在这一节最后说。
 
-### `s3()` 表函数 vs `S3` 表引擎：选哪个
+### s3() 表函数还是 S3 表引擎
 
-两者底层是同一份 S3 读写代码，差别只在「暴露方式」：
+两个底层是同一套 S3 读写代码，区别只在暴露的方式：
 
 | 维度 | `s3()` 表函数 | `S3` 表引擎 |
 |---|---|---|
@@ -545,13 +456,13 @@ Spark/Flink 真正合适的反例放在本章末尾的「什么时候不走 Clic
 | 凭证 | 内联或 named collection 引用 | 建表时绑定 |
 | INSERT | `INSERT INTO FUNCTION s3(...) SELECT` | `INSERT INTO s3_table SELECT` |
 | 进 `system.tables` | 否 | 是 |
-| 适合场景 | **一次性 ETL、cron 导出** | **反复读写的外部表入口** |
+| 适合场景 | 一次性 ETL、cron 导出 | 反复读写的外部表入口 |
 
-**性能、并行度、可控 setting 完全一致**——只是开发体验差异，不是性能差异。本章其余部分以 `s3()` 表函数为例——cron 导出场景下不需要建持久表对象。
+性能、并行度、能调的设置完全一样，差的只是用起来顺不顺手。cron 导出用不着建持久的表对象，所以下面都拿 `s3()` 表函数举例。
 
-### 坑 1：默认会写一个巨型文件
+### 默认会写出一个巨型文件
 
-最简单写法：
+最简单的写法：
 
 ```sql
 INSERT INTO FUNCTION s3(
@@ -561,24 +472,19 @@ INSERT INTO FUNCTION s3(
 SELECT * FROM events WHERE dt = '2026-05-01';
 ```
 
-这一句把 50 GB 数据全塞进一个文件。**读侧其实完全可用**——Parquet 内 row group 级 Range GET、列裁剪、LIMIT 短路都不受影响（详见第三节）。真正的问题在写入和运维侧：
+这一句会把 50 GB 数据全塞进一个文件。读其实完全没问题，Parquet 里按 row group 的 Range GET、列裁剪、LIMIT 短路都不受影响。麻烦在写和运维上。写入吞吐受限于单个输出流，50 GB 一个文件大概要 10 到 15 分钟，用 `PARTITION BY` 拆成 64 个桶并行，能压到 3 到 5 分钟。失败了要整个文件重来，写到 80% 网络断了，50 GB 全部作废重导，拆了桶只需要重导失败的那个 800 MB 左右。按 bucket 哈希拆开，还顺带有了 `WHERE bucket = N` 这种取子集的能力。Trino、Spark 这些多 reader 协同的引擎靠文件级并行，单个巨型文件到了它们手里并行度上不去，chDB 单 reader 倒是不受影响。
 
-- **写入吞吐受限于单输出流**：50 GB 单文件 ~10-15 分钟；用 `PARTITION BY` 拆 64 桶并行可压到 3-5 分钟；
-- **失败重试代价是整文件**：写到 80% 网络断了 → 整个 50 GB 作废重导；拆桶后只重导失败的那个 ~800 MB；
-- **没有局部取样 / 部分重算的能力**：bucket 哈希拆分天然给了 `WHERE bucket = N` 的子集查询能力；
-- **多 reader 协同（Trino / Spark）依赖文件级并行**：单巨型文件在他们手里并行度受限（chDB 单 reader 不受影响）。
-
-**所以是否要拆 bucket，取决于场景**：
+要不要拆，看场景：
 
 | 场景 | 建议 |
 |---|---|
-| 日导出 < 10 GB、单 chDB reader、写入稳定 | **不需要拆**，整天一个文件就够 |
+| 日导出 < 10 GB、单 chDB reader、写入稳定 | 不需要拆，整天一个文件就够 |
 | 日导出 50-100 GB、在意导出耗时 | 拆 8-64 桶 |
 | 写入网络不稳，需要部分重试 | 拆 64-128 桶 |
-| 要给 Trino / Spark / Athena 协同消费 | **必须拆**到 256 MB - 2 GB / 文件 |
-| 日导出 > 200 GB | **必须拆**，控制单文件 < 50 GB |
+| 要给 Trino / Spark / Athena 协同消费 | 必须拆到 256 MB - 2 GB / 文件 |
+| 日导出 > 200 GB | 必须拆，控制单文件 < 50 GB |
 
-下面给出**带 bucket 拆分的标准写法**（典型 50 GB/天 + 需要写入并行 + 要给外部引擎协同消费的场景）：
+一天 50 GB、要并行写、还要给外部引擎用的典型场景，带 bucket 拆分的写法是这样：
 
 ```sql
 INSERT INTO FUNCTION s3(
@@ -593,7 +499,7 @@ SELECT * FROM events
 WHERE dt BETWEEN '2026-05-01' AND '2026-05-07';
 ```
 
-写出来：
+写出来是：
 
 ```
 s3://bucket/events/
@@ -603,26 +509,21 @@ s3://bucket/events/
   dt=2026-05-01/bucket=63/data.parquet
 ```
 
-关键点：
+`PARTITION BY` 表达式拼出来的字符串就是 `{_partition_id}`；`cityHash64(user_id) % 64` 把每天的数据均匀拆成 64 份；桶数大约是每天的数据量除以目标文件大小，一天 50G 就是 64 到 128 个桶。路径必须是 Hive 风格的 `key=value`，不然 `use_hive_partitioning` 认不出来。
 
-- `PARTITION BY` 表达式拼成的字符串就是 `{_partition_id}`；
-- `cityHash64(user_id) % 64` 把每天数据均匀拆 64 份；
-- 桶数 = 预期日数据量 / 目标文件大小（50G/天 → 64–128 桶）；
-- 命名必须是 Hive 风格 `key=value`，否则 `use_hive_partitioning` 识别不了。
+### row group 大小要显式设
 
-### 坑 2：Row group 大小要显式设
-
-**ClickHouse 默认 row group 大小是 512 MB（未压缩）/ 1,000,000 行**——`output_format_parquet_row_group_size_bytes = 536870912`、`output_format_parquet_row_group_size = 1000000`，**先到先触发**。
+ClickHouse 写 Parquet 默认的 row group 是未压缩 512 MB 或者 100 万行，也就是 `output_format_parquet_row_group_size_bytes = 536870912`、`output_format_parquet_row_group_size = 1000000`，哪个先到按哪个切。
 
 | 数据行宽 | 谁先触发 | 默认 row group 实际表现 |
 |---|---|---|
-| 宽行（日志、长字符串）| 512 MB 字节限制 | 几十万行 / RG，压缩后 ~100-150 MB on-disk，**勉强 OK** |
+| 宽行（日志、长字符串）| 512 MB 字节限制 | 几十万行 / RG，压缩后 ~100-150 MB on-disk，勉强 OK |
 | 中等行（混合类型） | 看情况 | 行数和字节都接近触发，~100-300 MB on-disk |
-| 窄行（埋点、纯数值） | 100 万行限制 | 未压缩才几十 MB，压缩后 ~5-20 MB，**太小，元数据膨胀** |
+| 窄行（埋点、纯数值） | 100 万行限制 | 未压缩才几十 MB，压缩后 ~5-20 MB，太小，元数据膨胀 |
 
-注意 512 MB 是**未压缩**字节数。ZSTD 3-5× 压缩比之下，宽行场景写出的 row group 落在「甜区」是偶然——窄行就翻车。
+注意这个 512 MB 是未压缩的字节数。ZSTD 有 3 到 5 倍的压缩比，宽行场景下写出来的 row group 正好落在甜区，纯属碰巧，换成窄行就翻车了。
 
-**建议显式设到 128 MB**：
+我建议显式设成 128 MB：
 
 ```sql
 SETTINGS
@@ -635,13 +536,9 @@ SETTINGS
     output_format_parquet_write_page_index     = 1
 ```
 
-**为什么 128 MB**：
+128 MB 是 Hadoop、Spark 生态的事实标准，`parquet.block.size` 的默认值就是它，Spark、Trino、Presto、chDB、DuckDB 这些读的一方大多按这个假设调优。它比 ClickHouse 默认的 512 MB 细了 4 倍，min/max 的过滤粒度更高，对范围和前缀过滤更友好。不显式设，写出来的文件统计粒度就粗了，尤其是拿 chDB 回头读自己写的 Parquet，谓词下推的效果要打折扣。
 
-- 它是 Hadoop/Spark 生态的事实标准（`parquet.block.size` 默认值），多数读侧（Spark/Trino/Presto/chDB/DuckDB）都按这个假设来调优；
-- 比 ClickHouse 默认 512 MB **细 4 倍**——min/max 统计的过滤分辨率更高，对范围/前缀过滤更友好；
-- 不显式设就会写出「统计粒度差一倍」的文件——尤其用 chDB 反过来读自己生成的 Parquet，谓词下推效果会打折。
-
-**自检**（写完跑一下）：
+写完跑一下自查：
 
 ```bash
 python -c "
@@ -654,13 +551,13 @@ print(f'total rgs={m.num_row_groups}')
 "
 ```
 
-看到 `uncompressed≈128MB` 就对了；看到 `rows=1000000` 但字节远小于 128 MB → 是行数限制赢了，得**调大** `output_format_parquet_row_group_size` 让字节限制生效。
+看到 `uncompressed≈128MB` 就对了。要是看到 `rows=1000000`，字节数却远小于 128 MB，说明是行数限制先到了，得把 `output_format_parquet_row_group_size` 调大，让字节限制起作用。
 
-特别提一个**最容易踩**的坑：**`output_format_parquet_string_as_string = 1` 必须开**。默认情况下 ClickHouse 把 String 写成 Parquet 的 BINARY 类型，导致 DuckDB / Spark / pandas 读出来是 bytes 而不是 str。开了这个 setting，String 才会正确写成 STRING。
+`output_format_parquet_string_as_string = 1` 也顺手写上。较早的版本里它默认是关的，ClickHouse 会把 String 写成 Parquet 的 BINARY 类型，DuckDB、Spark、pandas 读出来是 bytes 而不是 str；现在的版本默认已经是开的了，显式写上，换个版本也不会出岔子。
 
-### 坑 3：排序——ClickHouse 这边的天然优势，但要主动用上
+### 排序：ClickHouse 天然的优势，但得主动用
 
-ClickHouse 的 MergeTree 数据本来就按 `ORDER BY` 键有序存的，这是外部 ETL 工具没有的天然优势。但 SELECT 并行读会打乱顺序。要保证输出有序，显式 ORDER BY：
+MergeTree 里的数据本来就按 `ORDER BY` 键有序存放，这是外部 ETL 工具没有的优势。可 SELECT 并行读会把顺序打乱，要保证输出有序，得显式 ORDER BY：
 
 ```sql
 INSERT INTO FUNCTION s3(...) ...
@@ -672,19 +569,17 @@ SETTINGS
     max_insert_threads = 4
 ```
 
-`max_threads` 不要拉太高——保留一些有序性。
+`max_threads` 别拉得太高，留一点有序性。
 
-### 坑 4：Bloom Filter 不会自动写
+### bloom filter
 
-新版 ClickHouse 支持 Parquet bloom filter 输出，但默认不写：
+写 Parquet 时的 bloom filter 开关是 `output_format_parquet_write_bloom_filter`，读的时候用不用它做过滤，看的是 `input_format_parquet_bloom_filter_push_down`。新版本这两个默认都是开的，老一点的版本可能还没有写的这个开关，用之前先查一下：
 
 ```sql
-SETTINGS output_format_parquet_bloom_filter_push_down = 1
+SELECT name, value FROM system.settings WHERE name LIKE '%parquet%bloom%';
 ```
 
-不同版本 setting 名字有变化，用前 `SELECT name FROM system.settings WHERE name LIKE '%bloom%'` 确认。
-
-如果你已经按主过滤列排序了，bloom 价值有限——它的真正用武之地是「无法做主排序键、但高频等值查询」的列。
+已经按主过滤列排好序的话，bloom 的作用就不大了，它真正派上用场的是那些没法当主排序键、又经常做等值查询的列。
 
 ### 完整的导出模板
 
@@ -720,7 +615,7 @@ SETTINGS
     s3_create_new_file_on_insert = 1;
 ```
 
-**写完必做的验证三连**：
+写完以后验证三样：
 
 ```bash
 # 1. 看文件数和大小
@@ -732,31 +627,27 @@ parquet-tools meta s3://bucket/events/dt=2026-05-01/bucket=0/data.parquet
 # 3. 用 chDB 跑一次 EXPLAIN 看 row group skip 数量
 ```
 
-### 集群部署：每个 shard 各自直写 S3，不要走分布式表
+### 集群上每个 shard 各自写，别走分布式表
 
-单机直觉到集群上会出大事，这是整章里**最容易被忽略**的一点。
-
-**反模式：在 initiator 节点上跑分布式表**
+单机上的直觉，放到集群上会出大事。最容易犯的错，是在 initiator 节点上对分布式表导出：
 
 ```sql
--- ❌ 别这么写
+-- 别这么写
 INSERT INTO FUNCTION s3('s3://.../data.parquet', ...)
 SELECT * FROM dist_app_logs   -- 分布式表
 WHERE dt = '2026-05-25';
 ```
 
-数据流向：
+数据是这么流的：
 
 <figure class="dfig">
-<img class="dfig-l" src="/diagrams/chdb-05.light.svg" alt="集群部署：每个 shard 各自直写 S3，不要走分布式表">
-<img class="dfig-d" src="/diagrams/chdb-05.dark.svg" alt="集群部署：每个 shard 各自直写 S3，不要走分布式表">
+<img class="dfig-l" src="/diagrams/chdb-05.light.svg" alt="走分布式表导出时，所有 shard 的数据先汇到 initiator 再写 S3">
+<img class="dfig-d" src="/diagrams/chdb-05.dark.svg" alt="走分布式表导出时，所有 shard 的数据先汇到 initiator 再写 S3">
 </figure>
 
-所有 shard 的数据流向 initiator 再出去——**initiator 单点扛 N 倍带宽**。`SELECT * FROM dist_table` 在 OLAP 查询里很自然（结果集小，汇聚便宜），但**导出场景「结果集 = 数据集」**，汇聚成本爆炸。50 GB/天扛得住，500 GB/天就跪。
+所有 shard 的数据都先流到 initiator 再出去，initiator 一个节点扛 N 倍的带宽。`SELECT * FROM dist_table` 在 OLAP 查询里很自然，结果集小，汇总起来便宜；可导出时结果集就是整个数据集，汇总的代价就爆了。一天 50 GB 还扛得住，一天 500 GB 就跪了。
 
-**正确做法：本地表 + per-shard fan-out + `{shard}` 宏**
-
-每个 shard 节点 `config.xml` 里的 `<macros>` 段定义了 `{shard}`、`{replica}`、`{cluster}`，会在服务端自动替换：
+正确的做法是查本地表，每个 shard 各写各的，路径里带上 `{shard}` 宏。每个节点 `config.xml` 的 `<macros>` 里定义了 `{shard}`、`{replica}`、`{cluster}`，服务端会自动替换：
 
 ```sql
 INSERT INTO FUNCTION s3(
@@ -772,7 +663,7 @@ SETTINGS
     s3_create_new_file_on_insert              = 1
 ```
 
-调度脚本向每个 shard 各发一次（每 shard 选一个 replica 出力，避免双写）：
+调度脚本给每个 shard 各发一次，每个 shard 只挑一个 replica 去执行，免得写两遍：
 
 ```python
 import clickhouse_connect
@@ -787,7 +678,7 @@ for (host,) in shards:
     clickhouse_connect.get_client(host=host).command(SQL_TEMPLATE)
 ```
 
-写出来的 S3 路径：
+写出来的路径：
 
 ```
 s3://endpoint/bucket/cluster_a/mydb/app_logs/dt=20260525/shard=1/data.parquet
@@ -796,50 +687,43 @@ s3://endpoint/bucket/cluster_a/mydb/app_logs/dt=20260525/shard=1/data.parquet
                                                           shard=4/data.parquet
 ```
 
-chDB 读侧用 `s3('.../shard=*/data.parquet')` 通配符或 Hive partition pruning（path 里加 `shard=N/`）自然合并所有 shard 数据，**业务查询完全无感**。
+chDB 读的时候用 `s3('.../shard=*/data.parquet')` 通配，或者靠 Hive 分区裁剪（路径里带了 `shard=N/`），自然就把所有 shard 的数据合起来了，业务查询完全感觉不到。
 
-**三种方案的总账**：
+三种做法放一起比：
 
 | 方案 | 数据流向 | Initiator 带宽 | 总跨网传输 |
 |---|---|---|---|
-| Spark + 分布式表 | shard→initiator→spark→s3 | **3× 单 shard** | 3 倍 |
-| CK 直写 + 分布式表（错） | shard→initiator→s3 | **2× 单 shard** | 2 倍 |
-| **CK 直写 + 本地表 + `{shard}`** | **shard→s3（各自）** | **0** | **1 倍** |
+| Spark + 分布式表 | shard→initiator→spark→s3 | 3× 单 shard | 3 倍 |
+| CK 直写 + 分布式表（错） | shard→initiator→s3 | 2× 单 shard | 2 倍 |
+| CK 直写 + 本地表 + `{shard}` | shard→s3（各自） | 0 | 1 倍 |
 
-**伸缩性来自「避免汇聚」，不是来自更牛的引擎**。这套做法在 100 GB/天和 PB/天都成立。
+能伸缩，靠的是不汇总，跟引擎牛不牛没关系。这个做法一天 100 GB 能用，一天 PB 级也能用。
 
-### 关键事实：`INSERT...SELECT` 是服务端执行，调度机零流量
+### INSERT...SELECT 在服务端执行，调度机没有流量
 
-很多人担心「调度器在另一台机器上，向 shard 发 INSERT，数据会不会流经我这台机？」——**不会**。
+常有人担心：调度器在另一台机器上，给 shard 发 INSERT，数据会不会从我这台机器过一道？不会。
 
 <figure class="dfig">
-<img class="dfig-l" src="/diagrams/chdb-06.light.svg" alt="关键事实：`INSERT...SELECT` 是服务端执行，调度机零流量">
-<img class="dfig-d" src="/diagrams/chdb-06.dark.svg" alt="关键事实：`INSERT...SELECT` 是服务端执行，调度机零流量">
+<img class="dfig-l" src="/diagrams/chdb-06.light.svg" alt="INSERT...SELECT 在服务端执行，数据从 ClickHouse 直接流向 S3，调度机只收发 SQL 和状态">
+<img class="dfig-d" src="/diagrams/chdb-06.dark.svg" alt="INSERT...SELECT 在服务端执行，数据从 ClickHouse 直接流向 S3，调度机只收发 SQL 和状态">
 </figure>
 
-50 GB 数据在 CK 服务端流向 S3，调度机**带宽消耗 ≈ 0**——只有 SQL 文本和状态码过本机。
-
-**关键看 sink 在哪**：
+50 GB 数据在 ClickHouse 服务端直接流向 S3，经过调度机的只有 SQL 文本和状态码，带宽消耗约等于零。关键看数据最终流到哪：
 
 | 查询形态 | 数据流向 | 客户端流量 |
 |---|---|---|
-| `SELECT * FROM t` | server → client | ✅ 有（即便不读 rows，TCP/driver buffer 那部分也会过来）|
-| **`INSERT INTO FUNCTION s3() SELECT *`** | **server → S3** | ❌ **真零** |
+| `SELECT * FROM t` | server → client | 有（即便不读 rows，TCP/driver buffer 那部分也会过来）|
+| `INSERT INTO FUNCTION s3() SELECT *` | server → S3 | 真的为零 |
 | `SELECT count() FROM t` | 服务端聚合 | ~0（只回 1 行）|
 | `SELECT ... LIMIT 0` | 不读数据 | ~0（只回 schema）|
 
-`INSERT INTO FUNCTION s3()` 的 sink 在服务端，客户端不是数据接收方。这跟 `SELECT *`（客户端是 sink，必须接数据）有本质区别——后者即便你不 Scan，TCP backpressure 拦下来前已经有几 MB 进了 driver buffer。
+`INSERT INTO FUNCTION s3()` 的数据终点在服务端，客户端根本不是接收方。`SELECT *` 就不一样了，客户端是终点，必须接数据，哪怕你不去读，TCP 背压把它拦住之前，也已经有几 MB 进了 driver 的缓冲区。
 
-**调度脚本的几个注意事项**：
+调度脚本有几点要注意。client 的 `send_receive_timeout` 要调大，导 50 GB 大约 5 到 15 分钟，导 200 GB 接近一小时。失败了用 `KILL QUERY WHERE query_id = '...'` 主动取消，别指望 client 断开就能取消，断开不一定会马上终止服务端的查询。监控要看 shard 上的 `system.query_log`（`written_bytes`、`written_rows`）和 `system.events`（`WriteBufferFromS3Bytes`、`S3WriteRequestsCount`），不是看调度机本地。导出期间调度机的网络监控上应该几乎没有流量，这是验证数据没有绕路最直接的证据。
 
-- 调大 client 的 `send_receive_timeout`（导 50 GB 大约 5-15 分钟，导 200 GB 接近 1 小时）；
-- 失败时用 `KILL QUERY WHERE query_id = '...'` 主动取消，**不要靠 client 断开来 cancel**——断开不一定立刻终止服务端查询；
-- 监控落在 shard 上的 `system.query_log`（`written_bytes`、`written_rows`）和 `system.events`（`WriteBufferFromS3Bytes`、`S3WriteRequestsCount`），**不是调度机本地**；
-- 调度机的网络监控应该在导出期间**几乎没流量**——这是验证「数据真的没绕」的最直接证据。
+### 什么时候不该用 ClickHouse 直写
 
-### 什么时候不走 ClickHouse 直写
-
-ClickHouse 写 Parquet 已经够用，但几种场景外部工具更合适：
+ClickHouse 写 Parquet 已经够用了，但有几种场景外部工具更合适：
 
 | 场景 | 用哪个 |
 |---|---|
@@ -849,13 +733,11 @@ ClickHouse 写 Parquet 已经够用，但几种场景外部工具更合适：
 | 原始数据在 Kafka/MySQL，不经过 CH | Flink / Spark 直接源到 S3 |
 | 需要 Iceberg / Delta Lake / Hudi | 必须 Spark/Flink |
 
----
+## 冷热数据的生命周期
 
-## 六、冷热分层的生命周期管理
+### 时间窗口
 
-### 时间窗口设计
-
-**保留 4 个月，3 个月后导出，1 个月冗余**——这个组合不是拍脑袋：
+我们的做法是 ClickHouse 里保留 4 个月，3 个月前的数据导出，中间留 1 个月重叠：
 
 ```
 时间线:                                       现在
@@ -868,24 +750,20 @@ S3 Parquet:  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓    
              冗余重叠区 (T-4 ~ T-3)   分界线
 ```
 
-**1 个月冗余的真正价值不是「保险」，是「纠错窗口」**：
+这 1 个月重叠，主要用处是留出纠错的时间。发现 S3 上的数据有问题，schema 错了、字段截断了、时区错了，还能从 ClickHouse 重新导一次；chDB 查 S3 和 ClickHouse 查出来对不上，有个标准答案可以比；临时把 chDB 查询服务关掉，最近一个月的数据还能从 ClickHouse 查。
 
-- 发现 S3 上的数据有问题（schema 错、字段截断、时区错）→ 可以从 CH 重新导一次；
-- 发现 chDB 查 S3 跟 CH 查结果不一致 → 有 ground truth 可比；
-- 临时关掉 chDB 查询服务时，最近一个月的数据仍能从 CH 查。
+### 导出成功的标准是验证通过
 
-### 导出不是「INSERT 成功」，是「验证通过」
-
-很多人写脚本是这样的：
+很多人的脚本是这么写的：
 
 ```python
 ch.execute("INSERT INTO FUNCTION s3(...) ...")    # 没报错就当成功
 ch.execute("ALTER TABLE events DROP PARTITION ...")
 ```
 
-这是事故温床。Parquet 写「成功」但行数对不上、schema 错位、压缩出问题——SQL 都不会报错。
+这是在给自己埋雷。Parquet 写成功了，可行数对不上、schema 错位、压缩出了问题，SQL 都不会报错。
 
-**最低限度的验证**：
+最起码要做这些验证：
 
 ```python
 def export_partition(dt):
@@ -911,22 +789,22 @@ def export_partition(dt):
     """)
 ```
 
-**这一步比「延长冗余 1 个月」重要 10 倍**——没验证的冗余，仍然是 schrödinger 状态。
+这一步比多留一个月冗余重要得多。没验证过的冗余，你也说不清它到底是好是坏。
 
-整个「导出 → 校验 → 回填」过程可以画成这样一个闭环：
+导出、校验、回填，整个闭环画出来是这样：
 
 <figure class="dfig">
-<img class="dfig-l" src="/diagrams/chdb-07.light.svg" alt="导出不是「INSERT 成功」，是「验证通过」">
-<img class="dfig-d" src="/diagrams/chdb-07.dark.svg" alt="导出不是「INSERT 成功」，是「验证通过」">
+<img class="dfig-l" src="/diagrams/chdb-07.light.svg" alt="导出、校验、回填 exported_at 的闭环">
+<img class="dfig-d" src="/diagrams/chdb-07.dark.svg" alt="导出、校验、回填 exported_at 的闭环">
 </figure>
 
-### 用 TTL + WHERE 子句优雅地自动清理
+### 用带 WHERE 的 TTL 自动清理
 
-TTL 是 ClickHouse 原生的删除机制，比 cron 优雅。但**纯 TTL 有一个隐患：它按时间触发，不知道你的 S3 export 有没有成功**。
+TTL 是 ClickHouse 自带的删除机制，比 cron 省心。可单纯的 TTL 有个隐患，它只按时间触发，不知道你的导出成没成功。
 
-场景：export 脚本因 IAM key 过期失败 45 天，没人发现，但 TTL 还在每天默默删 4 个月前的数据——等你发现的时候，已经有 45 天的数据既没进 S3、又被 CH 删了。
+假设导出脚本因为 IAM key 过期失败了 45 天，没人发现，TTL 却每天照常删 4 个月前的数据。等你发现的时候，已经有 45 天的数据既没进 S3，又被 ClickHouse 删掉了。
 
-**解法**：给表加一个 `exported_at` 字段，TTL 表达式带 `WHERE` 子句：
+办法是给表加一个 `exported_at` 字段，TTL 表达式带上 `WHERE`：
 
 ```sql
 ALTER TABLE events ADD COLUMN exported_at Nullable(DateTime) DEFAULT NULL;
@@ -935,89 +813,67 @@ ALTER TABLE events MODIFY TTL
     event_time + INTERVAL 4 MONTH DELETE WHERE exported_at IS NOT NULL;
 ```
 
-**效果**：
+验证过的分区，到 4 个月自动删掉，不用人管。没验证、没导出的分区留着不删，**ClickHouse 的存储一直往上涨，本身就是导出出了问题的告警**。cron 定时 detach、drop 那一套也都省了。整个生命周期管理就剩两样东西：一次性配好的 TTL，和一个自带验证、会回填 `exported_at` 的导出脚本。
 
-- 验证过的分区：到 4 个月自动删，零运维；
-- 没验证 / 没导出的分区：留着不删，自动变成「告警信号」（CH 存储一直涨就知道 export 出问题了）；
-- 不需要 cron-detach / cron-drop。
+### 迟到的数据
 
-整套生命周期管理只剩两个东西：**TTL 配置（一次性）+ export 脚本（自带验证 + 回填 exported_at）**。
+有了 `exported_at`，迟到的数据也有了着落。5 月 3 号来了一批 2 月份的迟到数据，INSERT 进来时 `exported_at` 是 NULL；TTL 看到 `exported_at IS NULL`，不会删；下次导出脚本扫到这些已经过期但还没导出的行，单独追加导一次到 S3，回填 `exported_at`；TTL 下次再扫到，就清掉了。
 
-### 迟到数据自愈
-
-加了 `exported_at` 字段之后，迟到数据天然有了归宿：
-
-- 5/3 迟到的 2 月份数据 INSERT 进来 → `exported_at = NULL`；
-- TTL 看到 `exported_at IS NULL`，不会删；
-- 下次 export 脚本扫到这些「已过期但未导出」的行，单独追加导一次到 S3；
-- 回填 `exported_at`，TTL 下次扫到就清掉。
-
-整套机制是**自愈的**——任何缺失都会以「CH 数据保留时间超期」的形式可见，不会无声丢数据。
+哪里漏了，都会表现成 ClickHouse 里的数据超期没删，看得见，不会悄无声息地丢。
 
 <figure class="dfig">
-<img class="dfig-l" src="/diagrams/chdb-08.light.svg" alt="迟到数据自愈">
-<img class="dfig-d" src="/diagrams/chdb-08.dark.svg" alt="迟到数据自愈">
+<img class="dfig-l" src="/diagrams/chdb-08.light.svg" alt="迟到数据：exported_at 为空时 TTL 不删，补导后回填再清理">
+<img class="dfig-d" src="/diagrams/chdb-08.dark.svg" alt="迟到数据：exported_at 为空时 TTL 不删，补导后回填再清理">
 </figure>
 
-### 读路由：三段式策略
-
-应用查询时根据时间路由：
+### 查询按时间路由
 
 | 数据时段 | 路由到 | 原因 |
 |---|---|---|
 | T-4 月之内 | ClickHouse | 在本地，更快 |
 | T-4 月 ~ T-3 月（重叠区） | ClickHouse | 两边都有，CH 快 |
 | T-3 月以前 | chDB → S3 | 只 S3 有 |
-| 跨越分界线（比如最近半年） | 业务层拼接：CH + chDB 各查一半然后 UNION | – |
+| 跨越分界线（比如最近半年） | 业务层拼接：CH + chDB 各查一半然后 UNION | |
 
 <figure class="dfig">
-<img class="dfig-l" src="/diagrams/chdb-09.light.svg" alt="读路由：三段式策略">
-<img class="dfig-d" src="/diagrams/chdb-09.dark.svg" alt="读路由：三段式策略">
+<img class="dfig-l" src="/diagrams/chdb-09.light.svg" alt="按时间路由：近期查 ClickHouse，更早的查 chDB，跨界的业务层拼接">
+<img class="dfig-d" src="/diagrams/chdb-09.dark.svg" alt="按时间路由：近期查 ClickHouse，更早的查 chDB，跨界的业务层拼接">
 </figure>
 
-**别在重叠区「双查对账」在线服务里**——那是 cron 验证脚本的工作，不是用户查询的负担。
+别在线上服务里对重叠区做双查对账，那是 cron 验证脚本该干的活，不该让用户的查询来背。
 
----
+## 把 chDB 包成微服务
 
-## 七、把 chDB 包成微服务：架构与实现细节
+chDB 没有官方的 Java binding，在 Java 为主的技术栈里，它只能作为一个独立的微服务存在。
 
-由于 **chDB 没有官方 Java binding**，Java 主导的栈里它只能作为独立微服务存在。下面是生产可用的形态。
+### 先想清楚谁会用、怎么用
 
-### 前提：这套微服务的真实使用画像
+动手之前，先把使用画像想清楚，很多设计取舍都是它决定的，也免得照着高吞吐分析平台那套模板过度设计。
 
-动手设计之前，先把「谁会用、怎么用」想清楚——很多设计选择直接由这个决定，也避免按「高吞吐分析平台」那套模板过度设计。
-
-**冷数据归档后的真实访问模式**：
+冷数据归档以后，真实的访问是这样的：
 
 | 场景 | 频率 | 查询特征 | 结果规模 |
 |---|---|---|---|
-| **审计**（合规扫描特定记录） | 几次/月 | 等值过滤 user_id / order_id / IP | 几十~几千行 |
-| **抽查**（业务对账） | 几次/周 | 时间范围 + 维度过滤 | 几百~几千行 |
-| **历史问题排障** | 几次/季度 | 自由 SQL，偶尔复杂 | 几行~几万行 |
+| 审计（合规扫描特定记录） | 几次/月 | 等值过滤 user_id / order_id / IP | 几十~几千行 |
+| 抽查（业务对账） | 几次/周 | 时间范围 + 维度过滤 | 几百~几千行 |
+| 历史问题排障 | 几次/季度 | 自由 SQL，偶尔复杂 | 几行~几万行 |
 | 报表回填 / 一次性分析 | 不规律 | 聚合后输出 | 已聚合到几百行 |
 
-**几乎不会出现的「假场景」**（如果出现要反问自己「为什么数据在 CK 热表时不做」）：
+持续的批量分析、ML 特征训练、高 QPS 的在线服务、多人并发的交互式 BI、把百万行结果拉到 Java 或 Python 那边再加工，这些基本不会出现。真出现了，先问问自己，数据还在 ClickHouse 热表里的时候为什么不做。反过来，如果发现某些查询老是打到 chDB 和 S3 上，说明这份数据其实没那么冷，应该 ETL 出来做一张独立的热表，或者干脆别沉下去。
 
-- 持续批量分析、ML 特征训练；
-- 高 QPS 在线服务；
-- 多人并发的交互式 BI；
-- 拿百万行结果集去 Java/Python 端再加工。
-
-**反向校准**：如果发现某些查询频繁打到 chDB → S3，**说明这条数据其实没那么冷**，应该 ETL 出来作为独立的热表，或者干脆别下沉。
-
-**这个使用画像决定了下面所有设计的真实动机**：
+这个画像决定了后面所有设计的真实动机：
 
 | 设计点 | 看似的理由 | 真实动机 |
 |---|---|---|
-| 限并发 / 限带宽 / 限内存 | 保护 S3、支撑高吞吐 | **防一个审计人员的坏 SQL 把进程吃满** |
-| `query_id` + 主动 cancel | 节省资源 | **人会关页面、改主意、写错 SQL** |
-| OOM 防护四层 | 应对高负载 | **手工 SQL 写坏是常态，进程不能崩** |
-| FastAPI 单进程 + systemd | 微服务范式 | **QPS 个位数甚至小数，单进程绰绰有余** |
-| 用 JSON，不引入 Arrow | 性能权衡 | **结果几乎都 ≤ 1 万行 + LIMIT，Java 多半透传给 FE** |
+| 限并发 / 限带宽 / 限内存 | 保护 S3、支撑高吞吐 | 防一个审计人员的坏 SQL 把进程吃满 |
+| `query_id` + 主动 cancel | 节省资源 | 人会关页面、改主意、写错 SQL |
+| OOM 防护四层 | 应对高负载 | 手工 SQL 写坏是常态，进程不能崩 |
+| FastAPI 单进程 + systemd | 微服务范式 | QPS 个位数甚至小数，单进程绰绰有余 |
+| 用 JSON，不引入 Arrow | 性能权衡 | 结果几乎都 ≤ 1 万行 + LIMIT，Java 多半透传给 FE |
 
-**一句话**：这是一个**给少数人随手查的归档查询入口**，不是高并发分析平台。后面所有「限制」和「防御」都是为了**坏 SQL 不要把这个入口干掉**——不是为了支撑高吞吐。
+说白了，这是一个给少数人随手查的归档入口，不是什么高并发分析平台。后面那些限制和防御，都是为了别让一条坏 SQL 把这个入口干趴下。
 
-### 跨机部署 + HTTP 通信
+### 分机部署，走 HTTP
 
 <div class="sk sk-steps">
 <div class="sk-box is-cold"><span class="sk-t">Java 业务节点</span><span class="sk-d">IO / 编排型，普通配置</span></div>
@@ -1028,15 +884,13 @@ ALTER TABLE events MODIFY TTL
 <p class="sk-cap">两类节点的资源画像完全不同，混布会让其中一方长期闲置</p>
 </div>
 
-CH 这边和 chDB 这边的资源画像完全不同——分开部署是必然选择。HTTP 是跨机最简单的协议，运维成熟、调试友好。
+Java 这边和 chDB 这边要的资源完全不一样，分开部署是必然的。跨机通信用 HTTP 最省事，运维成熟，调试也方便。
 
-### 限并发 + 限带宽 + 限内存三件套
+### 限并发、限带宽、限内存
 
-承接前提：**QPS 极低，但单个坏查询能把进程吃垮**。三件套不是为了「扛吞吐」，是为了**给坏 SQL 划个铁笼子**——审计人员手写 `SELECT * FROM big_table WHERE name LIKE '%x%'` 之类查询，**必须扛得住、不能传染到其他请求**。
+QPS 极低，可单个坏查询就能把进程拖垮。这三样限制不是为了扛吞吐，是给坏 SQL 套个笼子。审计人员手写一句 `SELECT * FROM big_table WHERE name LIKE '%x%'`，服务得扛住，还不能殃及别的请求。
 
-很多人第一反应是「同一时刻只跑一条 SQL」——保护够彻底但太重。一条慢查询就堵死所有人；chDB 的 CPU/内存利用率被白白浪费。
-
-**更好的做法**：
+很多人第一反应是同一时刻只跑一条 SQL。保护是够彻底，可太重了，一条慢查询就把所有人堵死，chDB 的 CPU 和内存也白白浪费。我更推荐这样：
 
 ```python
 # 应用层：限并发
@@ -1059,22 +913,13 @@ SET max_bytes_before_external_group_by = 4294967296          -- 4 GB 后 spill
 SET max_bytes_before_external_sort = 4294967296
 ```
 
-并发数 N 的经验公式：`min(物理核数 / max_threads, 4)`。32 核机、`max_threads=8`，N 取 3–4。
+并发数 N 的经验公式是 `min(物理核数 / max_threads, 4)`，32 核的机器、`max_threads=8`，N 取 3 到 4。只有两种情况才需要严格串行：查询都是 30 分钟级的离线分析，并发了也没人等得起；或者 S3 网关有硬性的 QPS 配额，必须卡死。
 
-**严格串行**只在两种情况才需要：
+### 结果用 JSON 传
 
-1. 查询都是 30 分钟级离线分析，并发了也没人等得起；
-2. S3 网关有硬性 QPS 配额，必须确定性卡位。
+照上面的使用画像，结果传输的取舍很简单。结果集本来就小，生产上的 SQL 几乎都带 `LIMIT 1000` 或 `LIMIT 10000`，再大就该改写成在 chDB 里聚合。Java 只是个中转站，加上鉴权和路由，原样转给前端，不读字段值做计算。前端是浏览器，必然要 JSON。
 
-### 结果传输用 JSON
-
-按本章开头的「使用画像」，结果传输的取舍其实简单：
-
-1. **结果集天然小**：生产 SQL 几乎都带 `LIMIT 1000` / `LIMIT 10000`，再大就该重写成 chDB 端聚合；
-2. **Java 是转运站**：加 auth/路由后原样转给 FE，**不读字段值做计算**；
-3. **FE 是浏览器**：必然要 JSON。
-
-在这三个条件下，JSON 是唯一合理选择——chDB 序列化 1 次，Java 当 bytes 透传，FE 反序列化 1 次，**全链路只有 2 步**。任何中间转其他格式（比如 Arrow）都得在 Java 端先 decode 再 encode JSON，**纯浪费 CPU**。
+这三个条件下，JSON 是唯一合理的选择。chDB 序列化一次，Java 当字节流透传，前端反序列化一次，全程两步。中间换成别的格式，比如 Arrow，Java 那边就得先解码再编码成 JSON，纯属浪费 CPU。
 
 ```python
 from fastapi import FastAPI, Response
@@ -1090,27 +935,22 @@ def query(sql: str, fmt: str = "JSONCompact"):
     return Response(content=body, media_type="application/json")
 ```
 
-Java 网关收到 `application/json` 直接 byte 透传，**全链路无序列化往返**。
+Java 网关收到 `application/json` 直接按字节透传，全链路没有多余的序列化来回。
 
-### OOM 防护层级
+### 防 OOM 的几层
 
-继续承接前提：**手工 SQL 写坏是常态**。审计/排障人员不一定理解 chDB 内部行为，写出 `GROUP BY 高基数列` 或 `JOIN 大维表` 这类查询的概率不低。嵌入式 chDB 一旦某条查询把进程 OOM——**队列里所有排队和正在跑的查询全废**，连带把「那位认真审计的同事」和「另一位排障的同事」一起干掉。防御层次：
+手工 SQL 写坏是常态。审计、排障的人不一定懂 chDB 内部怎么跑，写出 `GROUP BY` 高基数列、`JOIN` 大维表这种查询的概率不低。嵌入式的 chDB 一旦有一条查询把进程搞 OOM 了，队列里排着的、正在跑的查询全部报废，那边认真审计的同事和这边排障的同事一起遭殃。
 
-1. `max_memory_usage` 设单查询硬顶 → 超了主动报错，进程不死；
-2. `max_bytes_before_external_group_by/sort` 开 spill → 慢但不崩；
-3. cgroup / Docker memory limit 比 `max_server_memory_usage` 大 20%–30% → 留 buffer；
-4. supervisor（systemd / k8s livenessProbe）兜底。
-
-**只有 1–3 都失效时**才让 supervisor 介入——而不是「挂了再拉起」。
+所以要一层层防。`max_memory_usage` 给单查询设硬顶，超了主动报错，进程不死；`max_bytes_before_external_group_by/sort` 打开 spill，慢一点但不崩；cgroup 或 Docker 的内存限制比 `max_server_memory_usage` 大 20% 到 30%，留出余量；最后才是 systemd 或者 k8s livenessProbe 这类守护进程兜底。前面三层都失效了才轮到守护进程出场，不能指望挂了再拉起来。
 
 <figure class="dfig">
-<img class="dfig-l" src="/diagrams/chdb-11.light.svg" alt="OOM 防护层级">
-<img class="dfig-d" src="/diagrams/chdb-11.dark.svg" alt="OOM 防护层级">
+<img class="dfig-l" src="/diagrams/chdb-11.light.svg" alt="OOM 防护层级：单查询硬顶、spill、cgroup 余量、守护进程兜底">
+<img class="dfig-d" src="/diagrams/chdb-11.dark.svg" alt="OOM 防护层级：单查询硬顶、spill、cgroup 余量、守护进程兜底">
 </figure>
 
-### query_id 与取消机制
+### query_id 和取消
 
-承接前提：**人会改主意**。审计人员发现 SQL 写错了直接关页面 / 改一条重发，chDB 这边还在闷头扫 100G——白烧资源 + 占着 N=4 的并发名额堵下一个人。HTTP 超时、页面关闭都不会自动 cancel 服务端查询，必须主动 KILL。
+人会改主意。审计人员发现 SQL 写错了，直接关掉页面，或者改一条重新发，chDB 这边还在闷头扫 100G，既浪费资源，又占着那 4 个并发名额，把下一个人堵在外面。HTTP 超时、页面关闭都不会自动取消服务端的查询，必须主动 KILL：
 
 ```python
 import uuid
@@ -1130,20 +970,20 @@ def cancel(qid: str):
     s.query(f"KILL QUERY WHERE query_id = '{qid}'")
 ```
 
-这一个小机制能省下大量「用户已经走了但查询还在扫」的浪费——对 S3 流量账单也友好。
+这么个小机制，能省下大量用户已经走了、查询还在扫的浪费，S3 的流量账单也好看些。
 
-### Python 在这里够不够快
+### Python 够不够快
 
-很多人下意识觉得「Python 跑数据慢」，对照对象是「纯 Python for 循环处理 100 万行」。但 chDB 在 Python 里的画风是：
+很多人下意识觉得 Python 处理数据慢，心里拿来比的是纯 Python 写 for 循环处理 100 万行。chDB 在 Python 里其实是这样的：
 
 ```
 Python 这边：写 SQL、拿结果      (毫秒级)
 C++ 那边：扫 100G、SIMD、并行    (秒级，吃满所有核)
 ```
 
-Python 只是个遥控器，重活全在 C++。所以 Python binding 的 chDB 和 C++ 直调的 chDB 在大查询上性能几乎一样——**chDB 设计上最聪明的地方**。
+Python 只是遥控器，重活全在 C++ 里。所以大查询上，Python binding 的 chDB 和 C++ 直接调用几乎一样快，这是 chDB 设计上很聪明的地方。
 
-什么时候才该考虑 Go / Rust：
+什么时候才该考虑 Go 或 Rust：
 
 | 场景 | 建议 |
 |---|---|
@@ -1152,9 +992,9 @@ Python 只是个遥控器，重活全在 C++。所以 Python binding 的 chDB �
 | 嵌入到现有 Rust/Go 服务里 | 用对应 binding，别为了「Python 顺手」再起一个进程 |
 | Serverless / 冷启动敏感 | Go / Rust（二进制更小） |
 
-对我们这个「100G S3 + 秒级查询」场景，**Python 是最匹配的选择**。
+我们这个 100G S3 加秒级查询的场景，Python 正合适。
 
-### 完整服务骨架
+### 完整的服务骨架
 
 ```python
 from fastapi import FastAPI, HTTPException
@@ -1198,9 +1038,9 @@ def cancel(qid: str):
     return {"ok": True}
 ```
 
-加上 systemd / k8s 守护，几十行代码就是个生产可用的查询微服务。
+再加上 systemd 或 k8s 守护，几十行代码就是个能上生产的查询服务。
 
-### 可观测性
+### 监控
 
 | 指标 | 来源 |
 |---|---|
@@ -1210,17 +1050,13 @@ def cancel(qid: str):
 | 进程 RSS、CPU、网络出口 | 主机层（node_exporter / cAdvisor）|
 | supervisor 重启次数 | systemd / k8s |
 
-任何一个出异常都要告警。
+哪一项出了异常都要告警。
 
----
+## chDB 和 DuckDB 怎么比才公平
 
-## 八、chDB vs DuckDB：怎么做公平的对比
+很多 benchmark 文章翻车，是因为目标含糊或者方法不对。这个场景下我是这么设计对比的。
 
-很多 benchmark 文章翻车都因为目标含糊或方法不对。给这个场景一份可复现的对比方案。
-
-### 测试目标
-
-**4 个真实场景**（不测 TPC-H 全套，避免无关 query 拉低信噪比）：
+只测 4 个贴近真实使用的场景，不跑整套 TPC-H，免得无关的查询拉低信噪比：
 
 | # | 场景 | 关心的指标 | 为什么 |
 |---|---|---|---|
@@ -1229,15 +1065,9 @@ def cancel(qid: str):
 | Q3 | LIKE 子串全列扫描 | wall time、CPU 利用率 | 看字符串匹配 SIMD 差距 |
 | Q4 | JOIN 大维表 + 聚合 | wall time、峰值 RSS、是否 OOM | 看 hash join 内存策略 |
 
-### 环境与数据
+环境和数据：同一台 EC2（建议 `m6i.4xlarge` 或 `c6i.8xlarge`），和 S3 在同一个 region；TPC-H scale factor 1000 的 `lineitem` 表（约 100 GB）加 `orders` 表（约 15 GB）；两边读完全相同的 Parquet 文件，写的时候 row_group_size=128MB、ZSTD、statistics 打开、100 到 200 个文件；每条查询之间 `sync && echo 3 > /proc/sys/vm/drop_caches`，测冷态；每条跑 5 次，扔掉预热那次，取后 4 次的中位数和 p95。
 
-- 同一台 EC2（建议 `m6i.4xlarge` 或 `c6i.8xlarge`），与 S3 同 region；
-- TPC-H scale factor 1000 的 `lineitem` 表（~100 GB）+ `orders` 表（~15 GB）；
-- 两边读完全相同的 Parquet 文件，写入时：row_group_size=128MB、ZSTD、statistics 开启、100–200 个文件；
-- 每条 query 之间 `sync && echo 3 > /proc/sys/vm/drop_caches` 测冷态；
-- 跑 5 次，丢掉 warmup，取后 4 次的 median + p95。
-
-### 配置对齐
+配置要对齐：
 
 ```sql
 -- chDB
@@ -1248,9 +1078,7 @@ PRAGMA threads = 16;
 SET preserve_insertion_order = false;
 ```
 
-### 测试脚本
-
-完整可跑的 Python 脚本已经写好（`bench_chdb_vs_duckdb.py`），核心结构：
+测试脚本（`bench_chdb_vs_duckdb.py`）的核心结构：
 
 ```python
 def run_once(query_fn, iface, drop_caches):
@@ -1268,60 +1096,40 @@ def run_once(query_fn, iface, drop_caches):
     )
 ```
 
-### 基于架构原理的预期
-
-基于两个引擎设计差异的合理推断（实测可能 ±30% 浮动）：
+跑之前，按两个引擎的设计差异，我的预期是这样（实测可能有 ±30% 的浮动）：
 
 | 场景 | 预期赢家 | 大致差距 | 原因 |
 |---|---|---|---|
 | Q1 选择性过滤 | 接近平手 | ±10% | 都做列裁剪 + row-group skip，bandwidth-bound |
 | Q2 高基数 GROUP BY | chDB 略快 | 1.5–3× | ClickHouse 多核哈希聚合更成熟 |
 | Q3 LIKE 子串 | chDB 明显快 | 2–5× | ClickHouse 字符串匹配走 Volnitsky/SIMD |
-| Q4 JOIN | 看维表大小 | – | DuckDB 在小内存上更省，chDB 在大数据上更稳 |
+| Q4 JOIN | 看维表大小 | | DuckDB 在小内存上更省，chDB 在大数据上更稳 |
 | 基线 RSS | DuckDB 完胜 | 10×+ | binary 体积决定 |
 | 冷启动 | DuckDB 更快 | 几百 ms vs 1s+ | 同上 |
 
-**实战结论**：对真实业务而言，**「够用就行」才是决定因素**，不是 1.5× 的差距。chDB 适合「数据节点常驻、大数据量、ClickHouse 生态接续」，DuckDB 适合「笔电分析、Notebook、嵌入式短任务」。
+对真实业务来说，够用就行才是决定因素，1.5 倍的差距说明不了什么。chDB 适合常驻在数据节点、数据量大、要接 ClickHouse 生态的场景；DuckDB 适合笔记本上分析、Notebook、嵌入式的短任务。
 
-### 避坑清单
+做对比时容易踩的坑：第一次的结果要扔掉，冷启动和连接池预热会让第一次永远偏慢；两边要读同一份 Parquet 文件，row group 大小不同，裁剪效率就不同；别跨 region 跑，网络抖动会盖掉所有差距；`max_threads` 别用各自的默认值，要显式对齐；别只测一种数据分布，长字符串列和短整型列的扫描速度能差几个数量级；别只拿 wall time 一个数下结论，RSS、S3 字节数、CPU 利用率都要附上；别跑一次就发表，至少 4 个有效样本取中位数；要写版本号，两个项目都迭代得很快，半年前的结论可能已经过时了。还有两个和引擎默认值有关的坑，下面实测时撞上了：chDB 的 `remote_read_min_bytes_for_seek` 默认 4 MB，会让它对远程 Parquet 整个 row group 下载；DuckDB 的 `enable_external_file_cache` 默认是 `true`，会把远程文件缓存进内存。
 
-1. 不丢第一次结果——cold start + connection pool warmup 让第一次永远偏慢；
-2. 两边用不同 Parquet 文件——row group 大小不同直接决定 pruning 效率；
-3. 跨 region 跑——网络抖动会淹没所有差距；
-4. `max_threads` 用各自默认值——要显式对齐；
-5. 只测一种数据分布——长字符串列和短整型列扫描差几个数量级；
-6. 拿 wall time 一个数字下结论——附上 RSS、S3 字节、CPU 利用率才完整；
-7. 跑一次就发表——至少 4 个有效样本求中位数；
-8. 不写版本号——两者都在快速迭代，半年前的结论可能已过期；
-9. **chDB 默认不对远程 Parquet 做列裁剪**——`remote_read_min_bytes_for_seek` 默认 4 MB 会让它整 row group 下载，必须置 0（详见下方实测）；
-10. **DuckDB 默认把远程文件缓存进内存**——`enable_external_file_cache` 默认 `true`，第二次查询命中内存而非 S3，必须关掉才能和 chDB 公平比冷读。
+## 实测：一份生产日志数据
 
----
+上面是方法，下面是按这套方法真实跑出来的一组数据。这次故意没用 TPC-H，用的是一张生产 K8s 容器日志表。一是日志的 `@message` 列做 `LIKE '%xxx%'`，才是 Parquet 子串硬伤最真实的考场；二是真实数据的列基数分布，少数几个低基数维度，加上基数极高的 trace_id 和日志正文，比 TPC-H 更能看出列裁剪和聚合内存上的差别。
 
-## 九、实测：一份真实生产日志数据集
-
-上面是方法论框架。下面是按这套方法**真实跑出来的一组数据**——刻意没用 TPC-H，而是用了一份生产 K8s 容器日志表。原因有二：日志的 `@message` 列做 `LIKE '%xxx%'` 才是 Parquet「子串硬伤」最真实的考场；真实数据的列基数分布（少数低基数维度 + 极高基数的 trace_id / 日志正文）比 TPC-H 更能暴露列裁剪和聚合内存的差异。
-
-### 测试环境
+测试环境：
 
 | 组件 | 规格 |
 |---|---|
-| 查询机（chDB / DuckDB 同机） | 48 核 / 251 GB RAM / Linux；到对象存储走 LAN，实测有效带宽 **~80 MB/s** |
+| 查询机（chDB / DuckDB 同机） | 48 核 / 251 GB RAM / Linux；到对象存储走 LAN，实测有效带宽 ~80 MB/s |
 | chDB | 26.3.0（Python binding，进程内）|
 | DuckDB | 1.5.3（Python，httpfs）|
 | 对象存储 | rustfs（S3 兼容），HTTP + path-style endpoint，与查询机同 LAN |
 | 导出端 ClickHouse | 25.9.3 拉源数据写 Parquet |
 
-### 数据集
+数据集是 `app_logs` 容器日志，从源集群用 `INSERT INTO FUNCTION s3()` 按天导出成 Parquet，导出加逐天的行数校验，5 分钟跑完。一共 4.69 亿行、21 天，未压缩的原始数据约 300 GB，在 ClickHouse 里约 10 GB，导成 Parquet（ZSTD level 3）以后只有 4.5 GB，原始数据到 Parquet 的压缩比约 67 倍，比 ClickHouse 自己的存储还小了一半多，日志文本按列压缩的效果确实好。布局是 `s3://my-bucket/app_logs/dt=YYYYMMDD/data.parquet`，每天一个文件，74 MB 到 300 MB，按 `@timestamp` 排序。列的基数差别极大，`stream` 只有 2 个值，`kube_node_name` 3 个，`kube_pod_name` 45 个，`TID` 却有 1193 万，`@message` 有 8438 万。
 
-`app_logs` 容器日志，从源集群经 `INSERT INTO FUNCTION s3()` 按天导出成 Parquet（导出 + 逐天行数校验，5 分钟跑完）：
+中间踩了个坑：这个环境里 ClickHouse 写出的 page index，在日志文本列上生成了坏的 min/max（`min_value > max_value`），chDB 一读就报错。把 `output_format_parquet_write_page_index` 关掉就好了，row group 级别的统计还在，裁剪不受影响。
 
-- **4.69 亿行 / 21 天**；原始（未压缩）约 **300 GB**，在 ClickHouse 内部约 **10 GB**，导出成 Parquet（ZSTD level-3）后仅 **4.5 GB**——原始→Parquet **压缩比约 67×**（列式 + 日志文本压缩率极高，比 CH 行存内部压缩还小一半）；
-- 布局 `s3://my-bucket/app_logs/dt=YYYYMMDD/data.parquet`，每天一个文件（74 MB–300 MB），按 `@timestamp` 排序；
-- 列基数差异极大：`stream` 2 个、`kube_node_name` 3 个、`kube_pod_name` 45 个 —— 但 `TID` **1193 万**、`@message` **8438 万**；
-- 踩到的坑：本环境 ClickHouse 写出的 **page index 在日志文本列上生成了损坏的 min/max**（`min_value > max_value`），chDB 读取直接报错；关闭 `output_format_parquet_write_page_index` 即可（row-group 统计仍在，裁剪不受影响）。
-
-### 四个查询（映射第八节的 4 类场景）
+四个查询，对应前面的四类场景：
 
 | # | 场景 | 查询要点 |
 |---|---|---|
@@ -1330,86 +1138,61 @@ def run_once(query_fn, iface, drop_caches):
 | Q3 | LIKE 子串全列扫 | `count() WHERE @message LIKE '%error%'`（命中 69.3 万）|
 | Q4 | 重内存聚合 + count distinct | `GROUP BY kube_pod_name` + `uniqExact(TID)` + `uniqExact(@message)` |
 
-### 结果
-
-两引擎均 **16 线程、冷读 S3、列裁剪开启**，runs=3 取中位数：
+两个引擎都是 16 线程、冷读 S3、列裁剪打开，每条跑 3 次取中位数：
 
 | 查询 | 引擎 | 中位耗时 | 峰值 RSS | 网络读 | 吞吐 | CPU% |
 |---|---|---:|---:|---:|---:|---:|
-| **Q1** 选择性时间过滤 | chDB | **0.10s** | **496 MB** | ~0 | – | 334% |
+| Q1 选择性时间过滤 | chDB | 0.10s | 496 MB | ~0 | | 334% |
 | | DuckDB | 0.31s | 10.7 GB | 25 MB | 83 MB/s | 260% |
-| **Q2** 高基数 GROUP BY (TID) | chDB | 5.67s | 4.05 GB | 182 MB | 32 MB/s | 649% |
-| | DuckDB | **4.00s** | 12.2 GB | 198 MB | 49 MB/s | 670% |
-| **Q3** LIKE 子串全扫 | chDB | 18.17s | **2.27 GB** | 1.48 GB | 82 MB/s | 1002% |
+| Q2 高基数 GROUP BY (TID) | chDB | 5.67s | 4.05 GB | 182 MB | 32 MB/s | 649% |
+| | DuckDB | 4.00s | 12.2 GB | 198 MB | 49 MB/s | 670% |
+| Q3 LIKE 子串全扫 | chDB | 18.17s | 2.27 GB | 1.48 GB | 82 MB/s | 1002% |
 | | DuckDB | 18.70s | 10.8 GB | 1.50 GB | 80 MB/s | 881% |
-| **Q4** 重内存 count distinct | chDB | **26.21s** | **11.3 GB** | 1.69 GB | 64 MB/s | 1132% |
+| Q4 重内存 count distinct | chDB | 26.21s | 11.3 GB | 1.69 GB | 64 MB/s | 1132% |
 | | DuckDB | 70.03s | 43.5 GB | 1.73 GB | 25 MB/s | 973% |
 
-**逐项解读**：
+Q1 是选择性查询，chDB 赢得很干脆，0.10 秒对 0.31 秒，内存 496 MB 对 10.7 GB。文件按天切、按 `@timestamp` 排序，row group 的 min/max 跳掉了 21 个文件里的 20 个，几乎不用读数据；chDB 的进程开销也比 DuckDB 的 buffer manager 预占少得多。
 
-- **Q1（选择性查询）chDB 完胜**：0.10s vs 0.31s，且 RSS 仅 496 MB vs 10.7 GB。文件按天切 + 按 `@timestamp` 排序，row-group min/max 跳掉 20/21 文件，几乎不读数据；chDB 进程开销也远低于 DuckDB 的 buffer manager 预占。
-- **Q2（中等 GROUP BY）DuckDB 略快**：4.0s vs 5.67s，两边读的字节一样（~190 MB，只读 `TID` 列）。这一档 DuckDB 的聚合流水线稍占优。
-- **Q3（LIKE 子串）打平**：~18s 持平，两边都读 `@message` 列（1.48 GB），卡在 **~80 MB/s 的 LAN 带宽**——网络受限，字符串匹配的 SIMD 差异被完全淹没。但 chDB 内存少 4 倍多。
-- **Q4（重 distinct）chDB 完胜**：26s vs 70s（2.7×），内存 11 GB vs 43.5 GB（4×）。ClickHouse 的 `uniqExact` 状态管理比 DuckDB 的 `count(DISTINCT)` 内存效率高得多，后者一度逼近 OOM。
+Q2 是中等规模的 GROUP BY，DuckDB 略快，4.0 秒对 5.67 秒。两边读的字节数差不多，都是 190 MB 左右，只读了 `TID` 一列，这一档 DuckDB 的聚合流水线稍占上风。
 
-### ⚠️ 两个让结论直接翻车的陷阱
+Q3 是 LIKE 子串，打平，都是 18 秒左右。两边都要读 `@message` 整列，1.48 GB，卡在了 80 MB/s 左右的 LAN 带宽上，网络是瓶颈，字符串匹配上的 SIMD 差别完全被盖住了。不过 chDB 的内存少了 4 倍多。
 
-这次实测最大的价值不是那几个数字，而是发现**用默认配置跑会得出「DuckDB 比 chDB 快 50×」的离谱错误结论**。根因是两个互相对称的默认行为：
+Q4 是重 distinct，chDB 又赢了，26 秒对 70 秒，快 2.7 倍，内存 11 GB 对 43.5 GB，省了将近 4 倍。ClickHouse `uniqExact` 的状态管理在内存效率上比 DuckDB 的 `count(DISTINCT)` 高得多，DuckDB 一度逼近 OOM。
 
-**陷阱一：chDB 默认不对远程 Parquet 做列裁剪。**
-`remote_read_min_bytes_for_seek` 默认 4 MB，会让 chDB 把整个 row group（所有列）拉下来，而不是只取需要的列 chunk。Q2 只查 `TID`（单列 ~10 MB/文件）却下载了整份 **3.9 GB**。置 `remote_read_min_bytes_for_seek = 0` 强制按列 chunk 发 ranged GET 后，Q2 网络读 **3.9 GB → 0.18 GB，耗时 45s → 5.7s（约 8 倍）**。
+### 差点得出一个离谱的结论
 
-**陷阱二：DuckDB 默认把远程文件缓存进内存。**
-`enable_external_file_cache` 默认 `true`，同一连接里第二次查询直接命中内存（网络读 ≈ 0、CPU 飙到 1500%+），测的根本不是「查 S3」而是「查内存」。置 `enable_external_file_cache = false` 后每轮都冷读，才和 chDB 对等。
+这次实测最大的收获其实不是这几个数字，而是发现拿默认配置跑，会得出 DuckDB 比 chDB 快 50 倍的离谱结论。原因是两个正好对称的默认行为。
 
-两个陷阱叠加，等于拿「chDB 全量下载冷读」去比「DuckDB 单列内存命中」——快几十倍纯属假象。**这是第八节避坑清单第 4 条「配置必须显式对齐」的放大版：不仅 `max_threads` 要对齐，引擎特有的 IO 路径默认值（远程读粒度、文件缓存）也必须对齐，否则信噪比为零。**
+一个在 chDB 这边，它默认不对远程 Parquet 做列裁剪。`remote_read_min_bytes_for_seek` 默认 4 MB，会让 chDB 把整个 row group 的所有列都拉下来，而不是只取需要的那几列。Q2 只查 `TID` 一列（每个文件 10 MB 左右），却下载了整整 3.9 GB。**把 `remote_read_min_bytes_for_seek` 设成 0**，强制按列分块发 Range GET 以后，Q2 的网络读从 3.9 GB 降到 0.18 GB，耗时从 45 秒降到 5.7 秒，快了 8 倍左右。
 
-### 实测结论
+另一个在 DuckDB 那边，它默认把远程文件缓存进内存。`enable_external_file_cache` 默认 `true`，同一个连接里第二次查询直接命中内存，网络读约等于零，CPU 冲到 1500% 以上，测的根本不是查 S3，是查内存。设成 `false` 以后每次都冷读，才和 chDB 对等。
 
-- **没有一个引擎全面碾压**：chDB 赢在选择性查询（Q1）和重 distinct 聚合（Q4，2.7×），DuckDB 在中等 GROUP BY（Q2）略快，全表扫描（Q3）打平。
-- **内存上 chDB 全面更省**，差距 4–20 倍——这在「多查询共驻一个常驻进程」的微服务里至关重要。
-- **全扫类查询卡在 LAN 带宽（~80 MB/s）**，引擎算力差异被网络淹没，再次印证第三节「真正瓶颈是 S3 出口带宽」。
-- 呼应第八节判断：对真实业务而言 **「够用就行」才是决定因素**；chDB「数据节点常驻、大数据量、ClickHouse 生态接续」的定位，与这套冷数据架构天然契合。
+两个坑叠在一起，等于拿 chDB 全量下载冷读，去比 DuckDB 单列命中内存，快几十倍纯属假象。所以对齐配置不光是对齐 `max_threads`，引擎各自 IO 路径上的默认值，远程读的粒度、文件缓存，也都得对齐，不然这种对比一点意义都没有。
 
----
+### 结论
 
-## 十、整体架构总结
+没有哪个引擎全面碾压。chDB 赢在选择性查询（Q1）和重 distinct 聚合（Q4，2.7 倍），DuckDB 在中等 GROUP BY（Q2）上略快，全扫描（Q3）打平。内存上 chDB 每一项都更省，少了 3 倍到 20 多倍，对一个多条查询共用一个常驻进程的微服务来说，这一点很要紧。全扫类的查询卡在 80 MB/s 左右的 LAN 带宽上，引擎的算力差别被网络盖住了，也印证了前面说的，真正的瓶颈在 S3 的出口带宽。还是那句话，对真实业务来说够用就行；chDB 常驻数据节点、吃大数据量、接 ClickHouse 生态的定位，跟这套冷数据架构正好对得上。
 
-回到最开始那张图：
+## 最后
+
+回到开头那张图：
 
 <figure class="dfig">
-<img class="dfig-l" src="/diagrams/chdb-12.light.svg" alt="十、整体架构总结">
-<img class="dfig-d" src="/diagrams/chdb-12.dark.svg" alt="十、整体架构总结">
+<img class="dfig-l" src="/diagrams/chdb-12.light.svg" alt="整体架构总结">
+<img class="dfig-d" src="/diagrams/chdb-12.dark.svg" alt="整体架构总结">
 </figure>
 
-### 设计原则归纳
+整篇贯穿下来，就是能解耦的地方尽量解耦，让 S3 待在 ClickHouse 的关键路径之外，故障域就小一截。存得对比查得快重要，八成的性能是数据布局决定的，路径、文件、row group 三层漏斗，每一层都要让过滤起作用。删数据的条件要带上验证，TTL 写成 `WHERE exported_at IS NOT NULL`，导出失败就变成了存储告警，而不是丢数据。限制要事先主动设好，带宽、内存、并发、超时都给个明确的上限，宁可单条查询失败，也不让进程崩。`system.query_log`、`system.events` 和应用埋点，从第一天就要打开。
 
-1. **能解耦的地方倾向于解耦**——这是贯穿所有判断的主线。让 S3 留在 ClickHouse 的关键路径之外，故障域就小一截。
-2. **存得对比查得快重要**——80% 的性能由数据布局决定。三层漏斗（路径 / 文件 / row group）每一层都要让过滤生效。
-3. **删除条件要带验证语义**——TTL 表达式带 `WHERE exported_at IS NOT NULL`，让「导出失败」自动变成「存储告警」而不是「数据丢失」。
-4. **限制是用来主动设的，不是等出事兜底**——带宽、内存、并发、超时，每个都明确设上限，宁可单查询失败也不让进程崩。
-5. **可观测性是架构的一部分**——`system.query_log` / `system.events` / 应用埋点必须从第一天就开。
+这套架构也有不合适的地方。频繁的 `LIKE '%xxx%'` 子串查询，是 Parquet 和 ORC 共同的硬伤，得导进 chDB 本地的 MergeTree 才能用上 ngram、tokenbf 索引。毫秒级响应、高 QPS 的在线服务，chDB 单查询再强，也扛不住每秒上千个 50 毫秒的查询。冷数据上频繁的事务性写入也不行，Parquet 是不可变的，更新只能整个文件重写。跨冷热边界的复杂 JOIN，业务层拼接还行，想在引擎层一把搞定比较难。
 
-### 这套架构的边界
+适合它的是历史数据分析、报表、审计、即席查询、机器学习特征回算，「有一堆冷数据，又不能扔」的需求，大部分都在这里面。
 
-这套架构也有几个**不适合**的场景需要说明：
+说到底，就是把冷数据从 ClickHouse 里拆出去，再用 chDB 捡起来，把 ClickHouse 对 S3 的运行时依赖换成了对一份 Parquet 数据的依赖。代价是多写一个导出脚本和一个查询微服务；换来的是 ClickHouse 集群更小、更稳，冷数据用的是开放格式，不绑定任何厂商，S3 出故障也不会再威胁到热查询。
 
-- **频繁的 `LIKE '%xxx%'` 子串查询**——Parquet/ORC 共同的硬限制，要导入到 chDB 本地 MergeTree 才能用 ngram/tokenbf 索引；
-- **毫秒级响应、高 QPS 的在线服务**——chDB 单查询性能强，但不适合「每秒上千个 50ms 查询」的场景；
-- **频繁的事务性写入到冷数据**——Parquet 是不可变的，更新只能整文件重写；
-- **跨冷热边界的复杂 JOIN**——业务层拼接 OK，引擎层一把梭比较难。
+## 附录：关键设置速查
 
-适合的场景：**历史数据分析、报表、审计、即席查询、机器学习特征回算**。这正好覆盖 80% 的「我有一堆冷数据但又不能扔」的需求。
-
-### 一句话收尾
-
-> 把冷数据从 ClickHouse 里拆出去、用 chDB 重新捡起来——不是「省钱的小聪明」，是把「运行时依赖」换成「数据依赖」的架构升级。代价是多写一个 export 脚本和一个查询微服务；收益是 ClickHouse 集群更小更稳、冷数据用开放格式 vendor 无关、S3 故障不再威胁热查询。**这点工作量，换来的是整个系统的故障耐受性提升一个量级**。
-
----
-
-## 附录：本文涉及的关键设置速查
-
-### chDB 查询端
+chDB 查询端：
 
 ```sql
 SET use_hive_partitioning = 1;
@@ -1423,13 +1206,13 @@ SET max_bytes_before_external_group_by = 4294967296;
 SET max_bytes_before_external_sort = 4294967296;
 SET input_format_parquet_filter_push_down = 1;
 SET input_format_parquet_bloom_filter_push_down = 1;
-SET remote_read_min_bytes_for_seek = 0;                -- 必开: 否则整 row group 下载, 列裁剪失效 (见第九节)
+SET remote_read_min_bytes_for_seek = 0;                -- 必开: 否则整 row group 下载, 列裁剪失效 (见实测一节)
 SET input_format_parquet_enable_row_group_prefetch = 0;
 ```
 
-> DuckDB 侧做公平对比时，记得 `SET enable_external_file_cache = false`（默认 `true` 会缓存远程文件到内存，跨查询命中后测的不是 S3 而是内存）。
+DuckDB 那边做公平对比时，记得 `SET enable_external_file_cache = false`，默认的 `true` 会把远程文件缓存进内存，跨查询命中以后测的就不是 S3 了。
 
-### ClickHouse 写 Parquet 端
+ClickHouse 写 Parquet 端：
 
 ```sql
 SETTINGS
@@ -1438,7 +1221,7 @@ SETTINGS
     output_format_parquet_compression_method   = 'zstd',
     output_format_parquet_compression_level    = 3,
     output_format_parquet_use_custom_encoder   = 1,
-    output_format_parquet_string_as_string     = 1,   -- 必开
+    output_format_parquet_string_as_string     = 1,
     output_format_parquet_write_page_index     = 1,
     max_threads        = 4,
     max_insert_threads = 4,
@@ -1446,7 +1229,7 @@ SETTINGS
     s3_create_new_file_on_insert = 1
 ```
 
-### TTL with 验证守门
+带验证的 TTL：
 
 ```sql
 ALTER TABLE events ADD COLUMN exported_at Nullable(DateTime) DEFAULT NULL;
@@ -1454,7 +1237,7 @@ ALTER TABLE events MODIFY TTL
     event_time + INTERVAL 4 MONTH DELETE WHERE exported_at IS NOT NULL;
 ```
 
-### 一个干净的数据布局示例
+一个干净的数据布局：
 
 ```
 s3://my-bucket/events/
@@ -1467,14 +1250,10 @@ s3://my-bucket/events/
     ...
 ```
 
-每个 `data.parquet`：
+每个 `data.parquet` 里：row group 128 MB，ZSTD level 3 压缩，statistics 打开（每个 row group 有 min/max），page index 打开，bloom filter 只给高基数、没法做主排序键的列开。
 
-- Row group: 128 MB
-- 压缩: ZSTD level 3
-- Statistics: enabled (min/max per row group)
-- Page index: enabled
-- Bloom filter: 仅对高基数、无法做主排序键的列开
+配套的基准测试脚本是 `bench_chdb_vs_duckdb.py`。
 
 ---
 
-*本文配套基准测试脚本：`bench_chdb_vs_duckdb.py`*
+**相关**：[冷热分层概览](/clickhouse/cold-storage/) · [为什么要转 Parquet](/clickhouse/cold-storage/parquet) · [S3 不可达时起不来：metadata 明明在本地，它却说 S3 上找不到](/clickhouse/troubleshooting/s3-unreachable-startup)

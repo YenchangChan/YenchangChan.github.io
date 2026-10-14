@@ -19,12 +19,12 @@
 
 <a class="post" href="/clickhouse/tooling/">
 <span class="post-t">工具与设计</span>
-<span class="post-d">ckman、clickhouse_sinker 的设计决策 —— 为什么做、为什么这么做、为什么有些不做。</span>
+<span class="post-d">ckman、clickhouse_sinker 的设计决策：为什么做，为什么这么做，为什么有些不做。</span>
 </a>
 
 <a class="post" href="/clickhouse/vendor/">
 <span class="post-t">信创与异构环境</span>
-<span class="post-d">换发行方、换 CPU 架构、换操作系统 —— 同一个 ClickHouse 行为不一定一样。这类差异连 changelog 都没有。</span>
+<span class="post-d">换发行方、换 CPU 架构、换操作系统，同一个 ClickHouse 的行为不一定一样，这类差异 changelog 里也不会写。</span>
 </a>
 
 <a class="post" href="/clickhouse/comparison/">

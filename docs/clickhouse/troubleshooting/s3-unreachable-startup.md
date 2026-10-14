@@ -1,199 +1,78 @@
 ---
-title: metadata 明明在本地，为什么 ClickHouse 说 S3 上找不到
+title: S3 不可达时起不来：metadata 明明在本地，它却说 S3 上找不到
 ---
 
-# metadata 明明在本地，为什么 ClickHouse 说 S3 上找不到
+# S3 不可达时起不来：metadata 明明在本地，它却说 S3 上找不到
 
-> S3 不可达时 ClickHouse 起不来该怎么办，以及一个广为流传的偏方，是怎么跨三个大版本失效的。
->
-> **阅读对象**：维护过 ClickHouse + S3 Disk 生产集群、对启动期行为有过困惑、或经历过 S3 不可达故障的工程师。
+有一个百 TB 规模的 ClickHouse 集群，版本 22.8，用 S3 Disk 做冷热分层。某天出了这么一次事故。
 
-## 引言：一个真实事故
+ClickHouse 把 S3 的 IO 打爆了，影响到了同一个账号下的其他业务。S3 的维护团队为了止血，直接把 ClickHouse 用的 access key 给停了。几个小时后 ClickHouse 节点例行重启，连不上 S3，server 启动卡住了。
 
-某个百 TB 规模的 ClickHouse 集群，22.8 版本，用 S3 Disk 做冷热分层。某天发生了这样一次事故：
+运维当时的救命操作是这样的：把配置里的 S3 endpoint 故意改错，指向一个不存在的域名，同时打开 `skip_access_check=true`。server 居然就起来了。然后把 S3 disk 上的表 `DETACH` 掉，等 access key 重新启用，改回正确的配置，重启，再 `ATTACH` 回来。
 
-1. ClickHouse 集群把 S3 的 IO 打爆，影响到了同账号下其他业务
-2. S3 维护团队为了止血，直接把 ClickHouse 用的 access key 失效了
-3. ClickHouse 节点几小时后例行重启，连不上 S3，server 启动卡住
-4. 运维当时的「救命」操作：把配置里的 S3 endpoint **故意改错**（指向一个不存在的域名），同时打开 `skip_access_check=true`
-5. 这套组合拳让 server 起来了，`DETACH` 掉 S3 disk 上的表
-6. 等 access key 重新启用后改回正确配置，重启，重新 `ATTACH`
+这一套在 22.8 上好使得很。
 
-**这个 trick 在 22.8 上完美工作。**
+可等这个集群升到 23.3，再碰上类似的情况，同样的操作就不灵了。同样是改错 endpoint 加 `skip_access_check`，server 还是起不来，报错说 S3 上的 metadata 找不到。
 
-但是 —— 当这个集群升级到 23.3 之后，再发生类似情况，同样的操作**完全失效**了。同样的「改错 endpoint + `skip_access_check`」组合，server 还是起不来，报错信息里说「S3 上的 metadata 找不到」。
+这就怪了，`metadata_path` 明明配在本地，ClickHouse 怎么说 S3 上找不到 metadata？
 
-很多人会困惑：**我的 `metadata_path` 不是配在本地吗？为什么 ClickHouse 说在 S3 上找不到 metadata？**
+## 启动的时候 ClickHouse 在干嘛
 
-这背后涉及一系列从 22.x 到 24.x 的行为变迁：对象存储抽象变化、metadata 双层结构、启动期 attach 行为变严。下面把这个故事讲清楚，并给出每个版本相对稳妥的救援姿势。
+要弄清楚一个参数为什么失效，得先知道 ClickHouse 启动时都做了些什么。大致是这么几步：先加载 `config.xml`，里面有 disks、policies、users；然后创建 disk，对每个 disk 做 access check，也就是写一个测试文件再删掉，确认可写，`skip_access_check` 管的就是这一步；接着扫 `/var/lib/clickhouse/metadata/` 目录加载 database，对每张表执行 `ATTACH TABLE`；再往下是 attach part，要读 part 的自描述文件，其中就包括 S3 上的 `checksums.txt` 这些；之后是 `ReplicatedMergeTree` 跟 ZK 的副本协调；最后监听端口，对外提供服务。
 
----
+哪一步失败都可能让启动卡住。`skip_access_check` 管的是创建 disk 时的那个检查，可生产上真正卡住的，多半是后面 attach part 那一步。后面所有的困惑，都出在这两步没对上。
 
-## 一、启动期 ClickHouse 到底在做什么
+## metadata 有两层
 
-要理解为什么某个参数失效，先要理解 ClickHouse 启动时的完整流程。按顺序经过这几个阶段：
+ClickHouse 的 metadata 其实有两层，很多人排查时把这两层混在一起，方向一开始就错了。
 
-<div class="flow">
-<div class="flow-step"><span class="flow-n">1</span><span class="flow-t">加载 <code>config.xml</code>：disks / policies / users</span></div>
-<div class="flow-step hl-a"><span class="flow-n">2</span><span class="flow-t">创建 disk，做 <strong>access check</strong>（写一个测试文件再删掉，确认可写）<em>← <code>skip_access_check</code> 作用于此</em></span></div>
-<div class="flow-step"><span class="flow-n">3</span><span class="flow-t">加载 database：扫描 <code>/var/lib/clickhouse/metadata/</code> 目录</span></div>
-<div class="flow-step"><span class="flow-n">4</span><span class="flow-t">Table attach：执行每张表的 <code>ATTACH TABLE</code></span></div>
-<div class="flow-step hl-b"><span class="flow-n">5</span><span class="flow-t"><strong>Part attach</strong> —— 读 part 的自描述文件，包括 S3 上的 <code>checksums.txt</code> 等<em>← 生产中真正卡住的地方</em></span></div>
-<div class="flow-step"><span class="flow-n">6</span><span class="flow-t">ZK 同步：<code>ReplicatedMergeTree</code> 的副本协调</span></div>
-<div class="flow-step"><span class="flow-n">7</span><span class="flow-t">监听端口，对外提供服务</span></div>
-</div>
-
-任何一步失败都可能让启动卡住。`skip_access_check` 影响的是**第 2 步**，但实际生产中启动卡住更常见的是**第 5 步 —— part attach 阶段**。
-
-**这个错位，是后面所有困惑的根源。**
-
----
-
-## 二、Metadata 的两层结构
-
-要理解为什么 `skip_access_check`「看起来该有效但其实没用」，必须先搞清楚 ClickHouse 的 metadata 实际上有**两层**。很多人混淆了这两层，导致排查时方向就错了。
-
-### 第一层：Disk-level metadata（在本地）
-
-`<metadata_path>` 配置的本地目录，存的是「逻辑文件名 → S3 object key」的映射。
-
-每个本地「文件」其实是个 stub，内容是几行文本：
+第一层是 disk 级的，就在本地 `<metadata_path>` 配的那个目录里，存的是逻辑文件名到 S3 object key 的映射。每个本地文件其实只是个占位，内容就几行文本，大致是这样：
 
 ```
 3
 1   1234   xxx/yyy/zzzobj1
 ```
 
-意思是「这个文件大小 1234 字节，在 S3 上的 object key 是 `xxx/yyy/zzzobj1`」。
+意思是这个文件 1234 字节，在 S3 上的 object key 是 `xxx/yyy/zzzobj1`。读这个本地文件，是不需要访问 S3 的。
 
-**读这个本地文件不需要访问 S3。**
+第二层是 part 级的。每个 part 都有几个描述自己的文件：`columns.txt` 是列定义，`checksums.txt` 是每个文件的校验和，`count.txt` 是行数，`primary.idx` 是主键索引，`partition.dat` 是分区信息，还有 `minmax_*.idx` 和 `default_compression_codec.txt`。这些文件是放在 S3 上的，本地那一层只存了指向它们的指针。attach part 的时候，必须把它们 GET 下来，才能校验 part 是不是完整。
 
-### 第二层：Part-level metadata（在 S3 上）
+所以那句「S3 上的 metadata 找不到」，说的是第二层，是某个 part 的 `checksums.txt` 之类的文件 GET 失败了。本地那一层好好的，只是它指向的 S3 对象够不着。所以这个报错很容易把人往 `<metadata_path>` 的配置上带，其实跟那儿没关系。
 
-每个 ClickHouse part 有几个自描述文件，记录 part 自己的元信息：
+## skip_access_check 怎么一步步不灵的
 
-| 文件 | 内容 |
-|---|---|
-| `columns.txt` | part 包含的列定义 |
-| `checksums.txt` | 每个文件的 hash 校验 |
-| `count.txt` | part 的行数 |
-| `primary.idx` | 主键索引 |
-| `partition.dat` | 分区信息 |
-| `minmax_*.idx` | minmax 索引 |
-| `default_compression_codec.txt` | 压缩编解码器 |
+22.x 的时候，ClickHouse 的 disk 抽象比较扁平，一个 `IDisk` 接口，每种 disk 自己实现，`S3Disk` 是个比较独立的实现。
 
-这些文件本身**存在 S3 上** —— disk-level metadata 里有指针指向它们。**Part attach 阶段必须 GET 这些文件才能验证 part 完整性。**
+`skip_access_check` 设计上只是跳过 access check 这一步。它在 22.x 上能救场，按我的理解是沾了副作用的光：endpoint 不可达，S3 client 创建失败，这个 disk 就被标成 broken；broken disk 上的 part 走的是延迟 attach，被推后处理；延迟 attach 不会马上去读 S3 上的那些 part 文件，attach part 那一步就被悄悄跳过了，启动得以继续。参数本来不是为这个设计的，只是那时候对 broken disk 的处理比较宽松，它就阴差阳错成了一个 S3 不可达时的救命开关。
 
-所以「S3 上的 metadata 找不到」这个报错，指的是**第二层 part-level metadata**，是某个 part 的 `checksums.txt` 之类的文件 GET 失败了。本地的 disk-level metadata 仍然好好的，只是**它指向的 S3 对象不可达**。
+改错 endpoint 的偏方就是借的这个劲。把 endpoint 改成一个不存在的域名，比如 `https://nonexistent.invalid/`，DNS 解析失败，S3 client 初始化失败，access check 必然失败；有 `skip_access_check=true`，这一步被跳过；disk 进入 broken 状态，上面所有的 part 都走延迟 attach，server 就起来了。这时候表是 broken 的，`DETACH` 是合法操作。等 S3 好了，改回正确的 endpoint，重启，再 `ATTACH`，一切照常。这个流程在 22.x 上严丝合缝，运维圈里传得很广。
 
-理解了这点，下面的版本变迁就好理解了。
+从 23.x 开始，ClickHouse 的远端存储逐步引入了 `IObjectStorage` 这些抽象，把 disk 拆成了更清楚的两层：逻辑上的 disk 是 `DiskObjectStorage`，底下的物理存储是 `S3ObjectStorage`、`AzureObjectStorage`、`LocalObjectStorage` 这些。
 
----
+从生产上的表现看，变化有三点。`skip_access_check` 基本就只管启动时的读写探测了，不再稳定地带出 disk broken 以后跳过 attach 的副作用。attach part 更严格了，启动时更容易在校验 active part 的阶段真的去访问 S3 上那些 part 文件。出错的时候也更保守了，远端对象够不着、不存在或者没权限，更倾向于直接报错，而不是把相关的表悄悄往后放。
 
-## 三、`skip_access_check` 的版本变迁
+于是同一套操作在 23.x 上就变成了：endpoint 错，S3 client 初始化失败，access check 失败；`skip_access_check=true` 把这一步跳过了，没问题；可接下来进了 attach part，ClickHouse 顺着本地那层 metadata 去找 S3 对象，S3 不可达，GET `checksums.txt` 失败，抛出 metadata not found，启动失败。
 
-### 22.x：副作用大于本意
+`skip_access_check` 在 23.x 上还是有效的，只是它管不到 attach part 那一步。22.x 上那个误打误撞的副作用，不能再写进生产的应急手册里了。
 
-22.x 时代 ClickHouse 的 disk 抽象比较扁平 —— 一个 `IDisk` 接口，每个 disk 类型自己实现，`S3Disk` 是个相对单一的实现。
+再往后，ClickHouse 在故障处理上把机制慢慢补齐了，`skip_access_check` 也就越来越边缘。23.11 加了 `async_load_databases`，表在后台异步加载，某张表加载失败，只是查这张表时报错，不会把整个 server 卡住；24.6 起它在默认配置里就是打开的，25.2 起哪怕配置文件没更新也默认开启。失败的表、detached 的 part、启动日志，定位入口也比以前清楚了。S3 相关的限速、重试、连接池参数也更细了，能从源头上少挨对象存储那边的限流和封禁。现在 `skip_access_check` 还在，但作用回到了它本来的意思，就是跳过启动时写测试文件那一下，已经没什么人靠它救场了。
 
-`skip_access_check` 设计上**只跳过第 2 步**。但因为 22.x 的几个特点，它意外获得了「救场」能力：
-
-1. **Disk 创建失败导致整个 disk 进入 broken 状态** —— S3 endpoint 不可达 → S3 client 创建失败 → 该 disk 被标记 broken
-2. **Broken disk 上的 part 走 lazy attach 路径** —— 22.x 的 part attach 是 lazy 的，broken disk 上的 part 会被推迟处理
-3. **Lazy attach 不立即读 S3 metadata** —— 第 5 步被静默跳过，启动可以继续
-
-结果：access check 失败 + skip 掉 → disk broken → part 全部 lazy → server 起来了。
-
-**副作用救场。** 参数本来不是为这个设计的，但因为内部的 broken disk 处理逻辑足够宽松，它意外变成了一个「S3 不可达救命开关」。
-
-### 22.x 的「改错 endpoint」偏方为什么管用
-
-把 endpoint 改成不存在的域名（比如 `https://nonexistent.invalid/`）：
-
-```
-DNS 解析失败 → S3 client 初始化失败 → access check 必然失败
-   ↓
-配合 skip_access_check=true，跳过这一步
-   ↓
-Disk 进入 broken 状态
-   ↓
-该 disk 上所有 part 走 lazy attach
-   ↓
-Server 起来了
-   ↓
-DETACH 表（这时表是 broken 的，DETACH 是合法操作）
-   ↓
-改回正确 endpoint，重启
-   ↓
-重新 ATTACH，正常工作
-```
-
-这个流程在 22.x 完美闭环，运维圈广为流传。
-
-### 23.x：对象存储抽象变化，副作用消失
-
-从 23.x 开始，ClickHouse 的远端存储实现逐步引入 `IObjectStorage` 等抽象，把 disk 拆成更清晰的两层：
-
-- **逻辑 disk**：`DiskObjectStorage`
-- **物理存储**：`S3ObjectStorage` / `AzureObjectStorage` / `LocalObjectStorage` / ...
-
-从生产表现看，这一阶段有三个值得关注的变化：
-
-1. **access check 作用域更接近原始语义** —— `skip_access_check` 主要影响启动时的读写探测，不再稳定地产生「disk broken 后跳过后续 attach」的副作用
-2. **Part attach 行为更严格** —— 启动过程中更容易在 active part 校验阶段真实访问 S3 上的 part 自描述文件
-3. **错误处理更保守** —— 远端对象不可达、缺失或权限错误时，更倾向于显式报错，而不是把相关表静默延后
-
-所以同样的组合在 23.x 上的执行路径变成：
-
-```
-endpoint 错 → S3 client 初始化失败 → access check 失败
-   ↓
-skip_access_check=true 让这一步跳过 ✓
-   ↓
-但是！进入第 5 步 part attach
-   ↓
-ClickHouse 试图通过 disk-level metadata 找 S3 object
-   ↓
-S3 不可达 → GET checksums.txt 失败
-   ↓
-抛错 "metadata not found" → 启动失败
-```
-
-`skip_access_check` 在 23.x **还有效，但它救不了 part attach 阶段**。22.x 那个「误打误撞」的副作用，不能再作为生产 SOP 依赖。
-
-::: warning 错误信息会误导你
-`"metadata not found"` 容易让人去检查 `<metadata_path>` 配置，但问题其实在 **part-level metadata**。
-:::
-
-### 24.x：进一步退化为「小开关」
-
-24.x 在故障处理上继续补齐机制，让 `skip_access_check` 的角色进一步边缘化：
-
-- `async_load_databases` 在 **23.8 加入并稳定**（并在 **24.8 成为默认**），让 attach 失败的表不阻塞 server
-- 失败表、detached part、启动日志提供了更明确的定位入口，具体系统表和字段要以当前版本为准
-- S3 相关限速、重试、连接池等参数更细，能从源头降低被对象存储侧限流或封禁的概率
-- 启动期加载和校验能力持续优化，避免少数慢表拖住整个 server
-
-`skip_access_check` 在 24.x 仍然存在，但作用**回归到「跳过启动时的写测试文件」这个原始语义**。几乎没人靠它救场。
-
-### 一张表总结演变
+按版本排一下：
 
 | 版本 | `skip_access_check` 的实际效果 | 改错 endpoint 偏方 |
 |---|---|:--:|
-| <span class="ver">22.x</span> | 跳 access check + 副作用让 disk 进入 lazy 模式 | ✅ 有效 |
-| <span class="ver break">23.0 ~ 23.7</span> | 只跳 access check，part attach 仍然访问 S3 | ❌ 失效 |
-| <span class="ver">23.8 LTS+</span> | 同上，但有 `async_load_databases` 替代方案 | ❌ 失效，但有更好的方案 |
-| <span class="ver">24.x</span> | 同上，配合 detached parts、启动日志和状态表定位 | ❌ 失效，方案更完善 |
+| 22.x | 跳过 access check，副作用让 disk 进入延迟 attach | 有效 |
+| 23.0 ~ 23.10 | 只跳过 access check，attach part 仍然访问 S3 | 失效 |
+| 23.11 ~ 24.5 | 同上，但可以手动开 `async_load_databases` | 失效，有更好的办法 |
+| 24.6+ | 同上，`async_load_databases` 默认开启 | 失效，有更好的办法 |
 
-**核心结论：`skip_access_check` 从「屠龙刀」退化为「指甲刀」。22.x 时代它的救场能力是 bug 而不是 feature，23.x 把这个 bug 修了。**
+说白了，`skip_access_check` 在 22.x 上那点救场的本事，是 bug 带来的，不是设计出来的功能，23.x 把这个 bug 修了，偏方也就跟着没了。
 
----
+## 各个版本怎么救
 
-## 四、各版本的正确救援姿势
+### 哪个版本都能用：把表的 SQL 文件挪走
 
-### 通用方案：物理移走 metadata SQL 文件
-
-从 22.x 到 24.x 都好使的「硬绕过」，也是最可靠的应急手段。
+这是从 22.x 到 24.x 都好使的硬办法，也是最靠得住的应急手段。
 
 ```bash
 # 1. 停 ClickHouse
@@ -217,20 +96,15 @@ mv /tmp/ch_pending/big_table.sql /var/lib/clickhouse/metadata/db_name/
 clickhouse-client -q "ATTACH TABLE db_name.big_table"
 ```
 
-**为什么这个方法可靠**：ClickHouse 启动时只会处理 `metadata/` 目录里看到的 SQL 文件。文件不在了，就不会尝试 attach 这个表，也就不会去访问 S3。这是**版本无关**的硬绕过。
+道理很简单，ClickHouse 启动时只处理 `metadata/` 目录里能看到的 SQL 文件，文件不在了，就不会去 attach 这张表，也就不会去碰 S3，跟版本没关系。
 
-::: danger 关键注意点
-- 移走的是 `/var/lib/clickhouse/metadata/` 里的 **SQL 文件**，**不要碰 `/var/lib/clickhouse/data/`**
-- `data/` 目录里是真正的本地数据（包括 S3 disk 的 disk-level metadata），动了它会**真的丢数据**
-- `ATTACH` 之前最好先 backup 一份移走的 SQL 文件
-- 如果这个表是 ReplicatedMergeTree，恢复时要确认 ZK 路径还在
-:::
+有几点得小心。挪的是 `/var/lib/clickhouse/metadata/` 下面的 SQL 文件，`/var/lib/clickhouse/data/` 千万别碰，那里是真正的本地数据，包括 S3 disk 本地那一层 metadata，动了它是真会丢数据的。挪走的 SQL 文件最好先备份一份再 `ATTACH`。如果是 ReplicatedMergeTree，恢复时要确认 ZK 上的路径还在。
 
-**这个方法应该被列为标准应急 SOP —— 每个 ClickHouse 运维团队都该写进 runbook。**
+这个办法我建议每个 ClickHouse 运维团队都写进自己的 runbook。
 
-### 22.x 专属：改错 endpoint + `skip_access_check`
+### 只适用于 22.x：改错 endpoint 加 skip_access_check
 
-仅作历史记录，**不推荐在 23.x 之后使用**：
+留着当个历史记录，23.x 以后别再用了：
 
 ```xml
 <disks>
@@ -242,17 +116,19 @@ clickhouse-client -q "ATTACH TABLE db_name.big_table"
 </disks>
 ```
 
-如果你的集群还在 22.x，这个 trick 仍然有效。但**如果在 23.x+ 上看到这个偏方推荐，警惕作者可能没在新版本验证过**。
+集群还在 22.x 的话，这招照样管用。可要是在讲 23.x 以后版本的文章里看到有人推荐这个偏方，多半是作者没在新版本上试过。
 
-### 23.8 LTS+ 推荐：`async_load_databases`
+### 23.11 以后：async_load_databases
 
 ```xml
 <async_load_databases>1</async_load_databases>
 ```
 
-启动时数据库 attach 异步进行，attach 失败的表标记 broken，server 立即可用。23.8 LTS 之后稳定。
+开了以后，数据库和表在启动后异步加载，加载失败的表只影响查它的查询，server 照样起来对外服务，可以在 `system.asynchronous_loader` 里看加载进度。24.6 起默认配置里已经是开着的了。
 
-配合启动日志和系统表定位哪些表还没 attach 完。**不同版本暴露的字段不完全一致**，建议先用「宽松查询」看当前版本有哪些可用信息：
+注意 23.3 和 23.8 这两个 LTS 都还没有这个参数，老偏方又已经失效了，S3 一断，能指望的就只有上面挪 SQL 文件那一招。还卡在这两个版本上的，我建议尽快往 24.x 的 LTS 升。
+
+起来以后，配合启动日志和系统表去找哪些表还没加载好。不同版本暴露的字段不完全一样，先用宽松一点的查询看看当前版本有什么：
 
 ```sql
 DESCRIBE TABLE system.tables;
@@ -269,15 +145,11 @@ WHERE reason != ''
 ORDER BY database, table, name;
 ```
 
-如果某个版本提供异步加载或 broken table 相关系统表，再优先使用对应系统表。**不要把某个小版本里的字段名直接写死到自动化脚本里。**
+别把某个小版本里的字段名写死在自动化脚本里。
 
-::: tip 23.3 是个尴尬版本
-新机制刚开始引入，还不稳定；老 trick 已失效。如果还卡在 23.3，建议直接升 23.8 LTS。
-:::
+### 24.x 以后：查状态，别猜参数
 
-### 24.x 兜底：用状态表和日志定位失败对象
-
-24.x 之后，建议把定位入口从「猜参数」切到「查状态」：
+到了 24.x，定位的思路应该从猜参数换成查状态：
 
 ```sql
 -- 看被移动到 detached 的坏 part
@@ -294,20 +166,20 @@ ORDER BY event_time DESC
 LIMIT 100;
 ```
 
-如果表已经处于 detached 状态，可以等 S3 恢复后再显式 `ATTACH TABLE`。如果 server 已经启动、但某张表持续失败，**优先按表处理，不要为了单表问题重启整个集群**。
+表已经 detached 了，就等 S3 恢复后再显式 `ATTACH TABLE`。server 已经起来、只是某张表一直失败的，按表去处理，别为了一张表把整个集群重启一遍。
 
-### 不推荐：readonly disk + 临时空 bucket
+### 不建议：只读 disk 加一个临时的空 bucket
 
-网上还流传过一种做法：把 endpoint 临时指向一个能连上的**空 bucket**，并设置 `readonly=true` 和 `skip_access_check=true`，试图让 server 先起来。
+网上还传过一种做法，把 endpoint 临时指到一个连得上的空 bucket，再设 `readonly=true` 和 `skip_access_check=true`，想让 server 先起来。
 
-**这类做法不建议写进生产 SOP。** 它改变了对象存储根路径，可能让 ClickHouse 把「对象缺失」误判成 part 损坏，进而产生 detached / broken parts，**扩大恢复复杂度**。除非你在同版本、同引擎、同表结构的测试环境完整演练过，否则不要在生产故障中临时使用。
+这种做法我不建议写进生产手册。它换了对象存储的根路径，ClickHouse 可能把对象不存在误判成 part 损坏，进而弄出一堆 detached 或者 broken 的 part，恢复起来更麻烦。除非你在同版本、同引擎、同表结构的测试环境里完整演练过，否则别在生产故障里临时拿来用。
+
+## 最后
+
+S3 断了、ClickHouse 起不来的时候，我的顺序是：版本支持就先靠 `async_load_databases` 让 server 起来；不支持或者还是起不来，就把受影响的表的 SQL 文件挪走；等 S3 恢复，再一张张 `ATTACH` 回来。
+
+偏方这东西，往往是靠某个版本的副作用撑着的，升级以后那个副作用一修，偏方就失效了，还没人通知你。22.8 上那套操作没毛病，可要是没人知道它为什么能用，升到 23.3 那天就只能对着一句 metadata not found 发愣。
 
 ---
 
-## 生产优先级
-
-> **`async_load_databases` → 物理移走表 SQL 元数据文件 → S3 恢复后显式 `ATTACH`**
-
----
-
-**相关**：[版本升级避坑清单](/clickhouse/upgrade-gotchas) · [`async_load_databases` 24.8 起默认开启](/clickhouse/upgrade-gotchas#gotcha-async-load)
+**相关**：[版本升级避坑清单](/clickhouse/upgrade-gotchas) · [`async_load_databases` 24.6 起默认开启](/clickhouse/upgrade-gotchas#gotcha-async-load)

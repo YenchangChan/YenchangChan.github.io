@@ -12,17 +12,17 @@
 
 <a class="post" href="/clickhouse/troubleshooting/keeper-async-blocks">
 <span class="post-t">126 万 znode 是怎么长出来的</span>
-<span class="post-d">从「数字反常」到「源码实锤」，以及清理时差点丢掉 quorum。</span>
+<span class="post-d">26.3 上异步插入和插入去重两个默认值撞在一起，<code>async_blocks</code> 占了九成。还有清理时差点丢掉 quorum。</span>
 </a>
 
 <a class="post" href="/clickhouse/troubleshooting/s3-unreachable-startup">
-<span class="post-t">metadata 明明在本地，为什么 ClickHouse 说 S3 上找不到</span>
-<span class="post-d">S3 不可达时的救援，以及一个偏方跨三个大版本的失效史。</span>
+<span class="post-t">S3 不可达时起不来：metadata 明明在本地，它却说 S3 上找不到</span>
+<span class="post-d">改错 endpoint 加 <code>skip_access_check</code> 的偏方，22.8 上好使，23.x 就不灵了。各版本该怎么救。</span>
 </a>
 
 <a class="post" href="/clickhouse/troubleshooting/znode-explosion">
-<span class="post-t">znode 爆炸与线程池</span>
-<span class="post-d">ZK 扩容重启引爆 2700 万 znode，以及我远程给错的那条建议。</span>
+<span class="post-t">znode 爆炸：根子在 ClickHouse 的后台线程池</span>
+<span class="post-d">ZK 扩容重启后 znode 冲到 2700 万，四个月后又在 fetch 池上积压了一次。里面有我远程给错的那条建议。</span>
 </a>
 
 <a class="post" href="/clickhouse/troubleshooting/too-many-parts">
@@ -37,7 +37,7 @@
 
 <a class="post" href="/clickhouse/troubleshooting/inconsistent-query-results">
 <span class="post-t">同一条 SQL 每次查出来不一样：先看它是怎么变的</span>
-<span class="post-d">固定值来回跳、跳了会收敛、单调变少、先有后无 —— 四种变化方式对应四种互不相干的原因。附 <code>internal_replication</code> 的常见误解。</span>
+<span class="post-d">表引擎用错、副本同步延迟、去重引擎没加 FINAL、TTL，四种原因看结果怎么变就能分开。</span>
 </a>
 
 </div>

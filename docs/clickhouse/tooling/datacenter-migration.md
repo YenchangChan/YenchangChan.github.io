@@ -4,41 +4,13 @@ title: ClickHouse 集群机房搬迁实战
 
 # ClickHouse 集群机房搬迁实战
 
-> 机房搬迁难的不是技术，是它同时牵涉数据迁移、shard 拓扑、元数据对象、业务双写和对账验证 —— 任何一环没考虑到，都可能在切流当天翻车。不讨论灾备。
->
-> **阅读对象**：单集群几节点到几十节点、要做跨云或跨机房搬迁的团队。
+机房搬迁是 ClickHouse 运维里最重的活之一。技术上其实没多难，难在它同时牵扯好几件事：数据怎么迁、shard 拓扑变不变、物化视图字典这些元数据对象怎么搬、业务怎么双写、迁完怎么对账。哪一环没想到，都可能在切流那天翻车。
 
----
+这篇讲的是中小客户跨云、跨机房搬迁的场景：单集群几个节点到几十个节点，单表从 GB 到 PB，表从几十张到几千张。头部互联网公司那种极端规模不在里面。灾备也不在里面，灾备看的是 RPO、RTO，跟搬迁是两套东西，混在一起讲反而说不清。文中标的特性版本号（比如 `22.8+`）以社区版为准，动手前请对照自己集群的实际版本。
 
-## 写在前面
+## 能用的迁移方案
 
-机房搬迁是 ClickHouse 运维里最重的工程之一。不是因为技术难度有多高，而是它牵涉到**数据迁移、shard 拓扑、元数据对象、业务双写、对账验证**等多个维度，任何一个环节没考虑到都可能在切流当天翻车。
-
-这篇文章把「中小客户跨云机房搬迁」这个场景下的可落地方案、决策依据、实操陷阱讲清楚。**不讨论灾备**——灾备的指标体系（RPO/RTO）和搬迁完全不同，混在一起讲会模糊重点。
-
-适用对象：单集群规模在几节点到几十节点、单表数据量从 GB 到 PB 级、表数量从几十张到几千张的团队。头部互联网公司的极端规模场景不在讨论范围内。
-
-文中标注的特性版本号（如 `22.8+`）以社区版为准，实操前请对照自己集群的实际版本。
-
----
-
-## TL;DR：一分钟拿到结论
-
-如果你没时间读全文，先记住这几条：
-
-1. **默认方案就是 `INSERT INTO ... SELECT FROM remote()`**。只要数据量能在迁移窗口期内一次性灌完（中小客户通常 < 30 TB），别上 `clickhouse-backup`，那是杀鸡用牛刀。
-2. **表多但量不大（1000+ 表 / 5~10 个 DB）时，首选 `BACKUP DATABASE`**，编排成本一条命令搞定。
-3. **Sharding key 是数据正确性约束，不只是性能优化**。合并型引擎（`ReplacingMergeTree` 等）的 sharding key 必须是 `ORDER BY` 字段的函数，改错会让 `FINAL` 静默返回错误结果。
-4. **PB 级表 + reshard 是季度级工程**，能用规划手段（节点数一致约束 + 数据生命周期管理）绕开就绕开。中小客户的 PB 级总量里，真正需要 reshard 的热数据往往只有 100 TB 级。
-5. **元数据对象（MV / 字典 / UDF / 分布式表）有严格的迁移顺序**，顺序错了会触发连锁失败。
-
-下面展开。
-
----
-
-## 一、可落地的迁移方案盘点
-
-业界常见的方案大致 6 种，按「侵入度 / 停机窗口 / 数据规模」维度排：
+业界常见的做法大概有六种，按侵入程度、停机窗口和数据规模排一下：
 
 | 方案 | 适用规模 | 是否需停写 | 增量同步 | 备注 |
 |---|---|---|---|---|
@@ -49,24 +21,22 @@ title: ClickHouse 集群机房搬迁实战
 | 加副本到新机房（Replicated） | 任意 | 不停写 | ZK/Keeper 自动 | 跨云不推荐 |
 | `FREEZE` + 物理 part 拷贝 + `ATTACH PARTITION` | 任意 | 分区粒度短停 | 增量靠新分区 | 同版本同 schema 才稳 |
 
-`clickhouse-copier` 在 23.3 deprecated，24.x 已移除，**新项目不要选**。
+`clickhouse-copier` 就别考虑了，24.2 起它已经从安装包里拿掉，挪到了单独的仓库，基本没人维护了。
 
----
+我的默认选择很简单。数据量能在迁移窗口内一次灌完的（中小客户通常在 30 TB 以内），直接 `INSERT INTO ... SELECT FROM remote()`，别上 `clickhouse-backup`，那是杀鸡用牛刀。表多但量不大的，比如 1000 多张表分在 5 到 10 个库里，用 `BACKUP DATABASE`，一条命令就把编排的事办了。
 
-## 二、跨云机房搬迁的推荐路径
+## 跨云搬迁走双写
 
-跨云搬迁的核心约束是**网络**——专线带宽不便宜、抖动比同机房严重得多。倾向于不依赖底层数据复制，走应用层双写。
+跨云搬迁最大的约束是网络，专线带宽不便宜，抖动比同机房厉害得多。所以我倾向于不依赖底层的数据复制，走应用层双写。
 
 <figure class="dfig">
-<img class="dfig-l" src="/diagrams/datacenter-migration-01.light.svg" alt="二、跨云机房搬迁的推荐路径">
-<img class="dfig-d" src="/diagrams/datacenter-migration-01.dark.svg" alt="二、跨云机房搬迁的推荐路径">
+<img class="dfig-l" src="/diagrams/datacenter-migration-01.light.svg" alt="跨云机房搬迁的推荐路径">
+<img class="dfig-d" src="/diagrams/datacenter-migration-01.dark.svg" alt="跨云机房搬迁的推荐路径">
 </figure>
 
-**为什么不推荐「加副本法」**：跨云共享 Keeper 风险大，RTT 通常 30~50ms，写入吞吐会断崖下跌，session timeout 也容易出问题。除非已经在跑跨云 multi-DC Keeper（罕见），否则别走。
+有人会问，为什么不直接给新机房加副本？因为跨云共享一套 Keeper 风险太大。RTT 一般在 30 到 50ms，写入吞吐会断崖式下跌，session timeout 也很容易出问题。除非你本来就在跑跨云的 multi-DC Keeper（这很少见），否则别走这条路。
 
----
-
-## 三、四阶段搬迁流程
+## 四个阶段
 
 <div class="sk sk-phases">
 <div class="sk-box"><div class="sk-ph-h"><span class="sk-ph-n">1</span><span class="sk-t">准备</span><span class="sk-ph-when">D-7 ~ D-1</span></div><ul><li>B 集群建好，schema 同步</li><li>全量快照（BACKUP / INSERT SELECT）</li><li>验证全量</li></ul></div>
@@ -79,17 +49,13 @@ title: ClickHouse 集群机房搬迁实战
 
 </div>
 
-### 配置一致性的边界
+### 两边的配置要一样吗
 
-「两个集群的配置需要一模一样」是个常见误区。准确地说：
+常听人说两个集群的配置得一模一样，这话不准确。表 schema、`PARTITION BY`、`ORDER BY`、TTL、字段 codec、`storage_policy` 的名字，这些必须一致。`<remote_servers>` 里的集群拓扑、`macros` 里的 `{shard}`/`{replica}`、ZK/Keeper 的路径前缀，这些必须不一样，尤其是路径前缀，两边千万别共用，不然两边的表会被当成同一张 Replicated 表互相拉数据，彻底乱套。副本数、分片数、机器规格、`background_pool_size` 这类性能相关的 server setting，可以不一样。
 
-- **必须一致**：表 schema、`PARTITION BY`、`ORDER BY`、TTL、字段 codec、`storage_policy` 名称
-- **必须不一致**：`<remote_servers>` 集群拓扑、`macros` 里的 `{shard}/{replica}`、ZK/Keeper 路径前缀（千万别两边共用，否则数据会被当成同一张 Replicated 表互相拉，乱套）
-- **可以不一致**：副本数、分片数、机器规格、`background_pool_size` 这类性能 server setting
+### 双写怎么做
 
-### 双写的实现路径
-
-双写的本质是让一条数据同时落到两个集群。**实现方式取决于数据是从哪来的**：
+双写就是让一条数据同时落到两个集群，怎么实现取决于数据从哪来：
 
 | 数据来源 | 双写实现方式 |
 |---|---|
@@ -97,17 +63,13 @@ title: ClickHouse 集群机房搬迁实战
 | 通过 Kafka 流入 | 在外部消费层（Vector / Kafka Connect / 自研服务）订阅同一 topic，用两个独立的 consumer group 分别写 A 和 B |
 | 通过 ETL 批量写入 | ETL job 改造为输出两份，或加一个反向同步 job |
 
-**避免使用 ClickHouse 自带的 `Kafka Engine` 做双写**。它在故障恢复、schema 演进、错误处理上的运维成本远超表面看起来的简单：一个 replica 一个 consumer，replica 挂了消费就停；schema 变更要 detach/attach；错误处理粗糙；故障恢复时数据可能丢/重。生产环境推荐外部消费 + 标准 INSERT 协议。
+别用 ClickHouse 自带的 Kafka Engine 做双写。它看着简单，可故障恢复、schema 演进、错误处理的运维成本远比看上去高：一个 replica 一个 consumer，replica 挂了消费就停；改 schema 要 detach/attach；错误处理很粗糙；故障恢复时数据可能丢也可能重。生产上我推荐外部消费，再走标准的 INSERT。
 
-应用层双写的关键约束：
+应用层双写有几条要守住。写 B 要异步，写 B 失败不能拖住业务，先落到补偿队列里，回头再重试。重试要幂等，ClickHouse 的 `insert_deduplicate`（query setting，默认 1）会对同一个 block 的哈希在去重窗口内自动去重，窗口由 `replicated_deduplication_window` 和 `replicated_deduplication_window_seconds` 控制，默认值各版本改过几次，以你的版本为准，所以重试时要保证发出去的是同一批数据。切流前留够对账的时间，双写至少跑 7 天再切。
 
-- **异步而非同步**：写 B 失败不能阻塞业务，落地到补偿队列后续重试
-- **同一条数据双写要带相同的 dedup key**：利用 `insert_deduplicate`（query setting，默认 1）+ `replicated_deduplication_window`（merge tree setting，默认 1000），同 block 哈希在 24h 内会自动去重
-- **保留切流前的对账窗口**：双写至少跑 7 天后再切流
+### 合并型引擎跨集群 INSERT SELECT 要加 FINAL
 
-#### 合并型引擎跨集群 INSERT SELECT 的 FINAL 陷阱
-
-如果源表是 `ReplacingMergeTree` / `CollapsingMergeTree` 等合并型引擎，**跨集群 INSERT SELECT 必须显式 FINAL**：
+源表要是 `ReplacingMergeTree`、`CollapsingMergeTree` 这类合并型引擎，跨集群 INSERT SELECT 得显式加 FINAL：
 
 ```sql
 -- ❌ 错误：拷过去的是未去重的多版本数据
@@ -119,11 +81,11 @@ INSERT INTO b.user_state_distributed
 SELECT * FROM remote('a-host', a.user_state_distributed, ...) FINAL;
 ```
 
-不加 FINAL 会拷贝所有历史版本。如果新旧集群 sharding key 完全一致，这倒不影响最终正确性（B 集群依然能 FINAL 出对的结果）；但如果 sharding key 有任何变化，多版本数据可能被打散到不同 shard，FINAL 再也无法复原——**这是一个静默错误**。（原理见第五节。）
+不加 FINAL，所有历史版本都会被拷过去。新旧集群的 sharding key 完全一样的话，这倒不影响最终结果，B 集群照样能 FINAL 出正确的数。可只要 sharding key 有一点变化，同一个 key 的多个版本就可能被打散到不同的 shard 上，FINAL 再也合不回来，而且不报任何错。为什么会这样，后面讲 sharding key 时细说。
 
-### 对账方法
+### 对账
 
-按 sharding key 的桶分别 count + hash：
+按 sharding key 分桶，每个桶分别算 count 和 hash：
 
 ```sql
 -- 在 A 集群跑
@@ -137,20 +99,18 @@ GROUP BY new_shard
 ORDER BY new_shard;
 ```
 
-`sipHash64` 是 ClickHouse 方言，PG/MySQL 没有。注意 `sum(hash)` 对**重复数据不敏感**（`A=B+B` 和 `A+B=B` 看不出来），如果是 ReplacingMergeTree 之类还得加 `count(distinct ...)`。
+`sipHash64` 是 ClickHouse 自己的函数，PG 和 MySQL 里没有。要注意 `sum(hash)` 对重复数据不敏感，`A=B+B` 和 `A+B=B` 它看不出区别，ReplacingMergeTree 这类表还得加上 `count(distinct ...)`。
 
----
+## 表要分类迁
 
-## 四、表的分类与迁移策略匹配
-
-千万不要用一套流程套所有表。**分区策略本身编码了数据量预期**，不同特征的表迁移姿势完全不同。
+千万别拿一套流程去套所有的表。表的分区方式，其实已经透露了设计者对数据量的预期，不同的表迁法完全不一样。
 
 <figure class="dfig">
-<img class="dfig-l" src="/diagrams/datacenter-migration-03.light.svg" alt="四、表的分类与迁移策略匹配">
-<img class="dfig-d" src="/diagrams/datacenter-migration-03.dark.svg" alt="四、表的分类与迁移策略匹配">
+<img class="dfig-l" src="/diagrams/datacenter-migration-03.light.svg" alt="表的分类与迁移策略匹配">
+<img class="dfig-d" src="/diagrams/datacenter-migration-03.dark.svg" alt="表的分类与迁移策略匹配">
 </figure>
 
-迁移启动前先扫一遍：
+动手之前先扫一遍：
 
 ```sql
 SELECT
@@ -164,53 +124,35 @@ GROUP BY database, table
 ORDER BY gb DESC;
 ```
 
-按结果分类：
+再按结果分类：
 
 | 分类 | 特征 | 迁移策略 |
 |---|---|---|
 | 大表 | 时间分区 + 数据量大（TB+） | 双写 + 增量回填，按分区切片 |
 | 中表 | 任意分区 + GB ~ 百 GB | 物理拷贝（FREEZE/clickhouse-backup）一把过 |
-| **小表** | **不分区 / 非时间分区，通常 < 100 GB** | **一次性 INSERT SELECT 全量灌过去，再开双写** |
+| 小表 | 不分区 / 非时间分区，通常 < 100 GB | 一次性 INSERT SELECT 全量灌过去，再开双写 |
 | 配置表 | 字典、维度表（MB 级） | 跟着代码走，不需要专门迁移 |
 
-### 小表「先迁后双写」的好处
-
 <figure class="dfig">
-<img class="dfig-l" src="/diagrams/datacenter-migration-04.light.svg" alt="小表「先迁后双写」的好处">
-<img class="dfig-d" src="/diagrams/datacenter-migration-04.dark.svg" alt="小表「先迁后双写」的好处">
+<img class="dfig-l" src="/diagrams/datacenter-migration-04.light.svg" alt="小表先迁后双写">
+<img class="dfig-d" src="/diagrams/datacenter-migration-04.dark.svg" alt="小表先迁后双写">
 </figure>
 
-- **没有「增量回填」环节**，全量在双写启动前就同步完了
-- **对账简单**，不需要担心快照与双写之间的时间窗口漂移
-- **失败可重试**：`TRUNCATE` 重来即可
+小表先迁后双写，省事在于没有增量回填这一步，全量在双写开始之前就同步完了；对账也简单，不用担心快照和双写之间那段时间窗口对不齐；失败了 `TRUNCATE` 重来就行。
 
-### 关于「无分区表」的迷思
+很多人担心无分区的表不好迁，其实大可不必。一张表设计的时候不按时间分区，说明设计者认定它不会无限膨胀。真涨到了 TB 级，那是设计出了错，不该让迁移来买这个单。无分区表一般就 GB 到几十 GB，一次 INSERT SELECT 几分钟到几小时就完了。少数用 hash 分区的大表算例外，后面单独讲。
 
-很多人担心无分区表难迁。其实不必：
+## sharding key 不只是性能优化
 
-> **一旦设计这张表不按时间分区，说明设计者认定它不会无限膨胀。** 如果它真涨到了 TB 级，那是设计错误，不是迁移难题——迁移阶段不应该为修复设计错误买单。
+讲 reshard 之前，得先把 sharding key 的作用说清楚。很多团队只把它当成性能优化，到了迁移的时候才发现，它其实是数据正确性的硬约束。
 
-无分区表通常 GB 到几十 GB，一次性 INSERT SELECT 几分钟到几小时搞定。真正的例外场景（少数用 hash 分区的大表）在第九节单独讲。
+它有三重作用。最基础的是写入分布，让数据均匀落到各个 shard，别出热点，这个大家都懂，不多说。
 
----
-
-## 五、Sharding Key：不只是优化，更是约束
-
-在讨论 reshard 之前，必须先把 sharding key 的三重作用讲清楚。**很多团队只把它当性能优化考虑，结果在迁移时才发现它其实是数据正确性的硬约束**。
-
-### 作用一：写入分布（最基础）
-
-让数据均匀落到各个 shard，避免单点热点。这是教科书级的认知，不展开。
-
-### 作用二：合并型引擎的去重正确性（最容易翻车）
-
-对于**合并型引擎**（`ReplacingMergeTree`、`CollapsingMergeTree`、`VersionedCollapsingMergeTree`、`SummingMergeTree`、`AggregatingMergeTree`），sharding key **必须**是 `ORDER BY` 字段的函数。
-
-原因：FINAL 和后台 merge 都是 **per-shard** 的，只能去重/合并同一个 shard 内的数据。如果同一个 dedup key 的多个版本被分散到不同 shard，FINAL 永远查不出去重后的正确结果。
+第二重最容易翻车：合并型引擎的去重正确性。对 `ReplacingMergeTree`、`CollapsingMergeTree`、`VersionedCollapsingMergeTree`、`SummingMergeTree`、`AggregatingMergeTree` 这些引擎，sharding key 必须是 `ORDER BY` 字段的函数。原因是 FINAL 和后台 merge 都是在单个 shard 内做的，只能合并同一个 shard 里的数据。同一个去重 key 的多个版本要是散到了不同的 shard，FINAL 永远查不出正确的去重结果。
 
 <figure class="dfig">
-<img class="dfig-l" src="/diagrams/datacenter-migration-05.light.svg" alt="作用二：合并型引擎的去重正确性（最容易翻车）">
-<img class="dfig-d" src="/diagrams/datacenter-migration-05.dark.svg" alt="作用二：合并型引擎的去重正确性（最容易翻车）">
+<img class="dfig-l" src="/diagrams/datacenter-migration-05.light.svg" alt="合并型引擎的去重正确性">
+<img class="dfig-d" src="/diagrams/datacenter-migration-05.dark.svg" alt="合并型引擎的去重正确性">
 </figure>
 
 ```sql
@@ -239,18 +181,16 @@ ENGINE = Distributed(cluster, db, user_state_local, rand());
 | `AggregatingMergeTree` | `ORDER BY` 字段 | 是 ORDER BY 字段的函数 |
 | `MergeTree` / `ReplicatedMergeTree` | 不去重 | 任意 |
 
-补充一个相关坑：`OPTIMIZE TABLE ... FINAL` 也是 per-shard 的，**不会跨 shard 去重**。即使 OPTIMIZE 了源表，sharding key 错了一样救不回来。
+顺带一个坑：`OPTIMIZE TABLE ... FINAL` 也是在单个 shard 里做的，不会跨 shard 去重。sharding key 错了，源表 OPTIMIZE 多少遍也救不回来。
 
-### 作用三：Colocate Join（性能优化的关键）
-
-两张表如果用**相同的 sharding key**，则相同 join key 的数据会落在同一个 shard，分布式 join 可以优化为 **per-shard 本地 join**，性能差距可以是数量级的。
+第三重是 colocate join。两张表用同一个 sharding key，相同 join key 的数据就落在同一个 shard 上，分布式 join 可以变成每个 shard 上的本地 join，性能能差出数量级。
 
 <figure class="dfig">
-<img class="dfig-l" src="/diagrams/datacenter-migration-06.light.svg" alt="作用三：Colocate Join（性能优化的关键）">
-<img class="dfig-d" src="/diagrams/datacenter-migration-06.dark.svg" alt="作用三：Colocate Join（性能优化的关键）">
+<img class="dfig-l" src="/diagrams/datacenter-migration-06.light.svg" alt="Colocate Join">
+<img class="dfig-d" src="/diagrams/datacenter-migration-06.dark.svg" alt="Colocate Join">
 </figure>
 
-启用本地 join 需要在查询时显式声明（query setting）：
+要用本地 join，查询时得显式声明：
 
 ```sql
 SELECT o.*, i.qty
@@ -259,58 +199,38 @@ JOIN order_items_distributed AS i USING (order_id)
 SETTINGS distributed_product_mode = 'local';
 ```
 
-`distributed_product_mode` 默认值随版本演化：21.x 及以前是 `allow`（自动广播右表，悄悄退化为分布式 JOIN），22.x+ 改成 `deny`（多表都是 distributed 时直接报错）。很多团队从老版本升级上来、sharding key 设计本来是错的（依赖广播跑通），升级后查询全报错。**生产环境一定要在表设计阶段就规划好 colocate，不要依赖 `allow` 模式偷懒。**
+`distributed_product_mode` 默认是 `deny`，两张分布式表直接 JOIN 会报错。有人图省事改成 `allow`，那每个分片都会再去跑一遍右表的分布式查询，N 个节点就是 N×N 次，读放大得厉害。所以 colocate 要在表设计阶段就规划好。亿级表 JOIN 亿级表，colocate 比广播快 10 到 30 倍，很多人吐槽 ClickHouse JOIN 不行，根子就在没用上 colocate。
 
-实测亿级表 JOIN 亿级表，colocate 比广播快 **10~30 倍**——这也是 ClickHouse JOIN 性能口碑的真正成因。很多「ClickHouse JOIN 性能不行」的吐槽，根因都是没用 colocate。
+colocate 还让 sharding key 被锁得更死。不光每张表自己的 sharding key 不能随便改，一组互相 join 的表还得一起改，改一张就得改所有相关的表；跨集群迁移要 reshard，也得一组表一起 reshard，而且新旧的 sharding key 表达式行为要一致。实际业务里，一个领域常常有 5 到 10 张表共用同一个 sharding key（比如 `cityHash64(user_id)`），reshard 的时候它们是拆不开的一个整体。
 
-#### Colocate Join 对迁移的影响
+好在只要守住两张表用同一个 sharding key 表达式这一条，shard 数从 3 变成 5 并不会破坏 colocate。同一个 user_id 在 B 集群上照样落在同一个 shard，只是 shard 编号变了。要求的是表达式相同，不是编号相同。
 
-这个作用让 sharding key 的「锁定」约束**进一步加强**：
+麻烦的是 colocate 失效了是没声音的。查询从 2 秒退化到 60 秒，不报错，业务方往往切流几天后才来反馈，到那时已经很难回滚了。所以切流之前，要专门做一轮性能回归，把业务里所有带 JOIN 的查询挑出来，在 A、B 两个集群上各跑一遍比耗时。
 
-- 不仅每张表自己的 sharding key 不能随便改
-- **一组互相 join 的表必须保持同步变更** —— 改一张就要改所有相关表
-- 跨集群迁移 reshard 时，必须**一组表一起 reshard**，且新旧 sharding key 表达式行为一致
-
-实际场景里，一个业务领域通常有 5~10 张表共享同一个 sharding key（如 `cityHash64(user_id)`）。reshard 时这些表是一个不可分割的工作单元。
-
-好消息是：**只要保持「两张表用同一个 sharding key 表达式」这个原则，shard 数从 3 变 5 不破坏 colocate**——同一个 user_id 在 B 集群仍然落在同一个 shard，只是 shard 编号变了。这个约束是「表达式相同」，不是「shard 编号相同」。
-
-坏消息是：**colocate 退化是无声的**。失效后查询从 2 秒退化到 60 秒，业务方往往切流后几天才反馈，那时已经很难回滚。**切流前必须有针对性的性能回归测试**——挑出业务里所有的 JOIN 查询，跑一遍对比 A、B 集群的耗时。
-
-### 三重作用对迁移决策的连锁影响
-
-把这三个作用合起来看，sharding key 在迁移决策中的地位远比「性能优化」严肃：
+三重作用放在一起看：
 
 | 作用 | 影响 | 改错的后果 |
 |---|---|---|
 | 写入分布 | 数据均匀性 | 性能问题，可观察、可调整 |
-| Colocate JOIN | 查询性能 | **静默退化**：查询变慢但不报错，需协同变更多张表 |
-| 合并型引擎去重 | 数据正确性 | **静默错误**：FINAL 返回错误结果 |
+| Colocate JOIN | 查询性能 | 静默退化：查询变慢但不报错，需协同变更多张表 |
+| 合并型引擎去重 | 数据正确性 | 静默错误：FINAL 返回错误结果 |
 
-重要性从上到下递增，修正难度也递增——前两个有性能信号能发现，第三个完全静默，可能在迁移后几个月才被业务方发现「统计数据怎么对不上」。
+从上往下，越来越要紧，也越来越难改。前两个好歹有性能信号能发现，第三个完全没声音，可能迁完几个月，业务方才发现统计数据怎么对不上。
 
-这意味着：
+所以表设计的时候一旦选了 `ReplacingMergeTree` 加某个 ORDER BY，sharding key 实际上就被锁死成了 ORDER BY 字段的函数，以后迁移想换 sharding key，只能连去重 key 一起改，那是表语义的变更，不是单纯换个物理分布。反过来，物理拷贝天然保持 shard 数和 sharding key 不变，对合并型引擎来说反倒是最安全的，这一点常被忽略。reshard 也不是一张表的事，是一组表的事，一组 colocate join 的表，要么一起 reshard，要么都别动。
 
-1. **表设计阶段一旦选定 `ReplacingMergeTree` + 某个 ORDER BY，sharding key 实际上已经被锁死**为 ORDER BY 字段的函数。后续迁移想换 sharding key？只有同时改 dedup key 才行——这是表语义层面的变更，不是单纯的物理重分布
-2. **物理拷贝路线天然保持 shard 数和 sharding key 不变，对合并型引擎反而是最安全的**——这是物理拷贝路线的一个被忽视的优势
-3. **reshard 不是单表决策，是表组决策**——一组 colocate join 的表要么一起 reshard，要么都不动
+## Reshard 是硬骨头
 
----
-
-## 六、Resharding：跨云迁移的硬骨头
-
-如果新旧集群 shard 数不一样，**物理拷贝路线全部失效**。原因：
+新旧集群 shard 数不一样，物理拷贝这条路就全废了。
 
 <figure class="dfig">
-<img class="dfig-l" src="/diagrams/datacenter-migration-07.light.svg" alt="六、Resharding：跨云迁移的硬骨头">
-<img class="dfig-d" src="/diagrams/datacenter-migration-07.dark.svg" alt="六、Resharding：跨云迁移的硬骨头">
+<img class="dfig-l" src="/diagrams/datacenter-migration-07.light.svg" alt="Resharding">
+<img class="dfig-d" src="/diagrams/datacenter-migration-07.dark.svg" alt="Resharding">
 </figure>
 
-shard 2 的 part 文件里只有 `% 3 == 1` 的数据。如果新集群是 5 shard，正确归属应该是 `% 5`，**part 必须重新读出来重新路由**，没有捷径。
+shard 2 的 part 文件里只有 `% 3 == 1` 的数据。新集群要是 5 个 shard，正确的归属应该按 `% 5` 算，part 只能重新读出来、重新路由，没有捷径。
 
-### 双写自然完成 reshard
-
-如果走双写路线，**reshard 是免费送的**：
+走双写的话，reshard 是白送的：
 
 ```sql
 -- 在 B 集群执行（B 是 5 shard，A 是 3 shard）
@@ -324,41 +244,29 @@ WHERE user_id BETWEEN 0 AND 1000000
 SETTINGS
     max_execution_time = 0,
     max_insert_threads = 8,
-    parallel_distributed_insert_select = 2;  -- query setting，22.8+
+    parallel_distributed_insert_select = 2;  -- query setting，25.7 起默认就是 2
 ```
 
-**重点**：写 Distributed 表会按新 sharding 规则分发，这一来一回就完成了 reshard。
+写 Distributed 表本来就会按新的 sharding 规则分发，一读一写，reshard 就做完了。
 
-### PB 级 reshard 的工程现实
+可到了 PB 级就是另一回事了。1 PB 走跨云 10 Gbps 专线，实际传输 15 天起步，再加上 egress 费用、CPU、内存、merge 的压力，这是按季度算的工程。
 
-1 PB 跨云专线 10 Gbps 实际传 15 天起步，加上 egress 费用、CPU、内存、merge 压力——**这是季度级工程**。
-
-建议团队定一条工程纪律：
-
-> **超过 1 PB 的表，新旧集群必须保持 shard 数一致。** 扩容只能通过加副本或升级机器规格。表设计阶段做 5 年容量规划，确保 shard 数够用。如必须 reshard，按独立项目立项。
-
-更精细的分级：
+我建议团队定一条规矩：超过 1 PB 的表，新旧集群的 shard 数必须一致，扩容只能靠加副本或者升级机器规格；表设计的时候就做 5 年的容量规划，保证 shard 数够用；实在要 reshard，单独立项。再细一点可以这么分：
 
 | 表规模 | sharding 变更政策 |
 |---|---|
 | < 10 TB | 自由 reshard，迁移走 INSERT SELECT 即可 |
 | 10 TB ~ 100 TB | reshard 需要架构评审，预留 1~2 周迁移窗口 |
 | 100 TB ~ 1 PB | reshard 需要立项，给出 3 年规划 |
-| **> 1 PB** | **默认禁止 reshard**，节点数必须一致 |
+| > 1 PB | 默认禁止 reshard，节点数必须一致 |
 
-这样的好处是把 reshard 的代价显式化、决策可控，而不是迁移时才发现要还的债。结合第五节讲的 sharding key 三重约束，这条纪律的根本依据不只是工程量，更是「sharding key 一旦确定就承载了多张表的数据正确性 + JOIN 拓扑两个契约」。
+这样 reshard 的代价是摆在明面上的，什么时候做、做不做都能提前决定，不至于迁移时才发现有笔债要还。再加上前面说的，sharding key 一旦定下，就同时背着几张表的数据正确性和 JOIN 拓扑，这条规矩的理由不只是工程量大。
 
----
+## 中小客户的 PB 级，其实是 100 TB 级
 
-## 七、为什么中小客户的 PB 级迁移其实是 100 TB 级工程
+这个说法得把三件事串起来讲：数据量怎么分布，查询怎么访问，sharding key 管的是什么。
 
-这个推论需要把三件事的因果讲清楚：**数据量分布、查询访问模式、sharding key 的作用**。
-
-### 第一步：中小客户的真实数据画像
-
-头部互联网（字节、阿里）的 ClickHouse 集群是**日增 PB 级**——总量是流量驱动，每天写入量本身就大。这种规模下，热数据就是 PB 级，没有「压缩问题规模」的余地。
-
-中小客户完全不同：
+先看数据。头部互联网公司，比如字节、阿里，ClickHouse 集群是日增 PB 级，总量是流量堆出来的，每天写进来的就很多，热数据本身就是 PB 级，没有缩小问题规模的余地。中小客户完全不一样：
 
 | 业务类型 | 日增量 | 5 年累积 | 典型集群规模 |
 |---|---|---|---|
@@ -366,30 +274,11 @@ SETTINGS
 | 中型 ToC | 100 GB~1 TB/天 | 几百 TB | 6~12 节点 |
 | 大型 ToC | 1~10 TB/天 | PB 级 | 20~50 节点 |
 
-**关键观察**：中小客户出现 PB 级表时，几乎都是 **2~3 年累积**的结果——日增 GB 到 TB 级，乘以时间维度堆上来的。**总量大不等于活跃**。
+中小客户出现 PB 级的表，几乎都是两三年累积起来的，每天 GB 到 TB 的增量乘上时间堆上去的。总量大，不代表都是活跃数据。
 
-### 第二步：实际查询的访问模式
+再看查询。OLAP 场景里，业务监控、运营大盘查的是最近 24 小时、7 天、30 天；用户行为分析查最近 30 到 90 天；季度同比、年报查最近一年；历史回溯、合规审计才会查一到三年前的数据，频次很低，一个月几次。中小客户的实际系统里，九成以上的查询落在最近 6 到 12 个月的数据上，这部分才是热数据。
 
-ClickHouse 在 OLAP 场景的典型查询模式：
-
-- **业务监控、运营大盘**：查最近 24 小时 / 7 天 / 30 天
-- **用户行为分析**：查最近 30~90 天
-- **季度同比、年度报表**：查最近 1 年
-- **历史回溯、合规审计**：查 1~3 年前的数据，**频次极低**（每月几次）
-
-中小客户的实际系统里，**90%+ 的查询命中最近 6~12 个月的数据**——这部分是「热数据」。
-
-### 第三步：sharding key 的实际作用
-
-回到第五节讲的三重作用：写入分布、合并型引擎去重、colocate join。这三个作用**全部针对「被频繁访问的数据」**。
-
-- 写入分布：冷数据已经停写，分布是否均匀已无意义
-- 合并型引擎去重：冷数据状态已稳定，不再有新版本
-- Colocate join：冷数据极少参与查询，join 性能不再敏感
-
-如果一类查询执行频次极低（比如 2 年前的历史回溯），那这部分数据用什么 sharding 都无所谓——全表扇出查一次的代价业务能接受。
-
-### 因果链闭合
+最后看 sharding key。写入分布、合并型引擎去重、colocate join，这三重作用针对的全是被频繁访问的数据。冷数据已经不写了，分布匀不匀没意义；冷数据状态已经稳定，不会再来新版本；冷数据很少参与查询，join 快慢也不敏感。一类查询要是频次极低，比如两年前的历史回溯，那这部分数据用什么 sharding 都无所谓，全表扇出查一次，业务是能接受的。
 
 <div class="sk sk-steps">
 <div class="sk-box"><span class="sk-t">中小客户 PB 级表</span><span class="sk-d">数年累积</span></div>
@@ -401,10 +290,9 @@ ClickHouse 在 OLAP 场景的典型查询模式：
 <div class="sk-box"><span class="sk-t">冷数据可以保持旧 sharding，或归档到对象存储</span></div>
 <div class="sk-arw"><svg class="sk-ar" width="22" height="24" viewBox="0 0 22 24" aria-hidden="true"><path d="M11 1 C 10.3 6, 11.7 12, 11 18"/><path d="M6.5 13.5 C 8 17, 10 20.5, 11 22.5"/><path d="M15.5 13.5 C 14 17, 12 20.5, 11 22.5"/></svg><span class="sk-arl">问题规模缩小一个数量级</span></div>
 <div class="sk-box is-accent"><span class="sk-t">真正参与 reshard 的只有 100 TB 级热数据</span></div>
-<p class="sk-cap">结论不是「PB 级不用 reshard」，是「需要 reshard 的从来不是那个 PB」</p>
 </div>
 
-### 落地策略：分层迁移
+所以中小客户的 PB 级迁移，可以分层做：
 
 | 数据分层 | 占比 | 迁移方式 |
 |---|---|---|
@@ -412,11 +300,9 @@ ClickHouse 在 OLAP 场景的典型查询模式：
 | 温数据（6~24 月） | 20~30% (~300 TB) | 物理拷贝（保持旧 sharding）或归档 |
 | 冷数据（2 年+） | 50~70% (~600 TB) | 归档到对象存储（Parquet/Iceberg），通过 `s3()` 表函数按需查询 |
 
-**前提**：业务方接受冷数据查询走慢路径（秒级 → 十几秒级）。这是个**产品决策**，不是技术问题。如果业务承诺「所有历史数据秒级响应」，这个策略就破产，回到老路。
+前提是业务方能接受冷数据查询走慢路径，从秒级变成十几秒。这是产品上的决定，不是技术能替他做的。业务要是承诺了所有历史数据都秒级响应，这个办法就不成立，只能回到老路上去。
 
-### 配套技术能力
-
-ClickHouse 原生支持 TTL 跨盘（22.8+ 稳定）：
+技术上的配套 ClickHouse 都有。TTL 跨盘 22.8 以后就很稳了：
 
 ```sql
 CREATE TABLE db.events_local (...)
@@ -426,7 +312,7 @@ TTL event_date + INTERVAL 6 MONTH TO DISK 'cold_s3',
     event_date + INTERVAL 2 YEAR DELETE;
 ```
 
-归档查询直接从对象存储读：
+归档以后直接从对象存储查：
 
 ```sql
 SELECT count() FROM s3(
@@ -434,13 +320,11 @@ SELECT count() FROM s3(
 ) WHERE user_id = 12345;
 ```
 
----
+## 不同规模怎么选
 
-## 八、不同规模的方案选型
+### 10 TB 以下：INSERT SELECT 直接推
 
-### 10 TB 以下：INSERT SELECT 直推
-
-10 TB 以下别想多了，最优解是直接 INSERT SELECT。**`clickhouse-backup` 是杀鸡用牛刀**——工具部署、S3 配置、权限调试、版本兼容排查的复杂度溢价不划算。
+10 TB 以下别想太多，直接 INSERT SELECT。`clickhouse-backup` 在这儿就是杀鸡用牛刀，部署工具、配 S3、调权限、排查版本兼容，折腾下来不划算。
 
 ```sql
 INSERT INTO db.events_local
@@ -448,7 +332,7 @@ SELECT * FROM remoteSecure('a-host:9440', 'db.events_local', 'user', 'pwd')
 SETTINGS max_execution_time=0, max_insert_threads=8;
 ```
 
-时间预估（10 TB）：
+10 TB 大概要多久：
 
 | 网络 | 实际时间 |
 |---|---|
@@ -456,13 +340,13 @@ SETTINGS max_execution_time=0, max_insert_threads=8;
 | 跨云千兆专线 | 36~40 小时 |
 | 跨云万兆专线 | 3.5~4 小时 |
 
-判据是「**能否在窗口期内一次性灌完**」，不是数据量本身。同机房万兆 30 TB 都能从容跑完。
+看的不是数据量本身，是能不能在窗口期内一次灌完。同机房万兆，30 TB 也能从容跑完。
 
-INSERT SELECT 的另外几个隐性优势：走 SQL 协议，**跨大版本兼容范围极宽**（19.x → 24.x 平推都见过），物理拷贝的 part 格式版本差异问题它没有；失败重试简单，`TRUNCATE` 重来即可；写 distributed 表还能顺手完成 reshard。
+INSERT SELECT 还有几个不太显眼的好处。它走的是 SQL 协议，跨大版本兼容的范围特别宽，19.x 直接推到 24.x 的都见过，物理拷贝那种 part 格式版本不兼容的问题它没有。失败了重试也简单，`TRUNCATE` 重来。写分布式表还能顺手把 reshard 做了。
 
-### 千表场景：BACKUP DATABASE 才是首选
+### 上千张表：BACKUP DATABASE
 
-1000+ 张表通常分布在 5~10 个 DB 里。整个 DB 一把过：
+1000 多张表一般分在 5 到 10 个库里，整个库一把过：
 
 ```sql
 -- 22.8+ 原生 BACKUP
@@ -475,7 +359,7 @@ RESTORE DATABASE app, analytics, ods
 FROM S3('https://bucket/migrate/full', 'ak', 'sk');
 ```
 
-或 `clickhouse-backup`：
+或者用 `clickhouse-backup`：
 
 ```bash
 clickhouse-backup create_remote full_$(date +%Y%m%d) \
@@ -483,27 +367,15 @@ clickhouse-backup create_remote full_$(date +%Y%m%d) \
 clickhouse-backup restore_remote full_20260429
 ```
 
-**DATABASE 级备份的优势**（相比逐表 INSERT SELECT）：
+比起一张张表 INSERT SELECT，按库备份一条命令就完了，不用自己写编排；依赖顺序它自己处理，先普通表，再 MV，再视图；元数据也全，UDF（24.x+）、字典定义都在里面；失败了还能靠增量备份接着传没传完的部分。
 
-- 一条命令，无需自己写编排
-- 依赖顺序自动处理（普通表 → MV → 视图）
-- 元数据完整：UDF（24.x+）、字典定义都包含在内
-- 失败可恢复：增量备份能续上未传完的部分
+它不管的几样得手工弄：ZK 路径要重写；分布式表里的 cluster 名是 server config，不在备份里；users 和 roles，22.8 的原生 BACKUP 不包含，24.x 起 `BACKUP ALL` 才带上；放在 `/etc/` 下的字典 XML 也不在备份里。业务库和测试库混在一个库里的（用 `--tables` 过滤）、跨大版本比如 21.x 到 24.x 的（part 格式不兼容，退回 INSERT SELECT）、需要 reshard 的（走双写），都不适合用它。
 
-**仍需手工处理的部分**（BACKUP 不管）：
+千表场景真正头疼的，其实不是数据迁得慢，是编排和验证。串行跑太慢，并发跑容易把连接打爆，单张表失败了不好定位。最要命的是 schema 漂移，说是「我们就 800 张表」，一扫发现 1247 张，里面一堆死表，还有重启就没的临时表（`Memory`、`Log` 引擎）。所以千表迁移的第一步永远是先扫出表清单，跟业务确认哪些是死表，把 1000 拆小了，再决定是 BACKUP DATABASE 还是逐表调度。
 
-- ZK path 重写
-- 分布式表里的 cluster 名（是 server config，不在 backup 里）
-- users / roles：22.8 原生 BACKUP 不含，24.x 起 `BACKUP ALL` 才包含
-- 字典 XML 文件：放 `/etc/` 下的 XML 配置不在 BACKUP 里
+### PB 级还要 reshard：S3 中转 + s3Cluster
 
-**不适合的场景**：业务库 + 测试库混在一个 DB（用 `--tables` 过滤）、跨大版本 21.x → 24.x（part 格式不兼容，回退到 INSERT SELECT）、需要 reshard（用双写）。
-
-> 千表场景的真痛点其实不是迁数据慢，而是**编排和验证**的复杂度：串行跑太慢、并发跑容易打爆连接、单表失败定位难，尤其是 **schema 漂移**——生产环境里「我们就 800 张表」扫一遍发现 1247 张，里面一堆死表、临时表（`Memory`/`Log` 引擎重启就没）。所以千表迁移的第一步永远是**扫表清单 + 业务确认死表**，把 1000 拆小，再决定用 BACKUP DATABASE 还是逐表调度。
-
-### PB 级 + reshard：S3 中转 + s3Cluster
-
-PB 级跨云直连 reshard 不现实（专线打满半个月、egress 费用百万），用对象存储中转：
+PB 级跨云直连做 reshard 不现实，专线打满半个月，egress 费用上百万。用对象存储中转：
 
 <div class="sk sk-steps">
 <div class="sk-box"><span class="sk-t">A 集群</span><span class="sk-d">老 sharding</span></div>
@@ -512,7 +384,7 @@ PB 级跨云直连 reshard 不现实（专线打满半个月、egress 费用百�
 <div class="sk-arw"><svg class="sk-ar" width="22" height="24" viewBox="0 0 22 24" aria-hidden="true"><path d="M11 1 C 11.6 6, 10.4 12, 11 18"/><path d="M6.5 13.5 C 8 17, 10 20.5, 11 22.5"/><path d="M15.5 13.5 C 14 17, 12 20.5, 11 22.5"/></svg><span class="sk-arl">② 跨云 CRC（对象存储自带）</span></div>
 <div class="sk-box"><span class="sk-t">B 云对象存储</span></div>
 <div class="sk-arw"><svg class="sk-ar" width="22" height="24" viewBox="0 0 22 24" aria-hidden="true"><path d="M11 1 C 10.5 6, 11.5 12, 11 18"/><path d="M6.5 13.5 C 8 17, 10 20.5, 11 22.5"/><path d="M15.5 13.5 C 14 17, 12 20.5, 11 22.5"/></svg><span class="sk-arl">③ INSERT INTO b.distributed SELECT FROM s3()</span></div>
-<div class="sk-box is-accent"><span class="sk-t">B 集群</span><span class="sk-d">新 sharding —— reshard 在这一步自动完成</span></div>
+<div class="sk-box is-accent"><span class="sk-t">B 集群</span><span class="sk-d">新 sharding，reshard 在这一步自动完成</span></div>
 <p class="sk-cap">数据不经过任何中转机器，跨云复制由对象存储自己做</p>
 </div>
 
@@ -537,19 +409,15 @@ SETTINGS
     parallel_distributed_insert_select = 2;
 ```
 
-`s3Cluster` 函数 22.3+ 支持。`parallel_distributed_insert_select` 22.8+ 才稳定。
+`s3Cluster` 22.3 以后都能用；`parallel_distributed_insert_select` 老版本要手动设，25.7 起默认就是 2。
 
-为什么这样更好：跨云流量走对象存储跨区复制（同账户跨 region 通常比 egress 便宜得多）；A 端只读一次、B 端只写一次，CPU 减半；每个 S3 对象独立，天然断点续传。
+这样做好在三点：跨云流量走对象存储的跨区复制，同账号跨 region 一般比 egress 便宜得多；A 端只读一次，B 端只写一次，CPU 省一半；每个 S3 对象都是独立的，天然就能断点续传。
 
----
+## 无分区、非时间分区的表
 
-## 九、表无分区 / 非时间分区怎么办
+这是搬迁时被问得最多的问题。前面说过，这种表通常本来就不大，GB 到几十 GB，一次全量灌完就行，用不着增量。
 
-这是搬迁里最常被问的一个问题。按第四节的逻辑，**这种表通常本来就不大**（GB 到几十 GB），全量一次性灌完就好，不需要增量。
-
-如果确实是个例外（少数大表用 hash 分区，比如多租户场景），技术手段：
-
-### 全量阶段：按 partition_id 平行
+真碰上例外，比如多租户场景里用 hash 分区的大表，全量阶段可以按 partition_id 并行：
 
 ```bash
 for pid in $(clickhouse-client -q "SELECT DISTINCT partition_id FROM system.parts WHERE table='events' AND active FORMAT TSV"); do
@@ -557,17 +425,13 @@ for pid in $(clickhouse-client -q "SELECT DISTINCT partition_id FROM system.part
 done
 ```
 
-`ATTACH PARTITION ID '<id>'` 用 partition_id（而非分区表达式值），对 hash 分区特别方便。
+`ATTACH PARTITION ID '<id>'` 用的是 partition_id，不是分区表达式的值，对 hash 分区特别方便。
 
-物理拷贝（FREEZE → rsync → ATTACH）的几个必踩坑：rsync 过去后必须 `chown -R clickhouse:clickhouse`，否则 ATTACH 失败；detached 目录下若有同名残留 part，ATTACH 会跳过；Replicated 表用 `ATTACH PARTITION ON CLUSTER` 或只在一个副本 ATTACH 让其余副本走 ZK 自动 fetch；跨 major 版本（21 → 24）part 格式差异大，别用物理拷贝。
+物理拷贝（FREEZE、rsync、ATTACH）有几个坑一定会踩：rsync 过去以后必须 `chown -R clickhouse:clickhouse`，不然 ATTACH 失败；detached 目录下要是有同名的残留 part，ATTACH 会跳过它；Replicated 表要么用 `ATTACH PARTITION ON CLUSTER`，要么只在一个副本上 ATTACH，让别的副本通过 ZK 自己去 fetch；跨大版本（21 到 24）part 格式差别很大，别用物理拷贝。
 
-### 增量阶段：part diff
+增量阶段，`clickhouse-backup create --diff-from-remote=xxx` 比对的是 part 文件级别的差异，跟分区维度没关系。分区哪怕不按时间，它也能做出只包含新 part 的增量备份。这也是为什么表多、数据量中等的场景我推荐 `clickhouse-backup`，它把按分区、按时间增量，变成了按 part 增量。
 
-`clickhouse-backup create --diff-from-remote=xxx` 比对的是 **part 文件级别的 diff**，不依赖分区维度。哪怕分区不按时间，它也能正确做出「只包含新 part」的增量备份。
-
-这是为什么千表 + 中等数据量场景推荐 `clickhouse-backup`——它把「按分区/按时间增量」抽象成了「按 part 增量」。
-
-### 对账：按主键范围分桶
+对账按主键范围分桶：
 
 ```sql
 SELECT
@@ -579,30 +443,20 @@ GROUP BY bucket
 ORDER BY bucket;
 ```
 
----
+## 元数据对象
 
-## 十、元数据对象的迁移
-
-数据迁移之外，还有一堆「非表对象」要处理。
+数据之外，还有一堆不是表的对象要处理。
 
 <figure class="dfig">
-<img class="dfig-l" src="/diagrams/datacenter-migration-10.light.svg" alt="十、元数据对象的迁移">
-<img class="dfig-d" src="/diagrams/datacenter-migration-10.dark.svg" alt="十、元数据对象的迁移">
+<img class="dfig-l" src="/diagrams/datacenter-migration-10.light.svg" alt="元数据对象的迁移">
+<img class="dfig-d" src="/diagrams/datacenter-migration-10.dark.svg" alt="元数据对象的迁移">
 </figure>
 
-### 物化视图：双写期最大的坑
+### 物化视图
 
-物化视图是**两个对象**：MV 定义（INSERT 触发器）+ 底层存储表。
+物化视图其实是两个对象，一个是 MV 定义，相当于 INSERT 触发器，一个是底下存数据的表。带 `TO` 子句的 MV（推荐的写法），底下是个普通的命名表，按普通表迁就行。不带 `TO` 的老写法，底层表是自动生成的 `.inner_id.xxxx`，没法直接 attach 过去，只能先建好 MV 再重新灌数据。
 
-**带 `TO` 子句的 MV**（推荐写法）：底层是个普通命名表，按普通表迁即可。
-
-**不带 `TO` 的 MV**（老写法）：底层表是自动生成的 `.inner_id.xxxx`，没法直接 attach 过去，只能「建好 MV → 重新 populate」。
-
-#### 关键陷阱：双写期 MV 状态会两边各算一份
-
-如果 MV 是聚合（`SummingMergeTree` / `AggregatingMergeTree`），双写期 A 和 B 会**独立累加**——切流时新集群的 MV 数据可能和源表对不上。
-
-**最稳的做法**：切流前 B 集群把 MV 底层表清空，从源表重新算一次：
+双写期间物化视图有个大坑。如果 MV 做的是聚合（`SummingMergeTree`、`AggregatingMergeTree`），双写期间 A 和 B 会各自独立累加，切流时新集群 MV 里的数可能跟源表对不上。最稳的办法是切流前把 B 集群 MV 的底层表清空，从源表重新算一遍：
 
 ```sql
 TRUNCATE TABLE db.events_daily_local;
@@ -610,41 +464,37 @@ INSERT INTO db.events_daily_local
 SELECT toDate(event_time) AS day, count() FROM db.events GROUP BY day;
 ```
 
-不能依赖双写期间的累积结果。
+双写期间累出来的结果靠不住。
 
-#### 不要用 POPULATE
+还有，别用 POPULATE。`CREATE MATERIALIZED VIEW ... POPULATE` 会在创建时把源表全量跑一遍，可 POPULATE 期间源表新写进来的数据会丢，这是官方文档明确警告过的。正确的做法是先把底层 TO 表的数据迁过去，再创建不带 POPULATE 的 MV，让它只管以后的增量。
 
-`CREATE MATERIALIZED VIEW ... POPULATE` 在创建时把源表全量数据跑一遍。但 **POPULATE 期间源表新写入的数据会丢失**——这是官方明确警告的。
+### 字典
 
-正确姿势：先迁底层 TO 表的数据，再创建 MV 定义（不带 POPULATE），让 MV 只负责未来增量。
-
-### 字典：源在哪决定迁移方式
-
-字典的「数据」在外部源里，迁移策略**完全取决于源在哪**。
+字典的数据在外部源里，怎么迁全看源在哪。
 
 <figure class="dfig">
 <img class="dfig-l" src="/diagrams/datacenter-migration-11.light.svg" alt="字典：源在哪决定迁移方式">
 <img class="dfig-d" src="/diagrams/datacenter-migration-11.dark.svg" alt="字典：源在哪决定迁移方式">
 </figure>
 
-跨云迁移时最常见的疏漏是：字典源在 A 云内网，B 云连不到（如 MySQL/PG 源）。迁移前务必在 B 集群机器上验证网络可达（`nc -zv mysql.internal 3306`）。
+跨云迁移最常漏的，是字典源在 A 云的内网，B 云连不上，MySQL、PG 源最常见。迁之前一定要在 B 集群的机器上确认网络通（`nc -zv mysql.internal 3306`）。
 
-#### 推荐用 named_collections（22.12+）
+我推荐用 named_collections（22.12+）：
 
 ```sql
 SOURCE(MYSQL(NAME 'mysql_app_config'))
 ```
 
-`mysql_app_config` 在 server config 里定义。迁移时 DDL 不用改、B 集群定义同名 named_collection 即可——**最干净的迁移姿势**，把环境差异隔离在配置里。
+`mysql_app_config` 定义在 server config 里。迁移时 DDL 不用改，B 集群定义一个同名的 named_collection 就行，环境差异都关在配置里，这是最干净的迁法。
 
-#### 字典定义存放在哪
+字典定义放在哪，迁法也不一样：
 
 | 方式 | 存放位置 | 迁移 |
 |---|---|---|
 | `CREATE DICTIONARY` SQL | 系统数据库 | 跟着 schema 走 |
-| `*.xml` 配置文件 | `/etc/clickhouse-server/dictionaries.d/` | **必须**手动拷贝到 B 集群所有节点 |
+| `*.xml` 配置文件 | `/etc/clickhouse-server/dictionaries.d/` | 必须手动拷贝到 B 集群所有节点 |
 
-XML 方式容易在迁移时被遗漏，专门检查：
+XML 方式迁移时容易漏，专门查一下：
 
 ```sql
 SYSTEM RELOAD DICTIONARIES;
@@ -652,7 +502,9 @@ SELECT name, status, last_exception FROM system.dictionaries;
 -- status 应该全是 LOADED
 ```
 
-### 分布式表：cluster 名必须改
+### 分布式表
+
+cluster 名得改：
 
 ```sql
 -- A 集群
@@ -664,74 +516,62 @@ CREATE TABLE db.events_distributed AS db.events_local
 ENGINE = Distributed('b_cluster_5shards', db, events_local, cityHash64(user_id));
 ```
 
-cluster 名是 server config 里的，不会自动迁过来。
+cluster 名在 server config 里，不会自己迁过来。
 
-迁移前确认 A 集群没有积压的异步分发：
+迁之前确认 A 集群没有积压的异步分发：
 
 ```sql
 SELECT * FROM system.distribution_queue;  -- 应该是空的
 SYSTEM FLUSH DISTRIBUTED db.events_distributed;
 ```
 
-`SYSTEM FLUSH DISTRIBUTED` 会强制把异步队列里的数据 push 完。20.5+ 支持。
+`SYSTEM FLUSH DISTRIBUTED` 会强制把异步队列里的数据推完，20.5 以后都支持。
 
 ### UDF
 
 | 类型 | 迁移内容 | 注意 |
 |---|---|---|
 | SQL UDF（21.10+） | 纯元数据，`CREATE FUNCTION` 重建 | `/var/lib/clickhouse/user_defined/` 也可直接 rsync |
-| Executable UDF（21.11+） | XML 配置 + 可执行脚本 + 依赖 | 部署到 B 集群**所有节点**；注意架构（x86 / ARM） |
+| Executable UDF（21.11+） | XML 配置 + 可执行脚本 + 依赖 | 部署到 B 集群所有节点；注意架构（x86 / ARM） |
 
-Executable UDF 是最容易遗漏的，因为它超出了 ClickHouse 本身的范畴（脚本部署、依赖安装、CPU 架构兼容都得管）。
+Executable UDF 最容易漏，因为它已经超出 ClickHouse 本身了，脚本部署、依赖安装、CPU 架构兼容都得自己管。
 
-### 标准迁移顺序
+### 迁移顺序
 
 <div class="sk sk-phases">
 <div class="sk-box"><div class="sk-ph-h"><span class="sk-ph-n">1</span><span class="sk-t">基础对象</span></div><ul><li>集群拓扑配置（remote_servers）</li><li>named_collections</li><li>users / roles / quotas</li><li>UDF 配置 + 脚本</li><li>字典 XML 配置</li></ul></div>
 <div class="sk-arw"><svg class="sk-ar" width="22" height="24" viewBox="0 0 22 24" aria-hidden="true"><path d="M11 1 C 10.3 6, 11.7 12, 11 18"/><path d="M6.5 13.5 C 8 17, 10 20.5, 11 22.5"/><path d="M15.5 13.5 C 14 17, 12 20.5, 11 22.5"/></svg></div>
 <div class="sk-box"><div class="sk-ph-h"><span class="sk-ph-n">2</span><span class="sk-t">表 + 数据</span></div><ul><li>普通表 schema</li><li>MV 底层 TO 表（当作普通表建）</li><li>数据迁移（双写 + 回填）</li></ul></div>
 <div class="sk-arw"><svg class="sk-ar" width="22" height="24" viewBox="0 0 22 24" aria-hidden="true"><path d="M11 1 C 11.6 6, 10.4 12, 11 18"/><path d="M6.5 13.5 C 8 17, 10 20.5, 11 22.5"/><path d="M15.5 13.5 C 14 17, 12 20.5, 11 22.5"/></svg></div>
-<div class="sk-box is-warm"><div class="sk-ph-h"><span class="sk-ph-n">3</span><span class="sk-t">衍生对象</span></div><ul><li>SQL UDF</li><li>字典（CREATE DICTIONARY）</li><li>物化视图（<strong>不要</strong> POPULATE）</li><li>普通视图</li><li>分布式表（改 cluster 名）</li></ul></div>
+<div class="sk-box is-warm"><div class="sk-ph-h"><span class="sk-ph-n">3</span><span class="sk-t">衍生对象</span></div><ul><li>SQL UDF</li><li>字典（CREATE DICTIONARY）</li><li>物化视图（不要 POPULATE）</li><li>普通视图</li><li>分布式表（改 cluster 名）</li></ul></div>
 <div class="sk-arw"><svg class="sk-ar" width="22" height="24" viewBox="0 0 22 24" aria-hidden="true"><path d="M11 1 C 10.5 6, 11.5 12, 11 18"/><path d="M6.5 13.5 C 8 17, 10 20.5, 11 22.5"/><path d="M15.5 13.5 C 14 17, 12 20.5, 11 22.5"/></svg></div>
 <div class="sk-box is-ok"><div class="sk-ph-h"><span class="sk-ph-n">4</span><span class="sk-t">切流前最终检查</span></div><ul><li>SYSTEM RELOAD DICTIONARIES</li><li>SYSTEM RELOAD FUNCTIONS</li><li>字典 status 全部 LOADED</li><li>MV 一致性对账</li><li>分布式表 SELECT 测试</li></ul></div>
-<p class="sk-cap">顺序不能换：衍生对象依赖基础对象，MV 依赖它的 TO 表</p>
+<p class="sk-cap">衍生对象依赖基础对象，MV 依赖它的 TO 表</p>
 </div>
 
-**关键顺序**：UDF 和字典在表创建前就位；MV 必须在源表迁完且双写稳定**之后**创建；分布式表最后；视图最后。
+顺序不能乱：UDF 和字典要在建表之前就位；MV 必须等源表迁完、双写稳定以后再建；分布式表和视图放最后。顺序错了，会一个接一个地失败。
 
----
+## 怎么选
 
-## 十一、决策框架总览
-
-把所有决策维度汇总成一张二维矩阵：
+把表的数量和数据总量放在一起看：
 
 | | 表少（< 50） | 表中等（50~500） | 表多（500+） |
 |---|---|---|---|
-| **总量小（< 10 TB）** | 手写 INSERT SELECT | INSERT SELECT + for 循环 | **`BACKUP DATABASE` 一把过** |
-| **总量中等（10~100 TB）** | INSERT SELECT 切片 | INSERT SELECT + 调度 | `clickhouse-backup` + 双写 |
-| **总量大（> 100 TB）** | 双写 + 增量回填 | 双写 + 调度 | 双写 + 调度（项目级工程） |
+| 总量小（< 10 TB） | 手写 INSERT SELECT | INSERT SELECT + for 循环 | `BACKUP DATABASE` 一把过 |
+| 总量中等（10~100 TB） | INSERT SELECT 切片 | INSERT SELECT + 调度 | `clickhouse-backup` + 双写 |
+| 总量大（> 100 TB） | 双写 + 增量回填 | 双写 + 调度 | 双写 + 调度（项目级工程） |
 
-需要 reshard 时：
+要 reshard 的时候：
 
 <figure class="dfig">
-<img class="dfig-l" src="/diagrams/datacenter-migration-13.light.svg" alt="十一、决策框架总览">
-<img class="dfig-d" src="/diagrams/datacenter-migration-13.dark.svg" alt="十一、决策框架总览">
+<img class="dfig-l" src="/diagrams/datacenter-migration-13.light.svg" alt="需要 reshard 时的决策">
+<img class="dfig-d" src="/diagrams/datacenter-migration-13.dark.svg" alt="需要 reshard 时的决策">
 </figure>
 
-90% 的中小客户场景都会落在 **INSERT SELECT 直推** 或 **BACKUP/RESTORE** 上。
+九成的中小客户，最后都会落在 INSERT SELECT 直推或者 BACKUP/RESTORE 上。
+
+回头看，搬迁这件事我最想提醒的有两点。一是数据生命周期管理要放在迁移规划之前做，能把 PB 压到 100 TB，工程难度差一个数量级，比用技术硬扛省事得多。二是 **sharding key 是数据正确性的约束，不只是性能优化**，合并型引擎的 sharding key 必须是 ORDER BY 字段的函数，一组做 colocate join 的表必须共用同一个 sharding key，这两条决定了它一旦定下来，就很难单独改一张表。剩下的，按表的特点分别对待，MV 切流前重算一遍，元数据对象按顺序建，基本就不会在切流那天翻车。
 
 ---
 
-## 结论
-
-1. **数据生命周期管理是迁移规划的前置工作**，不是迁移完才考虑的事。能把 PB 压到 100 TB，工程难度差一个数量级。
-
-2. **不要用一套流程套所有表**。配置表做增量切片、事件日志做全量对账，工程量会爆炸。按表的「成熟度阶段」匹配迁移策略：配置/维度表一把灌完、业务核心表双写回填、归档表物理拷贝。
-
-3. **Sharding key 是数据正确性约束，不只是性能优化**。合并型引擎的 sharding key 必须是 ORDER BY 字段的函数，否则 FINAL 静默返回错误结果；colocate join 要求一组表共享同一 sharding key——这两条决定了 sharding key 一旦定下就难以单表变更。
-
-4. **MV 在双写期会两边各算一份**，状态独立累加。切流前一定要从源表重新算一次 MV 底层表，不能依赖双写期间的累积结果。
-
-5. **PB 级表 + reshard 是季度级工程**。用规划手段（节点数一致约束 + 数据生命周期管理）避免，比用技术手段硬扛省事得多。
-
-6. **元数据对象的迁移顺序很重要**：UDF/字典先于表、MV 后于源表稳定双写、分布式表最后建。顺序错了会触发连锁失败。
+**相关**：[扩容之后为什么不自动做数据均衡](/clickhouse/tooling/why-not-auto-rebalance) · [ClickHouse 集群部署拓扑对比：为什么推荐「一机一副本」](/clickhouse/tooling/deployment-topology)

@@ -13,7 +13,7 @@ Reading symbols from ./collector...Dwarf Error: wrong version in compilation uni
 
 (gdb) bt
 #0  0x00007f13b9ae7a35 in pthread_cond_wait@@GLIBC_2.3.2 () from /lib64/libpthread.so.0
-#1  0x00000000004117d5 in nxlog_worker_thread ()
+#1  0x00000000004117d5 in collector_worker_thread ()
 #2  0x000000000040cdd5 in _thread_helper ()
 ```
 
@@ -132,16 +132,16 @@ make CC="$CC"        # 不改源码：从命令行传，优先级最高
 ```
 #1  0x000000000049b731 in apr_file_open (new=0x7f7034003320, fname=0x7f7034002ad0 "...",
     flag=1, perm=<optimized out>, pool=0x7f7034003288) at file_io/unix/open.c:176
-#2  0x000000000041c1b9 in im_file_ext_input_open (module=0x2313a00, ...)
-    at src/modules/input/fileExt/im_fileExt.c:976
+#2  0x000000000041c1b9 in file_input_open (module=0x2313a00, ...)
+    at src/modules/input/file/file_input.c:976
 ...
-#7  0x00000000004118da in nxlog_worker_thread (thd=0x22f1c08, data=<optimized out>)
-    at src/core/nxlog.c:552
+#7  0x00000000004118da in collector_worker_thread (thd=0x22f1c08, data=<optimized out>)
+    at src/core/collector.c:552
 ```
 
 ## 7 个 CU，拖垮了整个二进制
 
-问题解决以后再回头看开头那个 `bt`，有个地方当时没注意：`nxlog_worker_thread` 在 `src/core/nxlog.c` 里，是我自己的代码，明明是按 v4 编的，可它的行号也没了。
+问题解决以后再回头看开头那个 `bt`，有个地方当时没注意：`collector_worker_thread` 在 `src/core/collector.c` 里，是我自己的代码，明明是按 v4 编的，可它的行号也没了。
 
 出问题的只是 bzip2 那 7 个 CU，可 gdb 7.6 读到第一个不认识的 CU 头就报 `Dwarf Error`，然后把整个模块的 DWARF 信息全扔了。输出里那句 `(no debugging symbols found)` 说的是整个 `./collector`，不是 bzlib.c。
 

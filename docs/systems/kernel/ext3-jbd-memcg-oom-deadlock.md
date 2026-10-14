@@ -1,8 +1,8 @@
 ---
-title: 采集器被两家客户判了死刑，然后我们翻了案
+title: ext3 + memcg 的 OOM 死锁：采集器差点背了锅
 ---
 
-# 采集器被两家客户判了死刑，然后我们翻了案
+# ext3 + memcg 的 OOM 死锁：采集器差点背了锅
 
 前不久，客户 A 的 Redis 服务突然访问不了，大面积业务都受了影响。排查下来，部署 Redis 的两台服务器都 hang 死了。客户的技术专家分析后发现，hang 死的那个时间点上，我们的采集器进程 CPU 占用高达 300%，而且多次 OOM。他们认为是我们的采集器频繁 OOM，把机器搞 hang 死了。
 
@@ -106,4 +106,4 @@ Linux 主线的代码历史上，从来没有在这个位置加过这行代码�
 
 ---
 
-**相关**：[限了 CPU 配额，它还是把整机卡死了 22 秒](/systems/kernel/xfs-soft-lockup-cond-resched)
+**相关**：[XFS soft lockup：限了 CPU 配额，整机还是卡死 22 秒](/systems/kernel/xfs-soft-lockup-cond-resched)

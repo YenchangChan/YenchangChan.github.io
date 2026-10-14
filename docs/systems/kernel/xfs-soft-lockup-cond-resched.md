@@ -1,18 +1,20 @@
 ---
-title: 限了 CPU 配额，它还是把整机卡死了 22 秒
+title: XFS soft lockup：限了 CPU 配额，整机还是卡死 22 秒
 ---
 
-# 限了 CPU 配额，它还是把整机卡死了 22 秒
+# XFS soft lockup：限了 CPU 配额，整机还是卡死 22 秒
 
-> 凌晨一点，一台 16 vCPU 的机器上所有业务服务同时夯死。内核只留下一行告警：`soft lockup - CPU#10 stuck for 22s!`，括号里是我们的采集进程。
->
-> 这篇记录两件事：**根因是 XFS 在 extent 遍历路径上缺 `cond_resched()`**；以及 —— **为什么给采集器设的 cgroup CPU 限额，一点忙都没帮上。**
->
-> 同时它是一篇**证据不完整**的复盘：现场重启后内核日志已不可恢复，栈级定位是推断而非实锤。这一点我在第五节里原样写出来了。
->
-> 业务路径、账号名与进程名已脱敏；内核函数名、锁名、配置项与版本号一律保留。
+2026-04-29 凌晨一点前后，一台 16 vCPU 的机器上，所有业务服务同时夯死了。内核只留下了一行告警，括号里是我们的采集进程：
 
-## 一、现场
+```
+kernel: watchdog: BUG: soft lockup - CPU#10 stuck for 22s! [collector:783519]
+```
+
+系统日志里的时间戳是 03:16:11，那是延迟打印的，实际出事在一点左右。Web、数据库、日志服务全都没了响应。16 个核，卡死的只有 1 个，整机却不能用了。
+
+业务路径、账号名和进程名都脱敏了，内核函数名、锁名、配置项和版本号保持原样。
+
+## 现场
 
 | | |
 |---|---|
@@ -22,47 +24,25 @@ title: 限了 CPU 配额，它还是把整机卡死了 22 秒
 | 内核 | `4.19.90-23.52.v2101.ky10.x86_64` |
 | 配置 | 16 vCPU |
 | 关键进程 | 文件采集程序（PID 783519） |
-| 被监控文件 | 位于 **XFS** 分区的一个 `monitor.log` |
+| 被监控文件 | 位于 XFS 分区的一个 `monitor.log` |
 
-内核的全部产出就这一行：
-
-```
-kernel: watchdog: BUG: soft lockup - CPU#10 stuck for 22s! [collector:783519]
-```
-
-Web、数据库、日志服务全部无响应。**16 个核，卡死的只有 1 个，但整机不可用。**
-
-采集器自己的日志里，故障窗口内以约 **67 次/秒**的频率针对同一个文件反复输出：
+再看采集器自己的日志。故障那段时间里，它以每秒 67 次左右的频率，对同一个文件反复打印：
 
 ```
-[im_file_ext] inode changed for '.../monitor.log': reopening possibly rotated file
+[file_input] inode changed for '.../monitor.log': reopening possibly rotated file
 ```
 
-每一次「inode 变化」判定，都会触发一遍完整的 `close → open → seek → read`。
+每判定一次 inode 变了，就要走一遍完整的 `close → open → seek → read`。
 
-## 二、第一反应是错的
+## 限额为什么没用
 
-看到「采集进程把 CPU 卡死了 22 秒」，最自然的处置是：**给它限 CPU。**
+看到采集进程把 CPU 卡了 22 秒，最自然的反应就是给它限 CPU。可这台机器上，采集器本来就有 cgroup CPU 限额，限额在，事照样出了。
 
-这台机器上采集器本来就有 cgroup CPU 限额。**限额在，故障照样发生。**
+问题在于 `cpu.cfs_quota_us` 管的是 CFS 调度器分给任务的运行时间总量，它没办法抢占内核态里不可抢占的那段代码。XFS 遍历 extent 恰好就是这么一段代码。哪怕把采集器限到单核 20%，一次 `xfs_iread_extents()` 调用照样可以在内核态连着跑 22 秒不撒手。限额管得了它跑多久，管不了它不让出 CPU。进程一旦进了内核态的非抢占段，配额就形同虚设，而这本身就说明，是内核该主动让出 CPU 的地方没有让。
 
-原因是 `cpu.cfs_quota_us` 的作用域被普遍误解了：
+## 缺一个 cond_resched()
 
-::: warning
-`cpu.cfs_quota_us` 约束的是 **CFS 调度器分配给任务的运行时间总量**。
-它**无法抢占内核态中被标记为不可抢占的代码段**。
-
-XFS 的 extent 遍历正是这样一段代码。**即便把采集器限到单核 20%，
-一次 `xfs_iread_extents()` 调用仍然可以在内核态连续自旋 22 秒。**
-:::
-
-换句话说：**限额限的是「你能跑多久」，不是「你能不让出 CPU 多久」。** 一旦进程进入内核态的非抢占段，配额就失去了意义 —— 而这本身就是内核应当主动让出 CPU 而没有让出的表现。
-
-## 三、根因：缺一个 `cond_resched()`
-
-这是 4.19 内核 XFS 模块的一个已知缺陷。
-
-**缺陷位置**：XFS 处理大量 extent 时走的 in-core 加载与映射路径，包括但不限于
+这是 4.19 内核 XFS 模块的一个已知缺陷。XFS 处理大量 extent 时，会走 in-core 加载和映射的那几条路径，包括但不限于：
 
 ```
 xfs_iread_extents()
@@ -71,11 +51,9 @@ xfs_bmap_search_extents()
 iomap_finish_ioend()
 ```
 
-**缺陷性质**：这些路径在循环遍历 extent 时**缺少主动让出 CPU 的 `cond_resched()`**。
+这些路径在循环遍历 extent 时，缺少主动让出 CPU 的 `cond_resched()`。在非抢占内核上（`CONFIG_PREEMPT_NONE=y` 或 `CONFIG_PREEMPT_VOLUNTARY=y`），碰上 extent 数量极大的文件，一次调用就能在内核态跑上几十秒。soft lockup 的判定阈值是 `watchdog_thresh` 的两倍，默认 20 秒，超过就会被报出来，日志里常见的就是这个 22s。
 
-在非抢占内核上（`CONFIG_PREEMPT_NONE=y` 或 `CONFIG_PREEMPT_VOLUNTARY=y`），一旦遇到 extent 数量极大的文件，**单次调用就能在内核态自旋数十秒**，超过 watchdog 默认阈值（约 22 秒）后被报为 soft lockup。
-
-**影响范围**
+受影响的范围大致是：
 
 | 来源 | 范围 |
 |---|---|
@@ -84,81 +62,42 @@ iomap_finish_ioend()
 | OpenEuler | 20.03 LTS（4.19 系） |
 | 其他 | 各厂商基于 `CONFIG_PREEMPT_NONE` 编译的内核（Alibaba Cloud Linux、Oracle UEK 等） |
 
-## 四、为什么定性为内核缺陷，而不是采集器缺陷
+那凭什么说是内核的锅，不是采集器的锅？内核态长时间不让出 CPU，是这次卡死 22 秒的直接原因，采集器高频访问只是把这条路走了很多遍。要是问题出在采集器占的 CPU 太多，限额应该管用才对，它不管用，说明问题不在占多少。换任何一个用户态程序，高频访问一个碎片化严重的 XFS 文件，都能复现。最硬的一条是，新版内核已经通过加 `cond_resched()`，或者改成增量加载的方式把它修了。上游打了补丁，就等于认了这是内核的问题。
 
-这是整份报告里最需要站住的一步。四条依据：
+## 一个核卡住，16 个核全停
 
-1. **内核态长时间不让出 CPU，是这次 22 秒卡死的直接物理机制。** 采集器的高频访问只是把这条路径走了很多次。
-2. **cgroup 限额无法覆盖这个场景**（见第二节）。如果问题出在采集器占用太多 CPU，限额应该有效；它无效，说明问题不在「占多少」。
-3. **任何用户态程序高频访问碎片化的 XFS 文件都能复现**，不限于这个采集器。
-4. **该缺陷已在新版内核中以加 `cond_resched()` 或重写为增量加载的方式正式修复** —— 社区自己认可了这是内核问题。
+卡一个核，为什么整机都不行了？
 
-第 4 条是最硬的：**上游打了补丁，就等于上游承认了归属。**
+一方面，CPU#10 进了内核态的不可抢占段，调度器在这个 CPU 上调度不了任何别的任务。它要是同时还攥着自旋锁、RCU、journal 这类全局资源，影响就会直接溢出到别的 CPU 上。
 
-## 五、扩散：1 个核卡死，为什么 16 个核全停
-
-soft lockup 期间同时发生两件事：
-
-**① CPU#10 进入内核态不可抢占段**
-调度器无法在这个 CPU 上调度任何其他任务。如果它同时持有全局资源（自旋锁、RCU、journal），影响会直接溢出到其他 CPU。
-
-**② 持有 `XFS_ILOCK_EXCL`**
-`xfs_iread_extents()` 与部分 bmap 路径在执行期间持有该 inode 的排他锁。此时**任何其他进程对这个 inode 的访问 —— 包括只读、`stat`、`open` —— 都要先拿这把锁**，于是全部进入不可中断的 D 状态。
-
-而被监控的那个日志目录又被多个业务共用。
+另一方面，`xfs_iread_extents()` 和部分 bmap 路径执行时，持有这个 inode 的排他锁 `XFS_ILOCK_EXCL`。这时候别的进程要读写这个文件、要做块映射，都得先拿这把锁，于是一个接一个进了不可中断的 D 状态。偏偏被监控的那个日志目录，又是好几个业务共用的。
 
 ```
 CPU#10 在内核态自旋（22s）
         │  持有 XFS_ILOCK_EXCL
         ▼
-业务进程 A  stat()  → 等锁 → D
-业务进程 B  open()  → 等锁 → D
-业务进程 C  read()  → 等锁 → D
+业务进程 A  read()   → 等锁 → D
+业务进程 B  write()  → 等锁 → D
+业务进程 C  read()   → 等锁 → D
         ▼
 所有依赖该 XFS 分区的服务全部夯死
 ```
 
-**一把 inode 锁，把单核故障放大成了整机故障。**
+一把 inode 锁，把单核的故障放大成了整机故障。
 
-## 六、证据到哪一步为止（这一节不能省）
+## 这次的证据只到这一步
 
-::: danger 取证局限
-服务器在故障恢复后**已经重启**，且 `systemd-journald` 当时**未启用持久化模式**。
+得交代一句，这次跟[那次 ext3 的事故](/systems/kernel/ext3-jbd-memcg-oom-deadlock)不一样。那次有 vmcore，可以一帧一帧地读栈；这次服务器恢复后已经重启了，`systemd-journald` 当时又没开持久化，soft lockup 之后的 Call Trace、可能有的 hung_task dump 和 RCU stall，全都找不回来了。所以到底是哪一个 XFS 函数在空转，没法从栈上直接坐实。
 
-重启前的内核完整日志 —— soft lockup 之后的 Call Trace、可能存在的
-hung_task dump、RCU stall —— **全部不可恢复**。
-:::
+现场确实拿到手的，是那行 soft lockup 告警的原文（SSH 终端缓存、截图和工单记录里都有），还有采集器日志里 30 秒窗口内每秒 67 次左右的 reopen 循环，说明故障期间它确实在高频地 `close → open → seek → read`。
 
-所以要分清这次拿到的是什么：
+剩下的判断，靠的是同类问题的资料：上游有个 iomap 补丁，明确说给 XFS 的长循环加上 `cond_resched()` 就能解决 soft lockup，在 4.18、5.1、5.15 几个版本上都复现过（[lore.kernel.org](https://lore.kernel.org/all/20211230193522.55520-1-trondmy@kernel.org/)）；还有维护者讨论 `xfs/170` 测试触发 XFS soft lockup 的邮件（[lore.kernel.org](https://lore.kernel.org/all/YYaWma0v5qrECIts@mit.edu/T/)）；Red Hat 的几篇 KB，[System hangs due to XFS lockups](https://access.redhat.com/solutions/2964341)、[xfsdatad CPU stuck for 67s](https://access.redhat.com/solutions/447743)、[xfs_inode i_lock 死锁导致系统挂起](https://access.redhat.com/solutions/4742131)；OpenEuler 在同一个 4.19 分支上，有一个传播 `xfs_log_force` 返回值以避免 soft lockup 的补丁；KylinOS `4.19.90-23.8` 上也有 soft lockup 的处置案例。
 
-**直接证据（现场确有）**
-- 内核 soft lockup 告警原文（SSH 终端缓存 / 截图 / 工单记录）
-- 采集器日志：30 秒窗口内约 67 次/秒的 reopen 循环，证明故障期间确实在高频 `close → open → seek → read`
+故障文件当时的碎片化程度也没取证，复盘时应该补一下 `filefrag -v` 或者 `xfs_bmap -v`，确认高度碎片化这个前提是成立的。
 
-**推断依据（同型机制证据）**
-- 上游 iomap 补丁，明确指出 XFS 长循环加 `cond_resched()` 即可解决 soft lockup，已在 4.18 / 5.1 / 5.15 多版本复现 —— [lore.kernel.org](https://lore.kernel.org/all/20211230193522.55520-1-trondmy@kernel.org/)
-- `xfs/170` 测试触发 XFS soft lockup 的维护者讨论 —— [lore.kernel.org](https://lore.kernel.org/all/YYaWma0v5qrECIts@mit.edu/T/)
-- Red Hat KB：[System hangs due to XFS lockups](https://access.redhat.com/solutions/2964341) · [xfsdatad CPU stuck for 67s](https://access.redhat.com/solutions/447743) · [xfs_inode i_lock 死锁导致系统挂起](https://access.redhat.com/solutions/4742131)
-- OpenEuler 内核补丁：`xfs_log_force` 返回值传播以避免 soft lockup（同 4.19 分支）
-- KylinOS `4.19.90-23.8` soft lockup 处置案例
+## 什么情况下会撞上，怎么办
 
-**没能拿到的**
-- 故障时刻的完整 Call Trace，因此**无法从栈上直接坐实是哪一个 XFS 函数在自旋**
-- 故障文件的 `filefrag -v` / `xfs_bmap -v` 取证 —— 复盘时应补，用来确认「高度碎片化」这个前提
-
-也就是说：**触发链的每一环都有独立证据支持，但没有一次端到端的栈级实锤。** 这个结论的强度是「同型机制 + 现场行为吻合」，不是「我看见了」。
-
-::: tip
-和[隔壁那篇](/systems/kernel/ext3-jbd-memcg-oom-deadlock)对比着看会更清楚：
-那次有 vmcore，可以逐帧读栈，根因是**实锤**；这次现场没了，根因是**推断**。
-
-**把这两者的差别写出来，比把两者都写成「我定位到了根因」有用得多。**
-读的人需要知道该对这个结论下多大的注。
-:::
-
-## 七、触发条件与处置
-
-三个条件同时成立才会发生：
+三个条件同时满足才会出事：
 
 ```
 ① 被监控文件位于 XFS 分区，且已高度碎片化（extent 数量极大）
@@ -166,9 +105,7 @@ hung_task dump、RCU stall —— **全部不可恢复**。
 ③ 内核版本在受影响范围内（本例 4.19.90-23.52，未含修复补丁）
 ```
 
-### 根治：升级内核
-
-**这是唯一能彻底消除重现可能的方案。任何用户态规避都只是降低触发概率。**
+根治只能升级内核，用户态的规避手段都只是降低撞上的概率：
 
 | 发行版 | 建议版本 |
 |---|---|
@@ -176,38 +113,24 @@ hung_task dump、RCU stall —— **全部不可恢复**。
 | OpenEuler 20.03 LTS | 最新 `4.19.90-2401.x.0` 或更高 |
 | RHEL / Rocky 8 | `4.18.0-513` 之后含相关 XFS backport 的版本 |
 
-### 缓解：在内核升级到位前
+内核升级到位之前，能做的有这么几件。升级采集器，改掉文件检测和重开的逻辑，把 `close → open → seek → read` 的频率降下来，这是打掉条件②。用 `xfs_fsr -v /被监控分区` 整理碎片，这是打掉条件①，不过 `xfs_fsr` 对持续高速写入的活跃文件效果有限，得连着上游的写入方式一起改。调 XFS 的挂载参数和预分配，比如 `noatime,nodiratime,allocsize=16m`，或者在应用侧用 `posix_fallocate()` 做连续预分配，别边写边生出一堆小 extent。
 
-> 以下措施**不消除**内核缺陷，只降低命中概率。
+还有一件，是去查上游应用是怎么写日志的。先看看 inode 是不是真的在变：
 
-1. **升级采集器**，优化文件检测与重开逻辑，降低 `close → open → seek → read` 的循环频率 —— 打掉条件 ②
-2. **整理碎片**：`xfs_fsr -v /被监控分区` —— 打掉条件 ①
-   注意：`xfs_fsr` 对**持续高速写入的活跃文件**效果有限，必须连同上游写入模式一起改
-3. **调整 XFS 挂载参数与预分配**：`noatime,nodiratime,allocsize=16m`；或在应用侧用 `posix_fallocate()` 做连续预分配，避免边写边产生大量小 extent
-4. **排查上游应用的写入模式**：先验证 inode 是否真的在变
+```bash
+for i in $(seq 1 20); do stat -c %i monitor.log; done
+```
 
-   ```bash
-   for i in $(seq 1 20); do stat -c %i monitor.log; done
-   ```
+真在变的话，就去看写入端是不是用了删除再重建、或者 rename 之后再 create 这种会换 inode 的写法，建议改成 append 写入。
 
-   如果确实在变，检查写入端是否用了「删除-重建」或「rename-then-create」这类会换 inode 的写法，**建议改为 append 写入**。
+这一件我觉得最该做。采集器之所以疯狂 reopen，是因为它每次都真的检测到 inode 变了，它只是在如实反应。根子在写日志的那一头，只改采集器，治的是症状。
 
-第 4 条值得多说一句：采集器高频 reopen，是因为它**真的**每次都检测到 inode 变了。**采集器的行为是结果，不是起因** —— 起因在写日志的那一端。只改采集器，是在治症状。
+## 最后
 
-## 尾声：两次事故，同一个误解
+这台机器上的 cgroup CPU 限额没拦住整机卡死。[ext3 那次](/systems/kernel/ext3-jbd-memcg-oom-deadlock)，cgroup 内存限额不但没保护住系统，还是死锁成立的前提。
 
-这台机器上的 cgroup CPU 限额没拦住整机卡死。[另一起事故](/systems/kernel/ext3-jbd-memcg-oom-deadlock)里，cgroup 内存限额不但没保护住系统，反而是死锁成立的**前提条件**。
+两次想下来，cgroup 限额约束的是资源用量，管不了故障的影响范围。限内存，进程超限会被 OOM Killer 杀掉，可前提是它杀得掉，进程在 D 状态收不到信号的时候，这个前提就不成立。限 CPU，进程超限会被调度器挤下去，可前提是它能被抢占，进了内核态的非抢占段，这个前提也不成立。两次出事，都出在限额机制依赖的那个内核前提恰好不成立的地方。所以给它加个限额，解决的是它占得太多，**解决不了它把内核带进一个出不来的状态**。
 
-::: tip
-**cgroup 限额约束的是资源用量，不是故障影响范围。**
+---
 
-- 限内存：进程超限会被 OOM Killer 杀掉 —— 前提是它**能被杀掉**。
-  处在 D 状态收不到信号时，这个前提不成立。
-- 限 CPU：进程超限会被调度器挤下去 —— 前提是它**能被抢占**。
-  进了内核态非抢占段时，这个前提不成立。
-
-两次都是：**限额机制依赖一个内核前提，而故障恰好发生在那个前提不成立的地方。**
-
-所以「给它加个限额」这个动作，解决的是「它占太多」，
-解决不了「它把内核带进了一个出不来的状态」。这是两类完全不同的问题。
-:::
+**相关**：[ext3 + memcg 的 OOM 死锁：采集器差点背了锅](/systems/kernel/ext3-jbd-memcg-oom-deadlock)

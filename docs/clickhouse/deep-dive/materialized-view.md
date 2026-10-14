@@ -1,24 +1,14 @@
 ---
-title: ClickHouse 物化视图：三种机制，和那个在 100T 上必炸的关键字
+title: ClickHouse 物化视图：三种机制，以及 100T 表上的 POPULATE
 ---
 
-# ClickHouse 物化视图：三种机制，和那个在 100T 上必炸的关键字
+# ClickHouse 物化视图：三种机制，以及 100T 表上的 POPULATE
 
-> 传统 MV、TO TABLE、Refreshable 三者的本质区别，大表场景怎么选，以及为什么 POPULATE 在 100T 上一定会炸。
->
-> **阅读对象**：维护过写入量大的 ClickHouse 集群，正在设计聚合层，或者被「MV 数据对不上」折磨过的工程师。
+物化视图（Materialized View，下面简称 MV）是 ClickHouse 做预聚合最常用的手段，也是最容易出现「数据对不上」的地方。这篇讲三种 MV 到底差在哪，表到了 100T 这个量级该怎么选，为什么 POPULATE 在这种表上一定会炸，以及上线以后怎么发现问题、怎么修数据、schema 变了怎么跟。
 
----
+## 三种物化视图
 
-## 一、三种物化视图概览
-
-ClickHouse 的物化视图（Materialized View，以下简称 MV）按工作机制可以分成三类：
-
-1. **传统 MV（隐式 inner 表）**：CH 自动创建 `.inner_id.{uuid}` 隐藏表作为存储
-2. **TO TABLE MV**：显式指定目标表，MV 只承担「转换+路由」角色
-3. **Refreshable MV**：23.12 引入的定时刷新型物化视图，更像传统数据库的 MV
-
-它们在触发机制和适用场景上有本质差异：
+按工作机制，ClickHouse 的 MV 可以分成三类。传统 MV 不指定目标表，ClickHouse 自动建一张 `.inner_id.{uuid}` 的隐藏表来存数据。TO TABLE MV 显式指定一张目标表，MV 自己只负责转换和路由。Refreshable MV 是 23.12 引入的定时刷新型，更像传统数据库里的物化视图。
 
 | 维度 | 传统 MV（inner 表）| TO TABLE MV | Refreshable MV |
 | --- | --- | --- | --- |
@@ -29,15 +19,11 @@ ClickHouse 的物化视图（Materialized View，以下简称 MV）按工作机�
 | JOIN 支持 | 只对左表（源表）触发，右表不感知 | 同上 | 完全支持，每次全量执行 |
 | 历史数据 | POPULATE 或手动 INSERT | 手动 INSERT 回填 | 第一次 refresh 自动覆盖 |
 | 适合场景 | 简单预聚合（不推荐生产）| 实时增量聚合主力 | 低频高复杂度、跨表 JOIN |
-| 引入版本 | 很早 | 很早 | 23.12 实验，24.x 稳定 |
+| 引入版本 | 很早 | 很早 | 23.12 实验，24.10 起不再是实验特性 |
 
-**理解 MV 的关键认知**：增量型 MV 的 SELECT 看到的是**当前这次 INSERT 的 block**，不是全表。这是后续所有运维问题的理论基础。
+理解 MV 最要紧的一点是：增量型 MV 的 SELECT 看到的是当前这一次 INSERT 的那个 block，不是全表。后面几乎所有的运维问题，都是从这一点来的。
 
----
-
-## 二、传统 MV（隐式 inner 表）
-
-### 写法
+## 传统 MV
 
 ```sql
 CREATE MATERIALIZED VIEW mv_uv
@@ -52,33 +38,15 @@ FROM events
 GROUP BY event_date, page;
 ```
 
-### 工作机制
+ClickHouse 在背后建一张 `.inner_id.{uuid}` 的隐藏表，MV 就往这张表里写，查 `mv_uv` 就是查这张隐藏表。每往 `events` 写一个 block，MV 的 SELECT 就在这个 block 上执行一次，结果写进隐藏表。所以这里的 GROUP BY 只是块内聚合，最终的聚合要靠 `AggregatingMergeTree` 后台 merge，再加上查询时的 `uniqMerge` 来完成。
 
-CH 在背后建一张名为 `.inner_id.{uuid}` 的隐藏表，MV 把它当目标表写。查询 `mv_uv` 就是查这张隐藏表。
+这种写法我不建议在生产上用。DROP 掉 MV，数据跟着一起没了，没有任何兜底；想改 ORDER BY 或者列定义，只能重建，数据全丢；`.inner_id.xxx` 这种隐藏表名也不好管理、不好备份；而且没法让多个 MV 写同一张表。
 
-每次往 `events` 写一个 block，MV 的 SELECT 就在**这个 block 上**执行（不是全表），结果 INSERT 到隐藏表。GROUP BY 是「块内聚合」，最终聚合靠 `AggregatingMergeTree` 的后台 merge + 查询时 `uniqMerge` 完成。
+再说 POPULATE。它看着很方便，建 MV 的时候顺手把历史数据一次灌进去。可它有两个没法接受的问题：POPULATE 执行期间新写进源表的数据会丢，官方文档里是明确警告过的；它也没法断点续传，100T 的表跑到一半挂了，只能从头再来。所以传统 MV 加 POPULATE，生产上碰都别碰。
 
-### 为什么生产不推荐
+## TO TABLE MV
 
-1. **DROP MV 直接删数据**，没有兜底
-2. **修改 schema 困难**：想改 ORDER BY / 列定义要重建，数据全丢
-3. **隐藏表名 `.inner_id.xxx` 难管理、难备份**
-4. **无法多个 MV 写入同一张表**
-
-### POPULATE 的致命问题
-
-POPULATE 看似方便（创建时一次性灌入历史数据），但有两个不可接受的问题：
-
-1. **POPULATE 期间新写入数据会丢失**：CH 文档明确警告
-2. **不可断点续传**：100T 表跑一半挂了得从头来
-
-**结论：生产环境碰都不要碰传统 MV + POPULATE。**
-
----
-
-## 三、TO TABLE MV：生产主力
-
-### 标准写法
+这才是生产上的主力：
 
 ```sql
 -- 1. 先建目标表
@@ -104,27 +72,13 @@ FROM uv_agg
 GROUP BY event_date, page;
 ```
 
-### 关键优势
+建的时候用 `-State`，查的时候用 `-Merge`，这种用法一点都不特殊，ClickHouse 几乎所有的聚合函数都能这么用。
 
-- **解耦**：DROP MV 不动数据；想改逻辑就 DROP + CREATE MV，目标表照旧
-- **多 MV fan-in**：多个源表的 MV 都写到同一张聚合表，做「逻辑 UNION」
-- **MV 链**：MV A 的目标表又是 MV B 的源表，构建多级聚合管道
-- **回填可控**：用 `INSERT INTO uv_agg SELECT ... FROM events WHERE event_date < T` 手动回填，不丢实时数据
+数据和逻辑分开了，好处一下就出来了。DROP MV 不会动数据，想改逻辑就 DROP 再 CREATE 一个 MV，目标表原封不动。多个源表的 MV 可以写到同一张聚合表里，相当于做了一个逻辑上的 UNION。MV A 的目标表又可以是 MV B 的源表，串成多级聚合。回填也可控了，用 `INSERT INTO uv_agg SELECT ... FROM events WHERE event_date < T` 自己去补，不会丢实时数据。
 
-### 回填的标准操作（解决 POPULATE 丢数据问题）
+回填的标准做法是这样：先建 MV，这时候它只接新数据；记下一个时间点 T0；然后 `INSERT INTO target SELECT ... FROM source WHERE timestamp < T0`；T0 之后的数据自然由 MV 接管。有个新手常踩的坑，INSERT SELECT 的列是按位置对应目标表的，列名叫什么不重要。
 
-1. 先创建 MV（此时只接收新数据）
-2. 记一个时间点 T0
-3. `INSERT INTO target SELECT ... FROM source WHERE timestamp < T0`
-4. MV 自然接管 T0 之后的数据
-
-注意 SELECT 列必须**按位置**匹配目标表，列名不重要（新手常踩的坑）。
-
----
-
-## 四、Refreshable MV：复杂场景救星
-
-### 写法
+## Refreshable MV
 
 ```sql
 CREATE MATERIALIZED VIEW mv_daily_report
@@ -143,30 +97,17 @@ WHERE event_date = today()
 GROUP BY country;
 ```
 
-### 本质完全不同
+它跟前两种完全不是一回事。它不是触发器，是 ClickHouse 内部的调度器按时间去执行 `INSERT INTO target SELECT ...`。
 
-这不是触发器，是 CH 内部调度器按 cron 执行 `INSERT INTO target SELECT ...`。
+所以增量 MV 做不好的事它都能做。JOIN 是真能用的：增量 MV 的 JOIN 只在左表来了新 block 时触发，右表更新了它根本不知道；Refreshable 每次全量跑，就没这个问题。window function、median、精确 quantile 这些没法用 `-State` 表达的聚合，这里也都能用。默认每次刷新是原子地整表替换，加上 `APPEND` 就变成追加，适合做时序快照。可以用 `DEPENDS ON` 声明依赖，等上游的 MV 刷完再刷自己：
 
-### 关键能力
+```sql
+REFRESH EVERY 1 HOUR DEPENDS ON db.mv_upstream
+```
 
-- **JOIN 真正可用**：增量 MV 的 JOIN 只对左表新 block 触发，右表更新不感知；refreshable 每次全量跑，JOIN 没问题
-- **复杂聚合**：window function、median、精确 quantile 等无法用 `-State` 表达的，这里都能用
-- **APPEND vs Replace**：默认 `EXCHANGE`（原子替换全表），加 `APPEND` 则追加（适合做时序快照）
-- **DEPENDS ON**：可以声明依赖，让上游 MV 刷完再刷自己
-  ```sql
-  REFRESH EVERY 1 HOUR DEPENDS ON db.mv_upstream
-  ```
-- **RANDOMIZE**：避免一堆 MV 同一秒齐刷，错峰
+`RANDOMIZE` 是用来错峰的，免得一堆 MV 同一秒一起刷。
 
-### 注意点
-
-- 24.x 之前是实验特性，需要 `SET allow_experimental_refreshable_materialized_view = 1`
-- 全量重算成本高，大表慎用；或在 SELECT 里加时间窗口约束
-- 失败重试用 `SETTINGS refresh_retries = 3`
-- 用 `SYSTEM REFRESH VIEW mv_name` 手动触发
-- 状态查 `system.view_refreshes`
-
-### 选型判断
+用的时候注意几点。24.10 之前它还是实验特性，得先 `SET allow_experimental_refreshable_materialized_view = 1`。每次都是全量重算，成本高，大表要慎用，或者在 SELECT 里加上时间窗口。失败重试可以用 `SETTINGS refresh_retries = 3`，手动触发用 `SYSTEM REFRESH VIEW mv_name`，状态在 `system.view_refreshes` 里看。
 
 | 场景 | 推荐 |
 | --- | --- |
@@ -175,32 +116,26 @@ GROUP BY country;
 | 需要「昨日累计」这种带 JOIN 维表的报表 | Refreshable |
 | 实时仪表盘秒级刷新 | TO TABLE |
 
-**Refreshable 的真正选型标准不是「是否定时」，而是「能不能用增量表达」**。
+要不要用 Refreshable，关键不在要不要定时，在于这个逻辑能不能用增量表达。
 
----
+## 100T 的大表怎么选
 
-## 五、100T 大表场景如何选型
-
-100T 量级下答案明确：**必须是 TO TABLE 形式的增量 MV**，但关键是怎么处理那 100T 历史数据。
+到了 100T 这个量级，答案其实很明确，只能是 TO TABLE 形式的增量 MV。难的是那 100T 的历史数据怎么处理。
 
 | 方案 | 100T 表是否可行 | 原因 |
 | --- | --- | --- |
-| 传统 MV（inner 表）| ❌ | 不可管理、不可回滚、不能改 schema |
-| 传统 MV + POPULATE | ❌❌❌ | 灾难，几乎必炸 |
-| **TO TABLE 增量 MV + 手动分批回填** | ✅ | 唯一生产可行解 |
-| Refreshable MV（全量）| ❌ | 每次扫 100T = 自杀 |
-| Refreshable MV（带窗口）| ✅（特定场景）| 仅适合「最近 N 天」的滚动报表 |
-| **Projection** | ✅（强力候选）| 简单聚合场景可能比 MV 更合适 |
+| 传统 MV（inner 表）| 不可行 | 不可管理、不可回滚、不能改 schema |
+| 传统 MV + POPULATE | 绝对不可行 | 灾难，几乎必炸 |
+| TO TABLE 增量 MV + 手动分批回填 | 可行 | 唯一生产可行解 |
+| Refreshable MV（全量）| 不可行 | 每次扫 100T = 自杀 |
+| Refreshable MV（带窗口）| 特定场景可行 | 仅适合「最近 N 天」的滚动报表 |
+| Projection | 可行，强力候选 | 简单聚合场景可能比 MV 更合适 |
 
-### 为什么 POPULATE 在 100T 必炸
+为什么说 POPULATE 在 100T 上必炸？它就是一个超长的查询，100T 全表扫一遍，中间任何一个 part 出问题就全白干了，没有断点续传；这期间写进来的数据会丢；内存、磁盘 IO、merge 线程全被它占满，线上查询直接挂。
 
-1. **单事务级别的长查询**：100T 全表扫一遍，中间任何 part 出问题就全废，没有断点续传
-2. **POPULATE 期间写入丢失**：CH 文档明确警告
-3. **资源吃满**：内存、磁盘 IO、merge 线程全被占，线上查询直接挂
+推荐的做法是 TO TABLE 加按分区分批回填。
 
-### 推荐方案：TO TABLE + 分区分批回填
-
-#### Step 1：建目标表（schema 提前想清楚）
+先建目标表，schema 要提前想清楚，分区策略和源表对齐：
 
 ```sql
 CREATE TABLE events_agg ON CLUSTER xxx (
@@ -217,7 +152,7 @@ ORDER BY (event_date, dim1, dim2)
 SETTINGS index_granularity = 8192;
 ```
 
-#### Step 2：先建 MV，让增量先跑起来
+然后先建 MV，让增量先跑起来：
 
 ```sql
 CREATE MATERIALIZED VIEW mv_events TO events_agg
@@ -230,9 +165,9 @@ FROM events
 GROUP BY event_date, dim1, dim2;
 ```
 
-记录此刻时间 **T0**。从此刻起，新写入数据自动进聚合表。
+记下这一刻的时间 T0，从现在起，新写入的数据自动进聚合表。
 
-#### Step 3：分批回填历史
+最后分批回填历史：
 
 ```sql
 INSERT INTO events_agg
@@ -250,29 +185,13 @@ SETTINGS
     max_bytes_before_external_group_by = 50000000000;
 ```
 
-#### 回填要点
+100T 的表假设按月分区，那就一个月一个月地跑，跑完一个算一个。别想着一条 SQL 跑完，用 Python 或者 Shell 写个循环按分区跑，方便断点续传，也方便盯着。放到凌晨跑，避开业务高峰。`WHERE event_date < T0` 务必加上，不然增量和回填会重复计数。`max_threads`、`max_insert_threads` 也别拉满，给线上查询留点资源。
 
-- **分区粒度**：100T 假设按月分区，逐月跑，跑完一个 commit 一个
-- **外部脚本驱动**：别一条 SQL 跑完，用 Python/Shell 循环按分区跑，便于断点续传和监控
-- **错峰**：放凌晨跑，避开业务高峰
-- **重叠保护**：`WHERE event_date < T0` 务必加，否则增量和回填会重复计数
-- **限速**：`max_threads`、`max_insert_threads` 别拉满，给线上查询留资源
+## 历史数据回填
 
----
+我的建议是，超过 100GB 的回填，都该有一套像样的调度。同一批跑两遍结果要一样，也就是先删掉旧分区的数据再插；哪一批跑完了要落盘记下来，挂了能接着跑；能限速、能暂停；随时知道进度、失败和耗时；先挑一个小分区验证逻辑，再放量。
 
-## 六、历史数据回填的标准做法
-
-任何超过 100GB 的回填都必须有完整的调度框架。
-
-### 设计原则
-
-1. **幂等**：同一批跑两遍结果一样（删旧分区数据再插）
-2. **断点续传**：哪批跑完了要落盘记录
-3. **资源可控**：能限速、能暂停
-4. **可观测**：实时知道进度、失败、耗时
-5. **预演**：先跑一个小分区验证逻辑，再放量
-
-### 推荐架构
+大致的架构：
 
 ```
 ┌─────────────────────┐
@@ -293,7 +212,7 @@ SETTINGS
 └─────────────────────┘
 ```
 
-### 进度表
+进度表：
 
 ```sql
 CREATE TABLE backfill_log (
@@ -310,7 +229,7 @@ CREATE TABLE backfill_log (
 ORDER BY batch_id;
 ```
 
-### Python 调度骨架
+调度脚本的骨架：
 
 ```python
 import clickhouse_connect
@@ -388,7 +307,7 @@ def main():
         time.sleep(30)  # 错峰
 ```
 
-### 监控查询
+跑的时候盯这几样：
 
 ```sql
 -- 当前正在执行的查询
@@ -405,20 +324,11 @@ FROM system.merges;
 SELECT status, count() FROM backfill_log FINAL GROUP BY status;
 ```
 
-### 几个容易踩的坑
+几个容易踩的坑。别并行跑好几个 batch，抢资源，merge 跟不上，反而更慢。重跑之前必须 `DROP PARTITION` 清掉旧数据，不然 `sumState`、`countState` 会重复累加。时间边界是 `<` 不是 `<=`，T0 那天的数据已经归 MV 管了。回填会临时多占磁盘，盯好磁盘水位，留三成左右的余量。
 
-1. **不要并行跑多个 batch**：会争抢资源，merge 跟不上反而更慢
-2. **`DROP PARTITION` 幂等关键**：重跑前必须清旧数据，否则 `sumState`、`countState` 会重复
-3. **time 边界**：`<` 不是 `<=`，T0 当天的数据已经被 MV 接管了
-4. **磁盘水位**：回填会临时多占空间，监控好 disk usage，留 30% buffer
+## Projection 也是个选择
 
----
-
-## 七、Projection vs MV：另一个选择
-
-如果聚合逻辑相对简单（PV/UV/SUM 这类），**Projection 可能比 MV 更适合 100T 表**。
-
-### 用法
+聚合逻辑比较简单的，比如 PV、UV、SUM 这类，Projection 可能比 MV 更适合 100T 的表。
 
 ```sql
 ALTER TABLE events ADD PROJECTION proj_daily_agg (
@@ -432,34 +342,22 @@ ALTER TABLE events ADD PROJECTION proj_daily_agg (
 ALTER TABLE events MATERIALIZE PROJECTION proj_daily_agg;
 ```
 
-### Projection vs MV 对比
-
 | 维度 | Projection | TO TABLE MV |
 | --- | --- | --- |
 | 数据位置 | 和源表同 part 内 | 独立表 |
 | 一致性 | 强一致（part 级原子）| 最终一致 |
 | 查询路由 | 优化器自动选 | 需要业务改 SQL |
 | 回填 | `MATERIALIZE PROJECTION`，CH 自管 | 手写 INSERT |
-| 多表 JOIN | ❌ | ❌（refreshable 可以）|
+| 多表 JOIN | 不支持 | 不支持（refreshable 可以）|
 | 删除/修改 | ALTER 即可 | 复杂 |
 
-### MATERIALIZE PROJECTION 在 100T 表上的坑
+Projection 比 MV 轻，它本身就是表的一部分，不用双写，也不用操心两张表同步改 schema，对用户也是透明的，查原表就行，优化器自己决定走不走它。效果上它还是比 MV 稍差一点，这也好理解，Projection 毕竟还是在原表的 part 里，MV 是把数据完全独立出来了，查的时候不用再碰原表。还有一点两者是一样的：不管 MV 还是 Projection，聚合都是以单个 part 为单位做的，要折叠的数据落在不同的 part 里，没合并之前直接查中间结果是不准的，所以查询时还得 `-Merge` 或者再 GROUP BY 一次。
 
-`MATERIALIZE` 在 100T 表上是个**大型 mutation 操作**，本质是把每个 part 都重写一遍。
+`MATERIALIZE PROJECTION` 在 100T 的表上是一个大型的 mutation，等于把每个 part 都重写一遍，坑不少。
 
-#### 1. Mutation 不可中断式取消
+KILL 也没法立刻中断它，KILL 只是发个信号，正在处理的 part 还是会跑完。mutation 期间新旧版本并存，至少要留三四成的额外空间，100T 的表就是至少 30T 空闲。复制表上每个副本各自跑一遍，整个集群的 IO 都被吃掉，副本之间进度不一致是常态。
 
-KILL 是发个信号，正在处理的 part 还是会跑完。
-
-#### 2. 磁盘空间需求
-
-mutation 期间新旧版本并存，至少留 **30-40% 额外空间**。100T 表 → 至少 30T 空闲。
-
-#### 3. Replicated 表的复制流量
-
-每个副本各自跑一遍 = 整个集群 IO 都被吃。副本之间进度不一致是常态。
-
-#### 4. 监控查询
+进度这么看：
 
 ```sql
 -- 整体进度
@@ -478,11 +376,7 @@ WHERE table = 'events' AND active
   AND NOT has(projections, 'proj_daily_agg');
 ```
 
-#### 5. Projection 失败的 part
-
-某个 part materialize 失败，projection 不会生成，但 mutation 整体可能标记为完成。查询时这个 part 走不到 projection 优化。
-
-#### 6. 优化器不一定用 projection
+某个 part 物化失败了，这个 part 就没有 projection，但整个 mutation 可能照样标成完成，查询走到这个 part 时就用不上 projection 的加速。另外优化器也不一定会选 projection，要用 EXPLAIN 确认：
 
 ```sql
 EXPLAIN indexes = 1
@@ -490,37 +384,24 @@ SELECT event_date, count() FROM events
 WHERE event_date >= '2024-01-01'
 GROUP BY event_date;
 ```
+
 看输出里有没有 `Projection: proj_daily_agg`。
 
-### 100T 表上 MATERIALIZE PROJECTION 的推荐流程
+所以在 100T 的表上做，流程是这样：先在测试环境验证 projection 的定义和查询能不能命中；确认磁盘至少有 30T 空闲；挑业务低峰期，按分区一批一批地触发：
 
-1. 测试环境先验证 projection 定义和查询命中
-2. 检查磁盘空间 ≥ 30T 空闲
-3. 业务低峰期触发，**按分区分批**：
-   ```sql
-   SET mutations_sync = 0
-   ALTER TABLE events MATERIALIZE PROJECTION proj_daily_agg
-       IN PARTITION '202401';
-   ```
-4. 监控 `system.mutations`
-5. 验证后处理下一批分区
-6. 全部完成后用 EXPLAIN 验证查询命中
+```sql
+SET mutations_sync = 0
+ALTER TABLE events MATERIALIZE PROJECTION proj_daily_agg
+    IN PARTITION '202401';
+```
 
-**`IN PARTITION` 是 100T 表上唯一可行的姿势。**
+盯着 `system.mutations`，一个分区验证完再做下一个，全部做完再用 EXPLAIN 确认查询命中了。在这种体量的表上，**MATERIALIZE PROJECTION 一定要带 IN PARTITION 分批做**。
 
-### 选型建议
+简单的单表聚合、只是为了加速查询，用 Projection；聚合复杂、有下游要消费、要跨表的，用 TO TABLE MV。100T 的表上两个都可以考虑，叠在一起用也行。顺带提一句，华为云 ClickHouse 有个 [Adaptive MV](https://support.huaweicloud.com/intl/en-us/eu-west-0-cmpntguide-lts-mrs/mrs_01_24287.html)，做的就是类似 Projection 那种对用户透明的物化视图。
 
-- 简单单表聚合、加速查询 → **Projection**
-- 复杂聚合、下游消费、跨表 → **TO TABLE MV**
-- 100T 表两者都要考虑，甚至叠加用
+## 怎么发现 MV 出了问题
 
----
-
-## 八、如何发现 MV 出问题
-
-MV 故障的核心特征是**静默失败**——查询照常返回，只是数字少了或错了。没有主动机制就永远发现不了。
-
-### MV 失败的几种姿势
+MV 出故障，最大的特点是不吭声。查询照常返回，只是数字少了或者错了，没有主动去查的机制，就永远发现不了。
 
 | 故障类型 | 表现 | 发现难度 |
 | --- | --- | --- |
@@ -532,9 +413,9 @@ MV 故障的核心特征是**静默失败**——查询照常返回，只是数�
 | 源数据迟到（业务侧补数）| MV 那个块已处理过，迟到数据进不去 | ★★★★★ |
 | MV 链路中间一环挂了 | 上游 OK、下游缺数 | ★★★ |
 
-### 五道防线
+防线可以配五道。
 
-#### 防线 1：query_log 扫错误
+第一道是扫 query_log 里的错误：
 
 ```sql
 -- 最近 1 小时所有 MV 相关的失败
@@ -548,7 +429,7 @@ WHERE event_time > now() - INTERVAL 1 HOUR
        OR has(views, 'default.mv_events'));
 ```
 
-更精准用 `query_views_log`（默认不开，要在 config 启用）：
+更精准的是 `query_views_log`，要在 config 里配上这张表才有：
 
 ```sql
 SELECT event_time, view_name, view_target,
@@ -558,9 +439,7 @@ WHERE event_time > now() - INTERVAL 1 HOUR
   AND status != 'QueryFinish';
 ```
 
-#### 防线 2：定时对账（最有效）
-
-按时间窗口比源表 vs 聚合表。这是唯一能发现「静默丢数」的方法。
+第二道是定时对账，这是最有效的，也是唯一能发现静默丢数的办法：按时间窗口把源表和聚合表对一遍。
 
 ```sql
 WITH
@@ -576,12 +455,9 @@ SELECT
 WHERE diff_ratio > 0.001;
 ```
 
-对账要点：
-- **不能比当天**：MV 有延迟，比 T-1 或 T-2
-- **不要只比 count**：还要比关键 metric（sum、uniq）
-- **抽样维度比对**：随机抽几个 dim 组合
+别拿当天的数据对，MV 有延迟，对 T-1 或者 T-2；也别只对 count，关键的 sum、uniq 也要对；再随机抽几个维度组合比一比。
 
-#### 防线 3：水位线 / 心跳
+第三道是水位线：
 
 ```sql
 SELECT
@@ -590,9 +466,9 @@ SELECT
 FROM events_agg;
 ```
 
-更精细可在源表塞 heartbeat 记录，看 MV 延迟。
+想更细一点，可以往源表里定时塞心跳记录，看 MV 延迟了多久。
 
-#### 防线 4：Replicated 副本一致性
+第四道是副本一致性：
 
 ```sql
 SELECT
@@ -604,7 +480,7 @@ WHERE database = 'default' AND table = 'events_agg' AND active
 GROUP BY host;
 ```
 
-#### 防线 5：系统级指标
+第五道是系统级的指标：
 
 ```sql
 -- ReplicatedMergeTree 积压
@@ -617,7 +493,7 @@ SELECT name, value FROM system.errors
 WHERE value > 0 ORDER BY value DESC;
 ```
 
-### 推荐的发现体系
+按时间分层排下来，大概是这样：
 
 ```
 T+0 实时层：
@@ -633,48 +509,43 @@ T+7 周对账：
   └─ 长周期数据漂移检测
 ```
 
----
+## 修数据没那么简单
 
-## 九、数据修复：不是「删了重来」那么简单
+假设发现了 2024-03-15 这一天 MV 漏了数。删了重来？没那么简单。
 
-发现问题后假设是「2024-03-15 这天 MV 漏数了」。来看几个让你头大的问题。
-
-### 坑 1：怎么「删」？
+第一个问题，怎么删。
 
 ```sql
 -- 方案 A：DROP PARTITION
 ALTER TABLE events_agg DROP PARTITION '202403';
 ```
-分区粒度是月，你为了修一天，**把整个 3 月都干掉了**。
+
+分区是按月的，为了修一天，整个 3 月都没了。
 
 ```sql
 -- 方案 B：ALTER DELETE（mutation，慢）
 ALTER TABLE events_agg DELETE WHERE event_date = '2024-03-15';
 ```
-100T 量级，单个 DELETE 可能跑几小时。
+
+100T 这个量级，一个 DELETE 可能跑好几个小时。
 
 ```sql
--- 方案 C：Lightweight DELETE（22.8+）
+-- 方案 C：Lightweight DELETE
 DELETE FROM events_agg WHERE event_date = '2024-03-15';
 ```
-轻量删除是标记删除，立刻返回。但**实际数据还在**，merge 时才真删。
 
-常见做法：
-- 分区按天 → DROP PARTITION
-- 分区按月 → 用 `ALTER ... DELETE`，等 mutation
-- 紧急止血 → Lightweight DELETE 先让数据正确，再慢慢清理
+轻量删除 22.8 就有了，早期是实验特性。它只是打标记，马上返回，但数据实际还在，等 merge 的时候才真删。
 
-### 坑 2：源表数据可能已经变了
+一般的做法是：分区按天的，直接 DROP PARTITION；按月的，用 `ALTER ... DELETE` 慢慢等 mutation；着急止血的，先用轻量删除让查询结果对了，再慢慢清理。
 
-源表是 `ReplacingMergeTree` 或 `CollapsingMergeTree` 时，重跑 INSERT 看到的源数据可能已经被后台合并去重过——也可能没合并完。**MV 当初处理的是 INSERT 时的原始 block，不是合并后的最终视图**。
+第二个问题，源表的数据可能已经变了。源表要是 `ReplacingMergeTree` 或者 `CollapsingMergeTree`，重跑 INSERT 时读到的源数据，可能已经被后台合并去重过了，也可能还没合并完。而 MV 当初处理的，是 INSERT 那一刻的原始 block，不是合并以后的样子。重跑时可以加 FINAL：
 
-应对：
 ```sql
 INSERT INTO events_agg
 SELECT ... FROM events FINAL WHERE event_date = '2024-03-15' ...
 ```
 
-### 坑 3：实时数据还在流
+第三个问题，实时数据还在往里流：
 
 ```
 T1: 你 DROP PARTITION '20240315'
@@ -682,37 +553,21 @@ T2: 源表迟到一条 2024-03-15 的数据 → MV 触发 → 写入 events_agg
 T3: 你跑回填 INSERT
 ```
 
-T2 这条数据要单独处理。生产做法：
-1. 先**暂停 MV**（或加排除条件）
-2. 删数据
-3. 回填
-4. **追补暂停期间漏的数据**
-5. 恢复 MV
+T2 这条得单独处理。生产上的做法是先把 MV 停掉，或者加个排除条件；删数据；回填；把停掉这段时间漏掉的数据追补回来；再恢复 MV。
 
-### 坑 4：State 函数的「重复合并」陷阱
+第四个问题，State 函数重复合并。`uniqState` 合并是幂等的，重复写一遍结果不变；`sumState`、`countState` 就不是了，原来 sum 是 100，重跑一遍就成了 200。所以重跑之前必须把旧数据清干净。
 
-- `uniqState` 合并幂等 ✅
-- `sumState`、`countState` **不是幂等的**：原本 sum=100，重跑后变 200
+第五个问题，多个 MV 写同一张目标表。fan-in 的架构下，DROP PARTITION 会把所有上游写进来的数据一起删掉，回头只回填了一个上游，就出大事了。解法是目标表加一个 `source` 字段标明来源，按 source 精确地删。
 
-**重跑前必须确保旧数据彻底清掉。**
-
-### 坑 5：多个 MV 写入同一目标表
-
-fan-in 架构下，DROP PARTITION 会把所有上游数据都干掉，然后只回填一个上游就出大事。
-
-应对：目标表加 `source` 字段标识来源，按 source 精确 DELETE。
-
-### 坑 6：MV 链路下游
+第六个问题，MV 链的下游：
 
 ```
 events → mv1 → events_agg → mv2 → events_summary
 ```
 
-修 `events_agg` 时 `mv2` 会被新 INSERT 触发，下游表已有的脏数据会重复。
+修 `events_agg` 的时候，新 INSERT 会触发 `mv2`，下游表里已有的脏数据就重复了。所以链式的 MV 修数据，要从最下游往上游推。
 
-**链式 MV 修数据要从最下游往上游推。**
-
-### 修数据的标准操作流程
+整个流程排一下：
 
 ```
 1. 确认范围
@@ -739,13 +594,9 @@ events → mv1 → events_agg → mv2 → events_summary
    └─ 跑一遍标准对账脚本确认
 ```
 
----
+## Schema 变了怎么办
 
-## 十、Schema 演化
-
-业务永远在变，源表的列在加在改，MV 必须跟上但不能中断。
-
-### MV 跟 Schema 的耦合关系
+业务永远在变，源表的列一直在加、在改，MV 得跟上，还不能断。
 
 ```
 源表 events ──┐
@@ -757,23 +608,17 @@ events → mv1 → events_agg → mv2 → events_summary
                   目标表 events_agg
 ```
 
-两条耦合：
-- **MV SELECT 引用源表的列**：源表删列 / 改名 → MV 报错
-- **MV SELECT 的输出列对齐目标表**：目标表加列 / 改顺序 → MV 写入失败
+这里有两处耦合。MV 的 SELECT 引用了源表的列，源表删列、改名，MV 就报错。MV 的 SELECT 输出要和目标表对齐，目标表加列、调顺序，MV 就写不进去。
 
-### 典型场景
-
-#### 场景 1：源表加列
+源表加列：
 
 ```sql
 ALTER TABLE events ADD COLUMN channel LowCardinality(String) DEFAULT '';
 ```
 
-MV 不会挂（没引用 channel）。想用新维度则进入场景 3。
+MV 没引用 `channel`，不会挂。想用这个新维度，那就是后面加聚合维度的事了。要注意 MV 里要是写了 `SELECT *`，这时候就会挂，所以 MV 里永远显式地把列名列出来。
 
-**坑**：MV 用 `SELECT *` 会挂。**MV 永远显式列出列名。**
-
-#### 场景 2：目标表加列（加新指标）
+目标表加一个新指标：
 
 ```sql
 -- 1. 目标表加列（带默认值）
@@ -792,13 +637,9 @@ FROM events
 GROUP BY event_date, dim1, dim2;
 ```
 
-**关键**：`AggregateFunction` 列的 DEFAULT 要写一个「空 state」。`MODIFY QUERY` 只对之后的 INSERT 生效，历史要回填。
+`AggregateFunction` 列的 DEFAULT 要写成一个空的 state。`MODIFY QUERY` 只对之后的 INSERT 生效，历史数据还得自己回填。老版本里 `MODIFY QUERY` 还得先开 `allow_experimental_alter_materialized_view_structure`，新版本这个开关已经废弃了。
 
-#### 场景 3：加聚合维度（最痛）
-
-要在 `events_agg` 增加 `channel` 维度，ORDER BY 要变，**这不是 ALTER 能搞定的**。
-
-**零停机切换范式**：
+最痛的是加聚合维度。比如要给 `events_agg` 加一个 `channel` 维度，ORDER BY 跟着要变，这不是 ALTER 能搞定的，只能建影子表切换：
 
 ```sql
 -- Step 1: 建影子表
@@ -840,21 +681,12 @@ DROP TABLE events_agg_v2;  -- 现在指向原 v1
 DROP VIEW mv_events;
 ```
 
-更稳的做法：业务查询走 view 层 `final_agg_view`，切换时只改 view 定义。
+更稳的做法是让业务查询都走一层 view，比如 `final_agg_view`，切换的时候只改 view 的定义。
 
-#### 场景 4：改聚合函数 / 算法
+改聚合函数也一样，`uniq` 换成 `uniqExact`，`AggregateFunction` 的类型都变了，不兼容，走影子表。改列类型分两种，兼容的扩展，比如 `String` 换成 `LowCardinality(String)`、`Int32` 换成 `Int64`，可以直接 ALTER，但那是个 mutation，100T 的表上要跑很久；不兼容的，还是走影子表。
 
-`uniq` → `uniqExact` 是不兼容变更（AggregateFunction 类型不同）。走场景 3 的影子表范式。
+删列要注意顺序，先改 MV 去掉引用，再删源表的列：
 
-#### 场景 5：改列类型
-
-兼容扩展（String → LowCardinality(String)、Int32 → Int64）可以 ALTER，但是 mutation，100T 表上跑很久。
-
-不兼容变更走影子表。
-
-#### 场景 6：删列
-
-正确顺序：
 ```sql
 -- 1. 先改 MV，去掉引用
 ALTER TABLE mv_events MODIFY QUERY SELECT /* 不再引用 deprecated_col */ ...;
@@ -863,28 +695,15 @@ ALTER TABLE mv_events MODIFY QUERY SELECT /* 不再引用 deprecated_col */ ...;
 ALTER TABLE events DROP COLUMN deprecated_col;
 ```
 
-### MODIFY QUERY 的细节
+关于 `MODIFY QUERY` 再多说几句。它立刻生效，不会重跑历史，只影响之后 INSERT 触发的计算；新的 SELECT 输出列必须和目标表对得上；`.inner` 表的那种 MV，`MODIFY QUERY` 的限制更多。
 
-- 立刻生效，**不重跑历史**
-- 只影响之后 INSERT 触发的 MV 计算
-- 新 SELECT 输出列必须和目标表对齐
-- 对 `.inner` 表 MV，`MODIFY QUERY` 受限更多
+这方面 Refreshable 就省心多了。它没有历史 state 已经按旧逻辑算过这个包袱，改完 SELECT 等下一次刷新，自动按新逻辑全量重算，加维度、改聚合、改类型都可以 `MODIFY QUERY`。所以业务还在快速迭代的时候，我更建议先用 Refreshable，等口径稳定了，再迁到增量 MV 上。
 
-### Refreshable MV 的演化优势
+## 团队规范
 
-- 没有「历史 state 已按旧逻辑算过」的负担
-- 改完 SELECT 等下次 refresh，自动按新逻辑全量重算
-- 加维度、改聚合、改类型都可以 `MODIFY QUERY`
+最后把上面这些整理成一份能直接贴到团队 wiki 上的规范。
 
-**业务在快速迭代期，refreshable 比增量 MV 香得多。等口径稳定了再迁移到增量。**
-
----
-
-## 十一、生产规范总结
-
-把所有结论沉淀成可以贴 wiki 的团队规范。
-
-### 硬性禁止
+硬性禁止：
 
 1. 禁止使用 `.inner` 隐式目标表的 MV 写法
 2. 禁止 `POPULATE` 关键字
@@ -892,31 +711,31 @@ ALTER TABLE events DROP COLUMN deprecated_col;
 4. 禁止业务查询直接引用聚合表名（必须经过 view 层）
 5. 禁止无对账的 MV 上生产
 
-### 强制规范
+强制规范：
 
-6. 所有 MV 使用 TO TABLE 形式，目标表显式建在前
-7. 目标表 `PARTITION BY` 必须与源表对齐
-8. MV 列引用必须显式枚举
-9. 超过 100GB 的回填必须有可断点续传的调度程序
-10. 生产 MV 必须配置：`query_views_log` + T+1 对账 + 延迟监控
+1. 所有 MV 使用 TO TABLE 形式，目标表显式建在前
+2. 目标表 `PARTITION BY` 必须与源表对齐
+3. MV 列引用必须显式枚举
+4. 超过 100GB 的回填必须有可断点续传的调度程序
+5. 生产 MV 必须配置：`query_views_log` + T+1 对账 + 延迟监控
 
-### 选型决策
+选型：
 
-11. 简单聚合、近实时 → 增量 MV（TO TABLE + AggregatingMergeTree）
-12. 复杂逻辑 / 含 JOIN / 业务迭代期 → Refreshable MV（必带时间窗口）
-13. 单表查询加速、零业务侵入 → Projection（分区粒度 MATERIALIZE）
-14. 大表预聚合，多个查询模式 → MV + Projection 组合
+1. 简单聚合、近实时：增量 MV（TO TABLE + AggregatingMergeTree）
+2. 复杂逻辑 / 含 JOIN / 业务迭代期：Refreshable MV（必带时间窗口）
+3. 单表查询加速、零业务侵入：Projection（按分区 MATERIALIZE）
+4. 大表预聚合，多个查询模式：MV + Projection 组合
 
-### 变更流程
+变更：
 
-15. Schema 演化优先 `ALTER MODIFY QUERY`，不兼容变更走影子表 + 原子 rename
-16. 任何 schema 变更前在测试环境跑通完整流程
-17. 数据修复从下游往上游、先停写/隔离再操作、修完做对账
+1. Schema 演化优先 `ALTER MODIFY QUERY`，不兼容变更走影子表 + 原子切换
+2. 任何 schema 变更前在测试环境跑通完整流程
+3. 数据修复从下游往上游、先停写/隔离再操作、修完做对账
+
+## 最后
+
+物化视图很好用，但它的棱角也很锋利。增量 MV 说到底是一个 INSERT 触发器，它看到的永远只是当前这个 block，不是全表，JOIN 右表的更新它不知道，迟到的数据它也补不上，出了错还不吭声。Refreshable 是定时调度，想算什么都行，代价是每次都得重算。把这两个本质想清楚，再把对账、监控、回填脚本这些基础设施配齐，它才能在生产上稳稳地扛住预聚合这件事。
 
 ---
 
-## 一句话总结
-
-> **传统 MV 和 POPULATE 永远不用，实时增量走 TO TABLE，复杂或迭代期走 Refreshable，历史回填必须脚本化，对账必须常态化。**
-
-ClickHouse 物化视图是个强大但有锐利棱角的工具。理解它的本质（INSERT 触发器 vs 定时调度），尊重它的边界（增量 MV 看到的是 block 不是全表），建立基础的运维设施（对账、监控、回填脚本），就能让它在生产环境稳定地承担实时数仓最核心的预聚合职责。
+**相关**：[字典：省掉的 JOIN，多付的内存](/clickhouse/deep-dive/dictionary) · [到底要不要写 UDF](/clickhouse/deep-dive/udf)
