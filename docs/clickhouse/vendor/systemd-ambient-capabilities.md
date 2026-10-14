@@ -87,7 +87,7 @@ systemctl show clickhouse-server -p AmbientCapabilities
 >
 > ... Not a big deal, but still.
 
-ClickHouse 是以 `User=clickhouse` 跑的。bounding set 只是个上限，对 root 进程它限制能用的能力范围，对非 root 进程它不会给你任何能力。换句话说，2018 到 2023 年之间 unit 里列的那几个能力，其实从来没真正授予过 ClickHouse 进程。
+ClickHouse 是以 `User=clickhouse` 跑的。bounding set 只是个上限，对 root 进程它限制能用的能力范围，对非 root 进程它不会给你任何能力，2018 到 2023 年之间 unit 里列的那几个能力，其实从来没真正授予过 ClickHouse 进程。
 
 `AmbientCapabilities=` 才能让非 root 服务在 `execve` 之后还保留指定的能力。内核要求 ambient 里的能力同时出现在 permitted 和 inheritable 里，bounding set 也得放行，不过两行不要求一模一样，bounding set 可以更宽。
 

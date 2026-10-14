@@ -21,8 +21,6 @@ ClickHouse 官方给的办法是 S3 disk 加存储策略，把冷数据沉到 S3
 <img class="dfig-d" src="/diagrams/chdb-01.dark.svg" alt="整体架构：ClickHouse 导出 Parquet 到 S3，chDB 微服务独立查询">
 </figure>
 
-下面按为什么这么选、数据怎么放、怎么写出来、生命周期怎么管、怎么对外提供查询这个顺序往下写，最后是一组实测数据。
-
 ## 为什么不用 S3 冷盘
 
 S3 冷盘最大的卖点是无缝：给 ClickHouse 配一个 `<disk type="s3">`，加一条 TTL 自动下沉，业务完全无感。可问题恰恰出在这个无缝上。

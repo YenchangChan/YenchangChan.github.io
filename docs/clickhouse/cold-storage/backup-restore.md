@@ -12,7 +12,7 @@ title: BACKUP/RESTORE 超冷归档：为什么适合金融政企
 
 ## BACKUP 不是冷热分层的替代品
 
-先把边界说清楚。S3 Disk、Parquet、BACKUP 各管各的事：
+S3 Disk、Parquet、BACKUP 各管各的事：
 
 | 方案 | 主要目标 | 查询方式 | 适合场景 |
 |---|---|---|---|

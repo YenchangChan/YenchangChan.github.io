@@ -10,9 +10,9 @@ title: Too many parts：merge 追不上写入的时候
 DB::Exception: Too many parts (300). Parts cleaning are processing significantly slower than inserts
 ```
 
-在 ClickHouse 里，MergeTree 家族的引擎为了最大限度地保证写入速度，每次插入都会产生一个 part，同一个 partition 内的多个 part 再在后台进行 merge，合并成一个更大的 part。
+在 ClickHouse 里，MergeTree 家族的引擎为了尽量保证写入速度，每次插入都会产生一个 part，同一个 partition 内的多个 part 再在后台进行 merge，合并成一个更大的 part。
 
-我们知道，所谓的 partition，是逻辑上的概念，part 才是看得见摸得着的实体（也就是磁盘上的文件和目录）。因此，part 数目并不是越多越好。part 数目一多，必然带来小文件数量的暴增，这对文件系统本身就会带来巨大的压力。而且 part 一多，ClickHouse 需要 merge 的次数也就越多，这必将耗费更多的 CPU 资源。part 数量越多，查询的时候一条 SQL 可能会命中非常多的 part，甚至某些 part 中还有相同的数据交叉，这也给查询带来了很多额外的开销。
+我们知道，所谓的 partition，是逻辑上的概念，part 才是看得见摸得着的实体（也就是磁盘上的文件和目录）。因此，part 数目并不是越多越好。part 数目一多，小文件数量跟着暴增，文件系统压力大；merge 的次数也变多，CPU 消耗跟着涨；查询时一条 SQL 可能命中大量 part，有些 part 里还有相同数据交叉，开销少不了。
 
 因此，ClickHouse 为了避免单表产生过多的 part 影响性能，设置了一个单表最多的 part 数量上限，配置在 `max_parts_in_total` 中，默认值是 10 万。
 
@@ -66,7 +66,7 @@ https://clickhouse.com/docs/knowledgebase/exception-too-many-parts
 
 咳咳，我就知道肯定有人不会去看上面链接里的英文，所以我就干脆好人做到底，直接言简意赅地大致总结一下。
 
-首先第一步，我们如何判断是单表的总 part 数目达到上限了，还是单 partition 内的 part 数目达到上限了呢？
+先判断是单表的总 part 数目到上限了，还是单 partition 内的 part 数目到上限了？
 
 三条 SQL 搞定：
 

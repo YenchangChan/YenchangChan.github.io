@@ -128,7 +128,7 @@ WHERE toDate(event_time) = '2024-04-27'
 ORDER BY user_id, event_time;
 ```
 
-导出前的 `ORDER BY` 很重要。常见的查询要是这样的：
+常见的查询要是这样的：
 
 ```sql
 WHERE user_id = 'xxx'

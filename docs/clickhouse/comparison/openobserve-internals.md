@@ -88,7 +88,7 @@ O2 的物理排序键是 `_timestamp DESC`，写死的。compaction 合并时排
 
 ## 查询引擎是 DataFusion
 
-O2 的查询引擎是 Apache DataFusion。InfluxDB 3.0、Coralogix 用的也是它，算是可观测性这一类产品共用的底座，不是 O2 独有的。这也意味着 O2 查询能力的上限，很大程度上跟着 DataFusion 社区走。
+InfluxDB 3.0、Coralogix 用的也是它，算是可观测性这一类产品共用的底座，不是 O2 独有的。这也意味着 O2 查询能力的上限，很大程度上跟着 DataFusion 社区走。
 
 性能上最容易被带偏。网上流传一个说法，DataFusion 是击败 ClickHouse、DuckDB、chDB 的最快单节点引擎。我去对了 SIGMOD 2024 那篇论文（DataFusion 作者本人写的，署名里有 InfluxData 和 Coralogix 的人），单核基准用的是 ClickBench 14GB/100 文件、TPC-H SF=10 和 H2O-G。结论是 DataFusion 在高选择性的谓词下推场景领先，能充分吃到 Parquet 的裁剪；在千万级分组的高基数 group-by、TPC-H 的 join 排序优化、个别聚合函数（比如 `corr`）上明显落后，部分查询慢两倍以上。整体是和 DuckDB 一个量级，各有胜负，谈不上碾压。而且这是单核、2024 年的数据，又有一定的自证成分，多核和多租户并发的生产场景不一定是这个结果。
 
@@ -118,7 +118,7 @@ O2 的 stream 统计 API 单独暴露了 `index_size`，跟 `storage_size`、`co
 
 ## 和 ClickHouse 比，没有现成的数据
 
-找 O2 和 ClickHouse 的对比，最重要的发现是数据不存在。2025 年 1 月，O2 官方维护者 prabhatsharma 在 GitHub Discussion #5662 里被问到有没有 O2 vs ClickHouse 的性能对比，日志、trace、metric 的摄入、查询延迟、压缩比都算上，他的回答是：「No. If you do one, then let us know.」
+翻了一圈也没找到。2025 年 1 月，O2 官方维护者 prabhatsharma 在 GitHub Discussion #5662 里被问到有没有 O2 vs ClickHouse 的性能对比，日志、trace、metric 的摄入、查询延迟、压缩比都算上，他的回答是：「No. If you do one, then let us know.」
 
 所以任何「O2 比 ClickHouse 快多少倍、省多少钱」的说法，只要不是你自己 POC 测出来的，都别信。社区里零星的讨论是有，但没有一份能公开引用的对比，拿来做决策不够。
 
@@ -213,7 +213,7 @@ ClickHouse 官方有一篇讲 nginx 日志压缩的文章（*Compressing nginx l
 | 极致调优 | 178x | IPv4/UInt 类型 + LowCardinality + 逐列 codec（时间戳 Delta(4)+ZSTD(1)、字符串 ZSTD(6)）+ ordering key 按 (referer, user_agent…) |
 | 按时间排序 | ~50x | ordering key 改 `toStartOfDay(time)` 打头，查询友好 |
 
-CK 调到极致能压到 178x，它不拿这个数做营销而已。当然 178x 是对原始日志、140x 是对 ES 的存储成本，两个数不是一个口径，可至少说明「CK 压缩弱」站不住。更有意思的是官方自己承认，178x 那套 ordering key「may not always be ideal for query performance」。现实里查询大多按时间过滤，改成按时间排序以后压缩率掉到 50x 左右，这才是既能查又能省的甜点区。
+CK 调到极致能压到 178x，它不拿这个数做营销而已。当然 178x 是对原始日志、140x 是对 ES 的存储成本，两个数不是一个口径，可至少说明「CK 压缩弱」站不住。更有意思的是官方自己承认，178x 那套 ordering key「may not always be ideal for query performance」。现实里查询大多按时间过滤，改成按时间排序以后压缩率掉到 50x 左右，查询和压缩两头都顾得上。
 
 压缩率是拿查询性能换的，是一条取舍的曲线。CK 把整条曲线交给你，压缩级别、index_granularity、codec 全能调，你可以自己挪到甜点区。O2 递给你的是一个点，zstd 级别写死、编码走 Parquet 默认、不能逐列调，这个点你挪不动，它也从来不告诉你这个点在曲线的哪一段。再加上 O2 高基数查询偏弱、对象存储有查询延迟、metrics 曾经 OOM 这些情况，我猜它的 140x 更可能落在压得不错但查询一般的那一段，这要靠实测去证实或者推翻。
 
@@ -488,7 +488,7 @@ O2 和 CK 的存储引擎是近亲，排序、merge、列存、zstd，同一套�
 
 测量口径要对齐。O2 用 `compressed_size` + `index_size`，别用 `storage_size`，那个字段累加的是 `original_size`，是 JSON 文本大小，不是落盘大小。CH 用 `SELECT sum(bytes_on_disk) FROM system.parts WHERE active`，这样二级索引也算进去了，只看 `system.columns` 的 `data_compressed_bytes` 会漏掉全文索引。索引也要对等，O2 含全文索引，就别拿去比 CH 的纯数据。
 
-别忘了同时测查询。高基数点查和高基数 group-by 的 P50/P99 是 O2 的弱项，很可能测出来 O2 存储略省、查询慢一截，那才是完整的选型画面。
+别忘了同时测查询。高基数点查和高基数 group-by 的 P50/P99 是 O2 的弱项，很可能测出来 O2 存储略省、查询慢一截，只测压缩率会漏掉这一半。
 
 ---
 

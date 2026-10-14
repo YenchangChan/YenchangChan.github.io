@@ -171,9 +171,9 @@ CK 这边有表函数（`iceberg()`、`deltaLake()`、`hudi()`、`paimon()`，�
 
 Doris 3.0 有完整的存算分离：共享存储（对象存储或 HDFS）、计算组（Compute Group）、元数据服务（Meta Service）三层。数据在共享存储上，BE 无状态，编成计算组，用 `use @<compute_group_name>` 把不同负载分到不同计算组，导入和查询物理隔离。工程细节也做得不错，扩缩容时渐进式预热缓存，不影响正在跑的查询；一个集群的表只复制元数据就能克隆到另一个集群。官方给的数字是存储成本下降约 90%，查询性能下降约 35%（这些数字来自 SelectDB/VeloDB 的博客，只能当厂商案例看）。
 
-CK 对应的能力叫 SharedMergeTree，只在 Cloud 里有，开源版没有。开源版能做的只有存储下沉：把 S3 注册成一块盘，用 `TTL ... TO VOLUME` 把冷数据挪过去。这解决的是冷数据的存储成本，计算和存储还是绑死的，没法独立扩计算节点，扩容还是要搬数据。这不是存算分离，只是分级存储。
+CK 对应的能力叫 SharedMergeTree，只在 Cloud 里有，开源版没有。开源版能做的只有存储下沉：把 S3 注册成一块盘，用 `TTL ... TO VOLUME` 把冷数据挪过去。这解决的是冷数据的存储成本，计算和存储还是绑死的，没法独立扩计算节点，扩容还是要搬数据，说到底只是分级存储。
 
-必须私有化部署存算分离的，Doris 有明确优势。协议一样是 Apache 2.0，但 Doris 把存算分离放进了开源版，CK 把它留在了 Cloud，这是产品边界，不是技术高下。
+必须私有化部署存算分离的，Doris 有明确优势。协议一样是 Apache 2.0，但 Doris 把存算分离放进了开源版，CK 把它留在了 Cloud，差别在产品边界。
 
 ## 存储
 
@@ -236,7 +236,7 @@ CK 压缩比高，这是公认的，但很多人说不清为什么高。根子�
 
 这个结论站不住。它比的是 Doris 的 ZSTD 和 CK 的 LZ4，根本不是同一个算法，同样开 ZSTD，CK 不会输。它是单一迁移案例，还发在迁移方自己的渠道上，典型的一面之词。最关键的是，too many parts 的根因是 merge 跟不上写入，不是压缩算法。ZSTD 比 LZ4 慢是事实，但它只是压垮骆驼的最后一根稻草，该调的是 merge 线程池、`max_bytes_to_merge_at_max_space_in_pool` 这类参数。我自己的生产环境长期用 ZSTD，没因为它出过入库积压。
 
-所以压缩比 CK 确实领先，只是领先幅度被网上的文章夸大了；「开高压缩比容易撞写入瓶颈」也确实存在，但那是个调优问题，不是架构缺陷。
+所以压缩比 CK 确实领先，只是领先幅度被网上的文章夸大了；「开高压缩比容易撞写入瓶颈」也确实存在，但那是调优问题。
 
 ### 分级存储
 
@@ -403,7 +403,7 @@ Doris 兼容 MySQL 协议，这带来的接入成本差异常常被低估。所�
 
 CK 用自己的 SQL 方言和协议，虽然也有 `mysql_port`，但兼容范围有限，不少 BI 工具缺原生支持。`ARRAY JOIN`、`-If`/`-Array`/`-State` 组合子这些语法很有表现力，可学习和迁移成本也得算进去。CK 的补偿是 `clickhouse-client` 本身极其好用，实时进度条、几十种输出格式、多行编辑、语法高亮，用惯了再用 `mysql` 客户端，感觉像回到了石器时代。
 
-执行计划也是这个味道。CK 的 EXPLAIN 家族信息量极大，`EXPLAIN PLAN` 看逻辑计划，`EXPLAIN PIPELINE` 看每个算子几路并行，`EXPLAIN ESTIMATE` 预估读多少 part 和 mark，`EXPLAIN indexes=1` 看主键和跳数索引各裁掉了多少 granule。再配上 `SET send_logs_level='trace'`，执行过程每一步都打到客户端。调优时信息密度极高，但门槛也高，看不懂 granule、mark、part 的关系，这些输出就是天书。Doris 的 EXPLAIN 和 Query Profile 更结构化，有 Web UI，各阶段耗时、行数、内存一目了然，还能看到 CBO 估算和实际值的偏差，看懂的门槛低得多。CK 的信息更全，Doris 的更好懂，这其实是两家整体气质的缩影。
+执行计划也是这个味道。CK 的 EXPLAIN 家族信息量极大，`EXPLAIN PLAN` 看逻辑计划，`EXPLAIN PIPELINE` 看每个算子几路并行，`EXPLAIN ESTIMATE` 预估读多少 part 和 mark，`EXPLAIN indexes=1` 看主键和跳数索引各裁掉了多少 granule。再配上 `SET send_logs_level='trace'`，执行过程每一步都打到客户端。调优时信息密度极高，但门槛也高，看不懂 granule、mark、part 的关系，这些输出就是天书。Doris 的 EXPLAIN 和 Query Profile 更结构化，有 Web UI，各阶段耗时、行数、内存一目了然，还能看到 CBO 估算和实际值的偏差，看懂的门槛低得多。CK 的信息更全，Doris 的更好懂。
 
 ### 系统表
 
@@ -429,7 +429,7 @@ Doris Manager（现在叫 Cluster Manager for Apache Doris）由 SelectDB 出品
 
 Doris 在这一层直接复用了 MySQL 驱动。任何语言、任何框架，能连 MySQL 就能连 Doris，Java 用 `mysql-connector-java`，Go 用 `go-sql-driver/mysql`，Python 用 `PyMySQL`，不需要任何 Doris 专属的 SDK，ORM 也直接能用。另外还有 Flink/Spark Connector 和 Arrow Flight SQL，大批量拉数据比 MySQL 协议快很多。
 
-CK 全是自己造的轮子：`clickhouse-go`、`clickhouse-jdbc`、`clickhouse-connect`、`clickhouse-cpp`、`clickhouse-rs`，官方维护，质量都不错。走 Native 协议性能明显好于 HTTP，支持列式批量写入、异步插入、查询进度回调，批量写入的吞吐很能打，clickhouse_sinker 就是基于 clickhouse-go 写的。但冷门语言基本没有官方支持。Doris 赢在广度，CK 赢在深度。
+CK 全是自己造的轮子：`clickhouse-go`、`clickhouse-jdbc`、`clickhouse-connect`、`clickhouse-cpp`、`clickhouse-rs`，官方维护，质量都不错。走 Native 协议性能明显好于 HTTP，支持列式批量写入、异步插入、查询进度回调，批量写入的吞吐很能打，clickhouse_sinker 就是基于 clickhouse-go 写的。但冷门语言基本没有官方支持。
 
 ### 二次开发
 
@@ -451,7 +451,7 @@ Doris 在可观测这块的能力是「支持被监控」：FE 和 BE 各自暴�
 
 K8s 这块两边都有 operator。CK 这边 Altinity 的 [clickhouse-operator](https://github.com/Altinity/clickhouse-operator) 是事实标准，用了很多年，集群定义、配置管理、滚动升级、PVC 管理、Keeper 集成都很完备。Doris 社区的 doris-operator 起步晚一些，基本能力都有。
 
-但长期看可能是反过来的。CK 开源版是存算一体，节点有状态，上了 K8s，Pod 的弹性伸缩受限于 PVC 和数据分布，扩容还是绕不开前面说的数据均衡难题，K8s 能帮的主要是部署编排。Doris 3.0 存算分离以后 BE 是无状态的，计算节点随起随停，这才是 K8s 真正擅长的场景。现在就要上 K8s，CK 的 operator 更成熟；规划未来几年的部署形态，Doris 的架构更对路。
+但长期看可能是反过来的。CK 开源版是存算一体，节点有状态，上了 K8s，Pod 的弹性伸缩受限于 PVC 和数据分布，扩容还是绕不开前面说的数据均衡难题，K8s 能帮的主要是部署编排。Doris 3.0 存算分离以后 BE 是无状态的，计算节点随起随停，正适合 K8s 的弹性伸缩。现在就要上 K8s，CK 的 operator 更成熟；规划未来几年的部署形态，Doris 的架构更对路。
 
 ### 商业支持
 

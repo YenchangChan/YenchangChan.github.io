@@ -69,7 +69,7 @@ title: ClickHouse 集群机房搬迁实战
 
 ### 合并型引擎跨集群 INSERT SELECT 要加 FINAL
 
-源表要是 `ReplacingMergeTree`、`CollapsingMergeTree` 这类合并型引擎，跨集群 INSERT SELECT 得显式加 FINAL：
+源表要是 `ReplacingMergeTree`、`CollapsingMergeTree` 这类合并型引擎，INSERT SELECT 得显式加 FINAL，不加的话拷过去的是未去重的多版本数据：
 
 ```sql
 -- ❌ 错误：拷过去的是未去重的多版本数据
@@ -144,7 +144,7 @@ ORDER BY gb DESC;
 
 ## sharding key 不只是性能优化
 
-讲 reshard 之前，得先把 sharding key 的作用说清楚。它有三重作用。最基础的是写入分布，让数据均匀落到各个 shard，别出热点，这个大家都懂，不多说。
+讲 reshard 之前，得先把 sharding key 的作用说清楚。最基础的是写入分布，让数据均匀落到各个 shard，别出热点，这个大家都懂，不多说。
 
 第二重最容易翻车：合并型引擎的去重正确性。对 `ReplacingMergeTree`、`CollapsingMergeTree`、`VersionedCollapsingMergeTree`、`SummingMergeTree`、`AggregatingMergeTree` 这些引擎，sharding key 必须是 `ORDER BY` 字段的函数。原因是 FINAL 和后台 merge 都是在单个 shard 内做的，只能合并同一个 shard 里的数据。同一个去重 key 的多个版本要是散到了不同的 shard，FINAL 永远查不出正确的去重结果。
 
@@ -201,7 +201,7 @@ SETTINGS distributed_product_mode = 'local';
 
 colocate 还让 sharding key 被锁得更死。不光每张表自己的 sharding key 不能随便改，一组互相 join 的表还得一起改，改一张就得改所有相关的表；跨集群迁移要 reshard，也得一组表一起 reshard，而且新旧的 sharding key 表达式行为要一致。实际业务里，一个领域常常有 5 到 10 张表共用同一个 sharding key（比如 `cityHash64(user_id)`），reshard 的时候它们是拆不开的一个整体。
 
-好在只要守住两张表用同一个 sharding key 表达式这一条，shard 数从 3 变成 5 并不会破坏 colocate。同一个 user_id 在 B 集群上照样落在同一个 shard，只是 shard 编号变了。要求的是表达式相同，不是编号相同。
+好在只要守住两张表用同一个 sharding key 表达式这一条，shard 数从 3 变成 5 并不会破坏 colocate。同一个 user_id 在 B 集群上照样落在同一个 shard，编号会变，表达式不变就行。
 
 麻烦的是 colocate 失效了是没声音的。查询从 2 秒退化到 60 秒，不报错，业务方往往切流几天后才来反馈，到那时已经很难回滚了。所以切流之前，要专门做一轮性能回归，把业务里所有带 JOIN 的查询挑出来，在 A、B 两个集群上各跑一遍比耗时。
 
@@ -262,9 +262,7 @@ SETTINGS
 
 ## 中小客户的 PB 级，其实是 100 TB 级
 
-这个说法得把三件事串起来讲：数据量怎么分布，查询怎么访问，sharding key 管的是什么。
-
-先看数据。头部互联网公司，比如字节、阿里，ClickHouse 集群是日增 PB 级，总量是流量堆出来的，每天写进来的就很多，热数据本身就是 PB 级，没有缩小问题规模的余地。中小客户完全不一样：
+数据量上，头部互联网公司，比如字节、阿里，ClickHouse 集群是日增 PB 级，总量是流量堆出来的，每天写进来的就很多，热数据本身就是 PB 级，没有缩小问题规模的余地。中小客户完全不一样：
 
 | 业务类型 | 日增量 | 5 年累积 | 典型集群规模 |
 |---|---|---|---|
@@ -274,9 +272,9 @@ SETTINGS
 
 中小客户出现 PB 级的表，几乎都是两三年累积起来的，每天 GB 到 TB 的增量乘上时间堆上去的。总量大，不代表都是活跃数据。
 
-再看查询。OLAP 场景里，业务监控、运营大盘查的是最近 24 小时、7 天、30 天；用户行为分析查最近 30 到 90 天；季度同比、年报查最近一年；历史回溯、合规审计才会查一到三年前的数据，频次很低，一个月几次。中小客户的实际系统里，九成以上的查询落在最近 6 到 12 个月的数据上，这部分才是热数据。
+查询上，OLAP 场景里，业务监控、运营大盘查的是最近 24 小时、7 天、30 天；用户行为分析查最近 30 到 90 天；季度同比、年报查最近一年；历史回溯、合规审计才会查一到三年前的数据，频次很低，一个月几次。中小客户的实际系统里，九成以上的查询落在最近 6 到 12 个月的数据上，这部分才是热数据。
 
-最后看 sharding key。写入分布、合并型引擎去重、colocate join，这三重作用针对的全是被频繁访问的数据。冷数据已经不写了，分布匀不匀没意义；冷数据状态已经稳定，不会再来新版本；冷数据很少参与查询，join 快慢也不敏感。一类查询要是频次极低，比如两年前的历史回溯，那这部分数据用什么 sharding 都无所谓，全表扇出查一次，业务是能接受的。
+sharding key 上，写入分布、合并型引擎去重、colocate join，这三重作用针对的全是被频繁访问的数据。冷数据已经不写了，分布匀不匀没意义；冷数据状态已经稳定，不会再来新版本；冷数据很少参与查询，join 快慢也不敏感。一类查询要是频次极低，比如两年前的历史回溯，那这部分数据用什么 sharding 都无所谓，全表扇出查一次，业务是能接受的。
 
 <div class="sk sk-steps">
 <div class="sk-box"><span class="sk-t">中小客户 PB 级表</span><span class="sk-d">数年累积</span></div>
@@ -322,7 +320,7 @@ SELECT count() FROM s3(
 
 ### 10 TB 以下：INSERT SELECT 直接推
 
-10 TB 以下别想太多，直接 INSERT SELECT。`clickhouse-backup` 在这儿就是杀鸡用牛刀，部署工具、配 S3、调权限、排查版本兼容，折腾下来不划算。
+这个量级别想太多，直接 INSERT SELECT。`clickhouse-backup` 在这儿就是杀鸡用牛刀，部署工具、配 S3、调权限、排查版本兼容，折腾下来不划算。
 
 ```sql
 INSERT INTO db.events_local

@@ -8,8 +8,6 @@ title: Too many partitions：和 Too many parts 一词之差，处理方式截�
 
 当然了，哥也不会让你白跑一趟，「Too many parts」的解决思路都在这里了，拿走不谢：[Too many parts：merge 追不上写入的时候](/clickhouse/deep-dive/too-many-parts)。
 
-一词之差，解决思路却是截然相反的。
-
 我们知道，ClickHouse 为了保证数据的高效写入，每次写入都会产生一个 part。但这有个前提，就是 part 的概念是在 partition 之下的。也就是说，如果你一次写入涉及到多个 partition 的数据，它同样会产生多个 part，这就相当于把一个 batch 的数据需要再做一次分流，这个插入效率可想而知。
 
 ClickHouse 对单表的分区个数是有一定限制的，单表的 partition 数目不宜过多（一般 1000 以下为宜，最多不建议超过 10000），如果分区数过多，会带来非常严重的性能问题。
@@ -56,7 +54,7 @@ LIMIT 1000000;
 
 第二种解法是将 batch 调小。比如数据源的数据无序存放，一次拉取 10 万条，可能包含 100 多个分区，但是如果我一次只拉取 1 万条，甚至 1000 条呢？包含的 partition 数量就降下来了。
 
-看见没，同样是「Too many ...」的错，「Too many parts」要将 batch 尽可能调大，而「Too many partitions」则是要将 batch 适当调小，一词之差，处理方式截然相反。
+看见没，同样是「Too many ...」的错，「Too many parts」要将 batch 尽可能调大，而「Too many partitions」则是要将 batch 适当调小。
 
 当然最终的解法，就是重新规划分区，调整建表语句。
 

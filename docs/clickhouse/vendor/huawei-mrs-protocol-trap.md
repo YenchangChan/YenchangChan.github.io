@@ -18,7 +18,7 @@ clickhouse_sinker 是一个开源的、把 Kafka 数据写进 ClickHouse 的高�
 
 > Currently, Kerberos can only be used as an external authenticator for existing users, which are defined in `users.xml` or in local access control paths. Those users may only use HTTP requests and must be able to authenticate using GSS-SPNEGO mechanism.
 
-简而言之，就是只支持 HTTP 协议。我们实际适配的时候也是这样，用 TCP 协议连接失败，用 HTTP 协议能正常连上。所以专门适配了 HTTP 协议，在此之前 sinker 只支持 TCP。
+说白了，就是只支持 HTTP 协议。我们实际适配的时候也是这样，用 TCP 协议连接失败，用 HTTP 协议能正常连上。所以专门适配了 HTTP 协议，在此之前 sinker 只支持 TCP。
 
 既然确定是内存泄漏，那就直接上手段，pprof 走起。
 

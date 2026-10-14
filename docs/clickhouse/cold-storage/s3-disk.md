@@ -76,7 +76,7 @@ TTL
 
 关键在于，part 放到 S3 上以后，仍然是一组 ClickHouse 自己的文件，`.bin`、`.mrk2`、`.idx`、`checksums.txt`、`columns.txt` 这些一个不少。本地的 `metadata_path` 记着逻辑文件名到 S3 object key 的映射。
 
-这就带来三个直接的后果。本地这个 `metadata_path` 是要命的数据，丢了就很难恢复。part 越多，S3 上的对象就越多，list、delete、备份都跟着变贵。启动、ATTACH、校验的时候，都可能要去 S3 上读 part 的自描述文件。
+本地这个 `metadata_path` 是要命的数据，丢了就很难恢复。part 越多，S3 上的对象就越多，list、delete、备份都跟着变贵。启动、ATTACH、校验的时候，都可能要去 S3 上读 part 的自描述文件。
 
 生产上一般还会在 S3 Disk 上面再叠一层 `cache` disk。同一段冷数据被反复查，体验好不好基本就看 cache 命中率；要是只为合规归档、几乎不查，cache 也就没多大用。
 

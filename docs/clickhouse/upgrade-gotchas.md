@@ -494,7 +494,7 @@ SELECT name, value, description FROM system.merge_tree_settings WHERE changed AN
 -- system.server_settings 有没有 is_obsolete 列，按你的版本确认
 ```
 
-有两个限制。`system.settings` 的 `changed` 只反映当前会话，服务端级（`config.xml`）的设置在 `system.server_settings` 里，得单独查。`is_obsolete` 这一列是后加的，老版本上会直接报 `Unknown identifier`。
+`system.settings` 的 `changed` 只反映当前会话，服务端级（`config.xml`）的设置在 `system.server_settings` 里，得单独查。`is_obsolete` 这一列是后加的，老版本上会直接报 `Unknown identifier`。
 
 #### 它只覆盖三种「改了不生效」里的一种
 

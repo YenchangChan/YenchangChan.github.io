@@ -30,7 +30,7 @@ title: 应用平台的 S3 冷盘：先把队列分开
 
 ## ClickHouse 在 S3 上的数据是怎么放的
 
-后面很多结论，为什么 metadata_path 的备份必须排第一优先级、为什么对象数容易爆、为什么能按 granule 跳读、为什么禁 merge 能省钱，都建立在 ClickHouse 的物理数据布局上，所以先把这一层讲清楚。
+后面很多结论都建立在 ClickHouse 的物理数据布局上：为什么 metadata_path 的备份必须排第一优先级、为什么对象数容易爆、为什么能按 granule 跳读、为什么禁 merge 能省钱。
 
 ### part 是一个目录
 

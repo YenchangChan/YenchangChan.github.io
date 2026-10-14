@@ -4,7 +4,7 @@ title: 明明加了 -gdwarf-4，core 里还是没有行号
 
 # 明明加了 -gdwarf-4，core 里还是没有行号
 
-我有一个C语言写的采集器程序，生产环境 coredump 了。coredump本身并不可怕，它反而更好的留存了现场快照，调试就是了。但是core 拿回来，用 gdb 一打开，第一屏就是一行报错，`bt` 出来只有光秃秃的函数名，参数、行号一概没有：
+我有一个C语言写的采集器程序，生产环境 coredump 了。coredump 本身不可怕，它反而把现场留得更全，调试就是了。但是core 拿回来，用 gdb 一打开，第一屏就是一行报错，`bt` 出来只有光秃秃的函数名，参数、行号一概没有：
 
 ```
 Reading symbols from ./collector...Dwarf Error: wrong version in compilation unit header

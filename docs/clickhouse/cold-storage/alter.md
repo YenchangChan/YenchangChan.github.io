@@ -10,7 +10,7 @@ title: 冷数据上的 ALTER TABLE：三种方案各会发生什么
 
 ## ALTER 在内部走哪条路
 
-在说具体场景之前，得先把 ClickHouse 的 ALTER 在内部怎么走讲清楚，后面所有的结论都是从这儿来的。
+ALTER 在内部走两条路，后面三个场景的结论都是从这儿来的。
 
 一条是只改元数据的路：
 
@@ -53,7 +53,7 @@ ALTER TABLE t UPDATE col = v WHERE ...;         -- 数据变更
 | `MODIFY ORDER BY`（追加列） | 瞬时 | 两种恢复方式都麻烦 | 不适用（外部表没有 ORDER BY） |
 | `MODIFY TTL` | 默认会对全表跑一次 MATERIALIZE TTL | 不影响 backup | 不适用 |
 
-一眼能看出来三件事。S3 Disk 上 schema 变更的代价最没谱，同样是 ADD COLUMN，带不带 MATERIALIZE 差了三个数量级。BACKUP 最干净，线上表怎么 ALTER 都碰不到已经归档的 backup，因为 backup 是自描述的快照。Parquet 对 schema 变更最友好，大多数 ALTER 在 Parquet 上都能自动兼容。
+S3 Disk 上 schema 变更的代价最没谱，同样是 ADD COLUMN，带不带 MATERIALIZE 差了三个数量级。BACKUP 最干净，线上表怎么 ALTER 都碰不到已经归档的 backup，因为 backup 是自描述的快照。Parquet 对 schema 变更最友好，大多数 ALTER 在 Parquet 上都能自动兼容。
 
 ## S3 Disk 上的 ALTER
 
