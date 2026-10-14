@@ -171,4 +171,4 @@ ClickHouse 开发人员不是傻子，这么明显的性能问题肯定注意到
 
 ---
 
-**相关**：[Too many partitions：和 Too many parts 一词之差，处理方式截然相反](/clickhouse/troubleshooting/too-many-partitions) · [Too many parts — ClickHouse Knowledge Base](https://clickhouse.com/docs/knowledgebase/exception-too-many-parts)
+**相关**：[Too many partitions：和 Too many parts 一词之差，处理方式截然相反](/clickhouse/deep-dive/too-many-partitions) · [Too many parts — ClickHouse Knowledge Base](https://clickhouse.com/docs/knowledgebase/exception-too-many-parts)

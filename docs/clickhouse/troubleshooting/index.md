@@ -25,21 +25,6 @@
 <span class="post-d">ZK 扩容重启后 znode 冲到 2700 万，四个月后又在 fetch 池上积压了一次。里面有我远程给错的那条建议。</span>
 </a>
 
-<a class="post" href="/clickhouse/troubleshooting/too-many-parts">
-<span class="post-t">Too many parts：merge 追不上写入的时候</span>
-<span class="post-d">改上限是自欺欺人，OPTIMIZE 是饮鸩止渴。能做的只有两件事：少产生 part，让 merge 跑得动。</span>
-</a>
-
-<a class="post" href="/clickhouse/troubleshooting/too-many-partitions">
-<span class="post-t">Too many partitions：和 Too many parts 一词之差，处理方式截然相反</span>
-<span class="post-d">一个要把 batch 调大，一个要把 batch 调小。临时导入可以放宽上限，常态写入不行。</span>
-</a>
-
-<a class="post" href="/clickhouse/troubleshooting/inconsistent-query-results">
-<span class="post-t">同一条 SQL 每次查出来不一样：先看它是怎么变的</span>
-<span class="post-d">表引擎用错、副本同步延迟、去重引擎没加 FINAL、TTL，四种原因看结果怎么变就能分开。</span>
-</a>
-
 </div>
 
 <!-- TODO：

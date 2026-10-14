@@ -6,7 +6,7 @@ title: Too many partitions：和 Too many parts 一词之差，处理方式截�
 
 是的，你没有看错，本文介绍的是「Too many partitions」，而不是「Too many parts」，这二者并不是一回事。如果你关心的是「Too many parts」，但是恰好点进了这篇文章，我只能说声抱歉：哥们，你跑错片场了。
 
-当然了，哥也不会让你白跑一趟，「Too many parts」的解决思路都在这里了，拿走不谢：[Too many parts：merge 追不上写入的时候](/clickhouse/troubleshooting/too-many-parts)。
+当然了，哥也不会让你白跑一趟，「Too many parts」的解决思路都在这里了，拿走不谢：[Too many parts：merge 追不上写入的时候](/clickhouse/deep-dive/too-many-parts)。
 
 一词之差，解决思路却是截然相反的。
 
@@ -62,4 +62,4 @@ LIMIT 1000000;
 
 ---
 
-**相关**：[Too many parts：merge 追不上写入的时候](/clickhouse/troubleshooting/too-many-parts) · [生产排障](/clickhouse/troubleshooting/)
+**相关**：[Too many parts：merge 追不上写入的时候](/clickhouse/deep-dive/too-many-parts) · [一次讲透](/clickhouse/deep-dive/)

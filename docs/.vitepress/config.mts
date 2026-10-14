@@ -84,9 +84,6 @@ export default defineConfig({
             { text: '126 万 znode 是怎么长出来的', link: '/clickhouse/troubleshooting/keeper-async-blocks' },
             { text: 'S3 不可达时起不来', link: '/clickhouse/troubleshooting/s3-unreachable-startup' },
             { text: 'znode 爆炸与线程池', link: '/clickhouse/troubleshooting/znode-explosion' },
-            { text: 'Too many parts', link: '/clickhouse/troubleshooting/too-many-parts' },
-            { text: 'Too many partitions', link: '/clickhouse/troubleshooting/too-many-partitions' },
-            { text: '同一条 SQL 结果不一样', link: '/clickhouse/troubleshooting/inconsistent-query-results' },
           ],
         },
         {
@@ -107,6 +104,9 @@ export default defineConfig({
           collapsed: false,
           items: [
             { text: '概览', link: '/clickhouse/deep-dive/' },
+            { text: 'Too many parts', link: '/clickhouse/deep-dive/too-many-parts' },
+            { text: 'Too many partitions', link: '/clickhouse/deep-dive/too-many-partitions' },
+            { text: '同一条 SQL 结果不一样', link: '/clickhouse/deep-dive/inconsistent-query-results' },
             { text: '物化视图', link: '/clickhouse/deep-dive/materialized-view' },
             { text: '字典', link: '/clickhouse/deep-dive/dictionary' },
             { text: '到底要不要写 UDF', link: '/clickhouse/deep-dive/udf' },

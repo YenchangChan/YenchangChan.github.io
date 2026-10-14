@@ -33,7 +33,7 @@ shard = int(xxhash64(val64) % uint64(policy.shards))
 
 最直接的例子是去重。
 
-`ReplicatedReplacingMergeTree` 的去重只在单个分片内生效：同一个 key 的多行，只有落在同一个分片上才会被 merge 掉，分散在不同分片上的重复行，它永远不会去掉。所以用这个引擎的表，写入侧必须把去重字段设成 sharding key，保证同一个 key 永远路由到同一个节点。我在 [同一条 SQL 每次查出来不一样](/clickhouse/troubleshooting/inconsistent-query-results) 里也提过这条。
+`ReplicatedReplacingMergeTree` 的去重只在单个分片内生效：同一个 key 的多行，只有落在同一个分片上才会被 merge 掉，分散在不同分片上的重复行，它永远不会去掉。所以用这个引擎的表，写入侧必须把去重字段设成 sharding key，保证同一个 key 永远路由到同一个节点。我在 [同一条 SQL 每次查出来不一样](/clickhouse/deep-dive/inconsistent-query-results) 里也提过这条。
 
 现在让存储层按容量自动搬 part，同一个 key 的数据就被拆到了两个分片上，去重从此失效。同样的还有按业务 id 分片让聚合在本地完成、按 join key 分片把分布式 join 变成本地 join，搬完之后这些前提全都不成立了。
 

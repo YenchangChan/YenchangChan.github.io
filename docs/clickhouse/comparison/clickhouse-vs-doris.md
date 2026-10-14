@@ -187,7 +187,7 @@ CK 是先有数据后有分区。`PARTITION BY` 是一个表达式，数据写�
 PARTITION BY toYYYYMM(event_time)
 ```
 
-建完表直接灌，2023 年的数据来了就有 2023 年的分区，回填十年前的历史数据也不用提前准备，数据探索、历史回补的时候非常舒服。代价是分区数失控的风险全落在使用者身上。分区键选细了，比如跨多年的数据按天分，分区数肉眼可见地膨胀。更隐蔽的是脏数据，日志里混进一个 1970 年或者 2099 年的时间戳，就能凭空造出一个分区，而且一直待在那。`max_partitions_per_insert_block`（默认 100）拦得住「一次写入撒到几百个分区」，拦不住「分区总数慢慢涨到几万个」，这事我在 [Too many partitions](/clickhouse/troubleshooting/too-many-partitions) 那篇里也说过。
+建完表直接灌，2023 年的数据来了就有 2023 年的分区，回填十年前的历史数据也不用提前准备，数据探索、历史回补的时候非常舒服。代价是分区数失控的风险全落在使用者身上。分区键选细了，比如跨多年的数据按天分，分区数肉眼可见地膨胀。更隐蔽的是脏数据，日志里混进一个 1970 年或者 2099 年的时间戳，就能凭空造出一个分区，而且一直待在那。`max_partitions_per_insert_block`（默认 100）拦得住「一次写入撒到几百个分区」，拦不住「分区总数慢慢涨到几万个」，这事我在 [Too many partitions](/clickhouse/deep-dive/too-many-partitions) 那篇里也说过。
 
 分区多了的后果，CK 在报错信息里写得很直白：启动变慢、INSERT 变慢、SELECT 变慢，建议单表 1000 个以内。同一段提示里还有一句常被忽略的话：分区不是用来加速查询的，那是排序键的活，分区是为了 `DROP PARTITION` 这类数据操作存在的。很多人把分区当索引用，方向从一开始就错了。CK 也不支持原地改分区键，选错了只能新建表、迁数据、`RENAME` 交换，所以这一行得在建表时想清楚。
 
@@ -220,7 +220,7 @@ Doris 是正面解决的。Unique Key 表从 2.1 起默认 Merge-on-Write：写�
 
 ### 写入
 
-CK 写入调优的核心约束是一次 INSERT 通常产生一个 part，插入频率超过后台合并速度，part 失控，就报 too many parts（详见 [Too many parts](/clickhouse/troubleshooting/too-many-parts)）。物化视图还会放大这个问题，每个挂在源表上的 MV 都在持续生成小 part。官方的办法说到底都是攒批：客户端攒够几十万行或上百 MB 再写；客户端攒不了就开 `async_insert`；或者用 Buffer 表先缓存在内存里定期刷，好处是缓冲区里的数据也能查到，坏处是它在事务之外，宕机就丢。
+CK 写入调优的核心约束是一次 INSERT 通常产生一个 part，插入频率超过后台合并速度，part 失控，就报 too many parts（详见 [Too many parts](/clickhouse/deep-dive/too-many-parts)）。物化视图还会放大这个问题，每个挂在源表上的 MV 都在持续生成小 part。官方的办法说到底都是攒批：客户端攒够几十万行或上百 MB 再写；客户端攒不了就开 `async_insert`；或者用 Buffer 表先缓存在内存里定期刷，好处是缓冲区里的数据也能查到，坏处是它在事务之外，宕机就丢。
 
 Doris 的写入是事务性的。同一个 label 在一个 DB 里只会成功一次，重试会被判重拒绝，天然幂等；Stream Load 支持两阶段提交，由 Flink/Spark 在 checkpoint 成功后再 Commit，这是真正的 exactly-once。
 

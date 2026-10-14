@@ -19,7 +19,7 @@ python3 scripts/diagrams/deploy-topology.py  docs/public/diagrams
 | 脚本 | 生成 | 用在 |
 |---|---|---|
 | `logsearch.py` | `logsearch-01` ~ `logsearch-05` | [日志检索三家实测](../../docs/clickhouse/comparison/log-search-ck-doris-es.md) |
-| `inconsistent.py` | `inconsistent-01`、`inconsistent-02` | [同一条 SQL 每次查出来不一样](../../docs/clickhouse/troubleshooting/inconsistent-query-results.md) |
+| `inconsistent.py` | `inconsistent-01`、`inconsistent-02` | [同一条 SQL 每次查出来不一样](../../docs/clickhouse/deep-dive/inconsistent-query-results.md) |
 | `deploy-topology.py` | `deploy-topology-01` ~ `deploy-topology-03` | [集群部署拓扑对比](../../docs/clickhouse/tooling/deployment-topology.md) |
 
 改完重跑一遍就覆盖了，脚本是确定性的，同样的输入出同样的字节。

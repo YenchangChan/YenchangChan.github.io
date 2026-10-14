@@ -430,4 +430,4 @@ Altinity clickhouse-operator 按"一个 Pod 一个副本"建模，ClickHouse Clo
 - clickhouse_sinker 源码（commit `d6fb252`）：`pool/conn.go`、`output/clickhouse.go`、`discovery/discovery.go`。
 - ckman 源码：`ckconfig/metrika.go`。
 
-**相关**：[扩容之后为什么不自动做数据均衡](/clickhouse/tooling/why-not-auto-rebalance) · [同一条 SQL 每次查出来不一样](/clickhouse/troubleshooting/inconsistent-query-results) · [ckman](https://github.com/housepower/ckman) · [clickhouse_sinker](https://github.com/housepower/clickhouse_sinker)
+**相关**：[扩容之后为什么不自动做数据均衡](/clickhouse/tooling/why-not-auto-rebalance) · [同一条 SQL 每次查出来不一样](/clickhouse/deep-dive/inconsistent-query-results) · [ckman](https://github.com/housepower/ckman) · [clickhouse_sinker](https://github.com/housepower/clickhouse_sinker)

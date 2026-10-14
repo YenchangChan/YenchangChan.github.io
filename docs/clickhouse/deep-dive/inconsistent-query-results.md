@@ -126,4 +126,4 @@ WHERE <ttl_column> < now() - INTERVAL 1 MONTH;
 
 ---
 
-**相关**：[生产排障](/clickhouse/troubleshooting/) · [Too many parts：merge 追不上写入的时候](/clickhouse/troubleshooting/too-many-parts)（同一个后台池）
+**相关**：[一次讲透](/clickhouse/deep-dive/) · [Too many parts：merge 追不上写入的时候](/clickhouse/deep-dive/too-many-parts)（同一个后台池）

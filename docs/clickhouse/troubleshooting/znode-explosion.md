@@ -120,4 +120,4 @@ ClickHouse 的设置散在三张表里，`system.settings`、`system.server_sett
 
 ---
 
-**相关**：[生产排障](/clickhouse/troubleshooting/) · [Too many parts：merge 追不上写入的时候](/clickhouse/troubleshooting/too-many-parts) · [同一条 SQL 每次查出来不一样](/clickhouse/troubleshooting/inconsistent-query-results)（副本同步延迟一节）
+**相关**：[生产排障](/clickhouse/troubleshooting/) · [Too many parts：merge 追不上写入的时候](/clickhouse/deep-dive/too-many-parts) · [同一条 SQL 每次查出来不一样](/clickhouse/deep-dive/inconsistent-query-results)（副本同步延迟一节）

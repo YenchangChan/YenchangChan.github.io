@@ -1,6 +1,6 @@
 # 一次讲透
 
-挑一个 ClickHouse 的功能，从它内部怎么运作，一直讲到生产上的边界在哪。
+挑一个 ClickHouse 的功能，或者一类反复碰到的问题，从它内部怎么运作，一直讲到生产上的边界在哪。
 
 ## 和官方文档的分界
 
@@ -8,7 +8,7 @@
 
 怎么用就不写了，那部分官方文档比我写得全，也比我更新得快。
 
-## 一个功能一篇，不拆
+## 一个话题一篇，不拆
 
 栏目叫一次讲透，拆成六篇就是自己打自己的脸。
 
@@ -23,9 +23,11 @@
 | [生产排障](/clickhouse/troubleshooting/) | 一起真实事故，讲到哪儿由那次踩到的东西决定 |
 | [工具与设计](/clickhouse/tooling/) | 一个产品决策，为什么值得做成能力，或者为什么不做 |
 | [选型与横评](/clickhouse/comparison/) | 一次跨产品对比 |
-| 一次讲透 | 一个功能本身，不等事故发生，先把它摊开 |
+| 一次讲透 | 一个功能或一类问题本身，不等事故发生，先把它摊开 |
 
-排障篇受事故的限制，只能讲到踩中的那一块；这边可以把整个功能摊开讲，反过来也能给排障篇做个背书。
+排障篇受事故的限制，只能讲到踩中的那一块；这边可以整个摊开讲，反过来也能给排障篇做个背书。
+
+像 Too many parts 这种，不是哪一次事故的复盘，是这些年被问了太多遍攒出来的，所以放在这一栏。
 
 ## 版本
 
@@ -34,6 +36,21 @@
 ## 文章
 
 <div class="posts">
+
+<a class="post" href="/clickhouse/deep-dive/too-many-parts">
+<span class="post-t">Too many parts：merge 追不上写入的时候</span>
+<span class="post-d">改上限是自欺欺人，OPTIMIZE 是饮鸩止渴。能做的只有两件事：少产生 part，让 merge 跑得动。</span>
+</a>
+
+<a class="post" href="/clickhouse/deep-dive/too-many-partitions">
+<span class="post-t">Too many partitions：和 Too many parts 一词之差，处理方式截然相反</span>
+<span class="post-d">一个要把 batch 调大，一个要把 batch 调小。临时导入可以放宽上限，常态写入不行。</span>
+</a>
+
+<a class="post" href="/clickhouse/deep-dive/inconsistent-query-results">
+<span class="post-t">同一条 SQL 每次查出来不一样：先看它是怎么变的</span>
+<span class="post-d">表引擎用错、副本同步延迟、去重引擎没加 FINAL、TTL，四种原因看结果怎么变就能分开。</span>
+</a>
 
 <a class="post" href="/clickhouse/deep-dive/materialized-view">
 <span class="post-t">物化视图：三种机制，以及 100T 表上的 POPULATE</span>
@@ -57,7 +74,7 @@
     fetch 与 merge 怎么分线程池，副本落后的几种形态怎么区分。
     写完后与 /clickhouse/troubleshooting/keeper-async-blocks 互链 ——
     那篇追到了异步插入去重的 znode，但没法展开整体结构，正好各补各的。
-  · merge 机制：为什么 OPTIMIZE 不解决 too many parts（首页已有结论，这里给全论证）、
+  · merge 机制：为什么 OPTIMIZE 不解决 too many parts（Too many parts 那篇给了结论，这里给全论证）、
     merge_selecting 的挑选策略、TTL merge 与普通 merge 抢线程池。
   · 窗口函数：CH 的实现与标准 SQL 的差异、内存模型、
     什么时候该用它、什么时候该退回聚合 + JOIN。
