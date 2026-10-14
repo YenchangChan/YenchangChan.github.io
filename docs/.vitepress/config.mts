@@ -49,6 +49,7 @@ const CH_SIDEBAR = [
             { text: 'Too many parts', link: '/clickhouse/deep-dive/too-many-parts' },
             { text: 'Too many partitions', link: '/clickhouse/deep-dive/too-many-partitions' },
             { text: '同一条 SQL 结果不一样', link: '/clickhouse/deep-dive/inconsistent-query-results' },
+            { text: 'FINAL 查询优化', link: '/clickhouse/deep-dive/final-query' },
             { text: '物化视图', link: '/clickhouse/deep-dive/materialized-view' },
             { text: '字典', link: '/clickhouse/deep-dive/dictionary' },
             { text: '到底要不要写 UDF', link: '/clickhouse/deep-dive/udf' },
