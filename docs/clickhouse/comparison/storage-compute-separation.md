@@ -217,13 +217,17 @@ ByConity 的信创适配（麒麟、飞腾、龙芯这些）我没去查，所�
 
 | 维度 | OpenObserve | GreptimeDB | Doris 3.0+ | ClickHouse 开源 |
 |---|---|---|---|---|
-| 开源协议 | AGPL-3.0（美国） | Apache-2.0（中国） | Apache-2.0（ASF，中国主导） | Apache-2.0（俄裔美国） |
-| 架构 | 分层，存算分离；组件对等（Router/Ingester/Querier/Compactor/AlertManager） | 分层，存算分离；角色分明（Frontend/Datanode/Metasrv[/Flownode]） | 存算一体或存算分离（FE + 无状态 BE + Meta Service + FDB） | 对等分片架构（Shard + Replica），非存算分离 |
-| 存储形式 | 统一列式（Parquet） | 列式（Parquet），宽表窄表并存 | 列式，宽表为主 | 列式，宽窄表动态适应 |
-| 压缩算法 | ZSTD 固定（`ZO_PARQUET_COMPRESSION`，默认 zstd，可选 snappy/gzip/brotli/lz4/none），仅全局，不可逐列 | ZSTD level 1 硬编码，用户完全不可配置 | LZ4F（3.0 源码实际默认）/ ZSTD / LZ4 / Snappy / Zlib 等 7 种，仅表级，不可逐列 | LZ4（自建默认）/ ZSTD / Delta / DoubleDelta / Gorilla / T64 等，可逐列，可 pipeline 组合 |
-| 写入语义 | At-Least-Once；WAL + 定期刷盘 | At-Least-Once；WAL + 定期刷盘 | Exactly-Once（需上游 At-Least-Once 配合）；Label 机制保证单次导入去重 | At-Least-Once；`insert_quorum` 可选多副本确认 |
+| 开源协议 | AGPL-3.0<br>美国 | Apache-2.0<br>中国 | Apache-2.0<br>ASF，中国主导 | Apache-2.0<br>俄裔美国 |
+| 架构 | 分层，存算分离<br>组件对等 | 分层，存算分离<br>角色分明 | 存算一体<br>或存算分离 | 对等分片<br>非存算分离 |
+| 存储形式 | 列式 Parquet | 列式 Parquet<br>宽表窄表并存 | 列式<br>宽表为主 | 列式<br>宽窄表动态适应 |
+| 压缩算法 | 6 种可选<br>仅全局，不可逐列 | ZSTD level 1 硬编码<br>完全不可配 | 7 种可选<br>仅表级，不可逐列 | 6 种以上<br>可逐列，可组合 |
+| 写入语义 | At-Least-Once | At-Least-Once | Exactly-Once | At-Least-Once |
 
-这张表里最要紧的是压缩算法那一行，它把几家分成了三档：
+几格的细节说明一下。组件上，OpenObserve 是 Router、Ingester、Querier、Compactor、AlertManager 几个对等组件；GreptimeDB 是 Frontend、Datanode、Metasrv，可选 Flownode，角色分得很清楚；Doris 存算分离模式是 FE 加无状态 BE 加 Meta Service 加 FoundationDB；ClickHouse 就是分片加副本。
+
+写入语义上，OpenObserve 和 GreptimeDB 都是 At-Least-Once，靠 WAL 加定期刷盘；Doris 是 Exactly-Once，靠 Label 机制保证单次导入去重，前提是上游能做到 At-Least-Once；ClickHouse 是 At-Least-Once，`insert_quorum` 可以要求多副本确认。
+
+这张表里最要紧的是压缩算法那一行。OpenObserve 由 `ZO_PARQUET_COMPRESSION` 控制，默认 zstd，可选 snappy、gzip、brotli、lz4、none，只能全局设；GreptimeDB 是 ZSTD level 1 硬编码；Doris 有 LZ4F、ZSTD、LZ4、Snappy、Zlib 等 7 种，只能在表级设；ClickHouse 有 LZ4、ZSTD、Delta、DoubleDelta、Gorilla、T64 等，自建默认 LZ4，可以逐列指定，还能 pipeline 组合。按能不能配、能配到多细，正好分三档：
 
 ```
 可逐列配置        ClickHouse                    ← 唯一

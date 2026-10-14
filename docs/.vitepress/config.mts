@@ -46,6 +46,14 @@ export default defineConfig({
         state.tokens.splice(i + 1, 0, tok)
         return true
       })
+
+      // 表格套一层可横向滚动的壳。站点 CSS 把表格改回了 display:table + width:100%
+      // （默认样式太松散），代价是宽表不再能自己滚动，会一路顶到右侧目录上。
+      // 壳负责滚动，表格照旧撑满正文列。
+      md.renderer.rules.table_open = (tokens, idx, options, _env, self) =>
+        '<div class="table-wrap">\n' + self.renderToken(tokens, idx, options)
+      md.renderer.rules.table_close = (tokens, idx, options, _env, self) =>
+        self.renderToken(tokens, idx, options) + '</div>'
     },
   },
 

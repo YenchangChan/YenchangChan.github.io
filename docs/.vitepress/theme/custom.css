@@ -196,6 +196,22 @@
 
 /* ─────────────────────── 4. 表格 ─────────────────────── */
 
+/* 宽表的滚动壳（markdown-it 里给每张表包的）。
+   表格本身撑满正文列；列太多撑不下时，在壳里横向滚动，不去挤右侧目录。 */
+.vp-doc .table-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+  margin: 1.4rem 0;
+}
+.vp-doc .table-wrap > table {
+  margin: 0;
+}
+
+/* 表格里的长标识符允许折行 */
+.vp-doc td code {
+  word-break: break-word;
+}
+
 /* 版本清单、PR 列表全靠表格，默认样式太松散 */
 .vp-doc table {
   display: table;

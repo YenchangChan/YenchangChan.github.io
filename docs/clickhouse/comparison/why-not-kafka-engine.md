@@ -14,7 +14,7 @@ title: 为什么不用 Kafka engine，也不写分布式表
 
 日志和指标场景下，Kafka 到 ClickHouse 这条链路要同时做到几件事。一是高吞吐的大批量写入，MergeTree 的性能来自 merge，每次 INSERT 产生一个 part，批次一小，part 数就顶上去了，merge 压力跟着涨，官方建议一次至少 1000 行，最好在 1 万到 10 万行之间。二是数据在集群里落得均衡，不能某个节点的磁盘先满。三是能按业务语义路由，去重字段、join key、聚合维度要落在同一个分片上，这件事为什么重要，我在 [扩容之后为什么不自动做数据均衡](/clickhouse/tooling/why-not-auto-rebalance) 里讲过。四是副本故障时写入不中断，分片里某个副本挂了，能自动切到同分片的其他副本。五是至少一次语义，数据确认写进去了才提交 offset。
 
-这五条里，第二、三、四条官方 Kafka engine 是做不到的。不是做得不够好，是压根没有这个能力。
+这五条里，第二、三、四条官方 Kafka engine 做不了，它压根没有这个能力。
 
 ## Kafka engine 的代价
 
@@ -22,7 +22,7 @@ title: 为什么不用 Kafka engine，也不写分布式表
 
 在 ClickHouse 里，engine 决定了一张表的数据怎么组织，直接影响读写能力。稀疏索引、分区裁剪、merge、TTL 分层，这些全在 MergeTree 家族上。
 
-用 Kafka engine，数据得先进一张 Kafka 表，再靠物化视图转进 MergeTree。多了一跳，而且这一跳的行为你控制不了。sinker 是直接写 MergeTree 的本地表，数据一步到位。
+用 Kafka engine，数据得先进一张 Kafka 表，再靠物化视图转进 MergeTree。多了一跳，而且这一跳的行为你控制不了。sinker 直接写 MergeTree 的本地表，数据一步到位。
 
 ### 出了问题不好查
 
@@ -31,8 +31,6 @@ Kafka engine 底层用的是 librdkafka。库本身质量不差，可它是嵌�
 懂的都懂，不出问题还好，一旦出了问题，基本没法有效排查。外部工具就不一样了，它是个独立进程，日志、指标都是自己的，可以单独重启，可以上 pprof。
 
 ### 数据落在哪，由 Kafka 说了算
-
-这是最硬的一条。
 
 Kafka engine 部署在每个节点上，各自消费分到的分区。数据最后落在哪个节点，取决于 Kafka 的分区分配，跟数据本身没关系。Kafka 各分区的数据量不均，ClickHouse 节点就跟着不均，均衡与否全看运气。按业务语义路由更是无从谈起，你没办法让同一个去重 key 永远落在同一个分片上。
 

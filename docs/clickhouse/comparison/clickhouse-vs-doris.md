@@ -207,8 +207,6 @@ Doris 2.1 的 AUTO PARTITION 就是冲着这个来的，按导入数据的实际
 
 ### 更新和删除
 
-这是 CK 和 Doris 最核心的架构分歧之一，也常常是选型里的硬约束。
-
 CK 是为追加写设计的，更新删除是后来一点点补上的。ReplacingMergeTree 能让同主键最终只留最新版本，但去重靠后台 merge，什么时候完成说不准，要立刻看到去重结果就得在查询里加 `FINAL`，查询代价跟着上去。`ALTER TABLE ... UPDATE/DELETE` 是 mutation，直接重写整个 part，异步执行，大表上跑一次能把 IO 打满，生产上基本属于能不用就不用。轻量级 delete/update 用标记代替重写，好多了，但限制还是不少。`insert_quorum` 管的是副本写入确认，`insert_deduplication_token` 管的是投递幂等，都和主键语义没关系。这些可以组合着用，但组合起来也不等于一个主键约束，CK 没有写入即可见的唯一键语义。
 
 Doris 是正面解决的。Unique Key 表从 2.1 起默认 Merge-on-Write：写入时 BE 先在 memtable 里按 key 排好序，然后拿批次里的每个 key 去查各个 segment 的主键索引，找到旧行所在的 rowset 和 row id，在对应 rowset 的 delete bitmap 上置位，新行写进一个全新的 rowset。查询时直接跳过被标记的行，不需要按 key 做多版本合并，旧数据等 compaction 时再回收。
