@@ -6,25 +6,19 @@ title: 126 万 znode 是怎么长出来的
 
 事情从一次例行巡检开始。一个 ClickHouse 26.3 LTS 开发集群，Keeper 监控面板上的 znode 数字很扎眼：前一天约 119 万，第二天约 126 万，24 小时涨了 6.9 万。Keeper 单节点数据量约 340 MB，平均请求延迟 165～185 ms，历史最大延迟到了 31.9～40.6 秒。
 
-延迟已经明显不健康了。可真正让我觉得不对劲的是另一件事：这个集群的业务表并不多。
+延迟已经明显不健康了。可真正让我觉得不对劲的是另一件事：这个集群的业务表并不多，从哪冒出来这么多的znode？
 
-ReplicatedMergeTree 每张表在 Keeper 里的协调节点是有数的，`log`、`blocks`、`replicas`、`mutations` 这些加起来，一张表通常在几百到几千的量级。一个表不多的开发集群，凭什么撑起百万级的节点？要知道我们在 23.8 的老集群上跑着 4000 张表，从来没出过这种事。
-
-更要命的是它还在涨。还在涨，说明不是一个已经稳住的容量问题，而是有什么东西在持续生产节点。
-
-文中主机名、数据库名都脱敏了。
+ReplicatedMergeTree 每张表在 Keeper 里的协调节点是有数的，`log`、`blocks`、`replicas`、`mutations` 这些加起来，一张表通常在几百到几千的量级。一个表不多的开发集群，凭什么撑起百万级的节点？要知道我们在一个 23.8 的老集群上跑着 4000 张表，从来没出过这种事。
 
 ## 先确认它真的在涨
 
-光凭两天的数字不够，先把历史曲线拉出来看。
-
-<!-- TODO: 放 znode 增长曲线图 -->
-
-94 小时净增 487212，增幅 62.91%；最后一个完整 24 小时净增 68544。除了后台清理带来的一点小回落，主趋势一路向上。也就是说，当时的 120 万并没有停在某个上限附近，它还在爬坡。
+从历史曲线来看，94 小时净增 487212，增幅 62.91%；最后一个完整 24 小时净增 68544。除了后台清理带来的一点小回落，主趋势一路向上。也就是说，当时的 120 万并没有停在某个上限附近，它还在爬坡。
 
 那么问题来了，这些节点到底长在哪儿？
 
 ## 顺着路径挖
+
+我首先排查了之前经常碰到的重灾区：`parts`和`/queue`， 显示都很正常，并没有特别扎眼的地方。那么，只能全面扫一遍了。
 
 Keeper 的 znode 是树形的，思路很直接：从顶层目录一层层拆开计数，看哪一枝特别肥。
 
@@ -83,11 +77,17 @@ ClickHouse 最怕高频小 INSERT，每个 INSERT 生成一个 part，part 一�
 
 问题出在攒这个动作上。多个 INSERT 合成一批以后，ClickHouse 还得知道批里每一个原始 INSERT 到底执行过没有。不然就会出这种事：服务端明明已经写成功了，ACK 还没回到客户端，网络断了，客户端以为失败了，重试。没有去重记录的话，第二次 INSERT 会再写一遍，轻则多出重复行，重则物化视图的目标表、SummingMergeTree 的聚合结果被重复累加。
 
-<!-- TODO: 放客户端重试时序图：服务端已写成功，ACK 未返回，客户端重试 -->
+<figure class="dfig">
+<img class="dfig-l" src="/diagrams/async-blocks-01.light.svg" alt="客户端重试时序：服务端已写成功，ACK 未返回，客户端重试导致重复写入">
+<img class="dfig-d" src="/diagrams/async-blocks-01.dark.svg" alt="客户端重试时序：服务端已写成功，ACK 未返回，客户端重试导致重复写入">
+</figure>
 
 所以 ClickHouse 给异步批次里的每一个源 INSERT 算一个去重标识，写进对应 ReplicatedMergeTree 路径下的 `async_blocks`。说白了，它就是让客户端重试变得幂等的一份索引。它不是业务数据，不是待执行的队列，也不是 part，删掉它们不会释放数据盘上一个字节。
 
-<!-- TODO: 放 async_blocks 写入示意图 -->
+<figure class="dfig">
+<img class="dfig-l" src="/diagrams/async-blocks-02.light.svg" alt="async_blocks 写入路径：小 INSERT 攒批成 1 个 part，每个源 INSERT 在 Keeper 写一条去重 hash">
+<img class="dfig-d" src="/diagrams/async-blocks-02.dark.svg" alt="async_blocks 写入路径：小 INSERT 攒批成 1 个 part，每个源 INSERT 在 Keeper 写一条去重 hash">
+</figure>
 
 现场抽了几条看，单条 value 只有 20 字节左右。可 znode 的成本远不止 value，Keeper 还得维护节点元数据、内存索引、事务日志、快照和复制状态。每条几十字节，一百万条照样压得动 Keeper。
 
@@ -106,7 +106,7 @@ deduplicate_insert        enable    enable    0
 
 `async_insert = 1`，而且 `changed = 0`，没人改过，它就是默认开的。这个已经够意外了。再往下看，`async_insert_deduplicate = 0`，异步去重是关着的。
 
-要是信了这一行，追查就断在这了：异步去重明明关着，那百万个节点从哪来的？清理线程坏了？有别的 bug？
+异步去重明明关着，那百万个节点从哪来的？清理线程坏了？有别的 bug？
 
 关键在第三行 `deduplicate_insert = enable`。这是 26.2 引入的统一开关，官方 PR 写得很直白，它会覆盖旧的 `insert_deduplicate` 和 `async_insert_deduplicate`。也就是说，26.2 以后 `async_insert_deduplicate=0` 这个值已经不代表实际行为了，它就是个被架空的老开关，看着是关的，其实不管事。
 
@@ -149,7 +149,7 @@ cleanup_delay_period_random_add                           = 10
 
 可这个集群表不多啊，路径数怎么会这么大？
 
-问题出在数法上。人数的是逻辑表名，Keeper 数的是表分片路径。同一张表的多个副本共用一个 `zookeeper_path`，所以不用乘副本数；但不同的表、不同的分片，各自是一条独立的路径。把这个集群摊开数一遍：
+同一张表的多个副本共用一个 `zookeeper_path`，所以不用乘副本数；但不同的表、不同的分片，各自是一条独立的路径。把这个集群逐个数一遍：
 
 | 维度 | 规模 |
 |---|---:|
@@ -192,9 +192,9 @@ async_blocks 上限 ≈ 活跃的 ReplicatedMergeTree 表分片路径数 × 1000
 
 ## 4000 张表的老集群为什么没事
 
-这个反例不能放过。如果 `async_blocks` 是 ReplicatedMergeTree 一直就有的机制，23.8.9.54 上 4000 张表早该把 Keeper 撑爆了。既然没有，只剩两种可能：要么老版本没这个机制，要么有，但默认不启用。
+如果 `async_blocks` 是 ReplicatedMergeTree 一直就有的机制，23.8.9.54 上 4000 张表早该把 Keeper 撑爆了。既然没有，只剩两种可能：要么老版本没这个机制，要么有，但默认不启用。
 
-翻了一圈代码和 PR，是后者，而且来龙去脉比我想的曲折。
+翻了一圈代码和 PR，答案是后者，而且来龙去脉比我想的曲折。
 
 机制是 22.12 就有的。[#43304](https://github.com/ClickHouse/ClickHouse/pull/43304) 首次支持异步 INSERT 去重，[#44223](https://github.com/ClickHouse/ClickHouse/pull/44223) 建了 `async_blocks` 路径和对应的开关，我核实过的第一个包含它的稳定标签是 `v22.12.1.1752-stable`。可那时候 `async_insert_deduplicate` 默认关，`async_insert` 也得手动开。23.8 就落在这个区间里，代码躺在那儿，没人去开，就一个节点都不会写。4000 张表相安无事，原因就在这。
 
@@ -228,8 +228,6 @@ async_insert_
 
 ## 社区早就吵过这一架
 
-这事社区里有人讨论过，而且不止一处。只是这些讨论散在不同的 issue 和 PR review 里，没有一个标题叫 async_blocks 泄漏的 bug 单，拿关键词很难一次搜到。
-
 2023 年的 [#54968](https://github.com/ClickHouse/ClickHouse/issues/54968) 里，有用户报告 8 分片 2 副本、800 张复制表，Keeper 里约 180 万 znode，社区回复说复制表多加上按天分区，会持续制造大量协调节点。严格说这个 issue 讲的是 `block_numbers`，跟这次的 `async_blocks` 不是一个 bug，但它说明表和分片多了以后把 Keeper 推到百万级，早就不是个例。
 
 最关键的一条是 [#86820](https://github.com/ClickHouse/ClickHouse/pull/86820)。这个 PR 想把普通复制表的去重条数窗口也提到 10000，review 里社区贡献者 filimonov 明确反对，大意是：
@@ -243,11 +241,11 @@ PR 作者的回复更有意思：`replicated_deduplication_window_for_async_inse
 
 [#87414](https://github.com/ClickHouse/ClickHouse/pull/87414) 把普通的 `replicated_deduplication_window_seconds` 从一周降到一小时，理由正是减少低写入速率下的 ZooKeeper znode，方向完全对。review 里有人问，为什么不把 `replicated_deduplication_window_seconds_for_async_inserts` 一起改了？作者说这次没动异步 INSERT，但承认一起改确实有道理。可惜这一刀最后没砍下去，26.3 的异步窗口仍然是 10000 条加一周。
 
-还有 [#91596](https://github.com/ClickHouse/ClickHouse/issues/91596)，讨论的正好就是前面那个旧开关的坑。维护者在里面讲清楚了：老版本里异步去重同时受好几个设置控制；26.2 引入 `deduplicate_insert`；`deduplicate_insert=enable` 会覆盖两个旧开关；从 26.2 开始，同步和异步 INSERT 默认都去重。看到这条我松了口气，`async_insert_deduplicate=0` 还在生成节点，不是我们环境里闹鬼，官方是认了的。
+还有 [#91596](https://github.com/ClickHouse/ClickHouse/issues/91596)，讨论的正好就是前面那个旧开关的坑。维护者在里面讲清楚了：老版本里异步去重同时受好几个设置控制；26.2 引入 `deduplicate_insert`；`deduplicate_insert=enable` 会覆盖两个旧开关；从 26.2 开始，同步和异步 INSERT 默认都去重。由此可以实锤了，`async_insert_deduplicate=0` 还在生成节点，不是我们环境里闹鬼，确系官方新版本的BUG导致。
 
 ## 官方后来怎么修的
 
-26.6 里，[#107886](https://github.com/ClickHouse/ClickHouse/pull/107886) 把 `insert_deduplication_version` 的默认值改成了 `new_unified_hash`，异步 INSERT 不再写单独的 `async_blocks`，而是和同步 INSERT 共用 `deduplication_hashes` 目录和那个一小时的普通窗口。这个我对过源码，`v26.5.5.8-stable` 里服务端设置还是：
+26.6 里，[#107886](https://github.com/ClickHouse/ClickHouse/pull/107886) 把 `insert_deduplication_version` 的默认值改成了 `new_unified_hash`，异步 INSERT 不再写单独的 `async_blocks`，而是和同步 INSERT 共用 `deduplication_hashes` 目录和那个一小时的普通窗口。`v26.5.5.8-stable` 里服务端设置还是：
 
 ```cpp
 insert_deduplication_version = COMPATIBLE_DOUBLE_HASHES
@@ -275,8 +273,6 @@ insert_deduplication_version = NEW_UNIFIED_HASHES
 | #107886；`v26.6.1.1193-stable` | `insert_deduplication_version` 默认切为 `new_unified_hash` | 异步 INSERT 改写 `deduplication_hashes`，不再新建 `async_blocks` |
 | 26.7.1.552，#108361 | 移除旧的独立去重实现 | 从代码上完成旧路径淘汰 |
 
-这里有个容易搞错的地方：默认不再写 `async_blocks` 的第一个稳定版本是 `v26.6.1.1193-stable`，不是 26.7。我核对的时候是 2026-07-19，GitHub 上公开的 26.7 tag 只有 `v26.7.1.1-new`，#108361 标的 26.7.1.552 是内部版本号，不能当成已经发布的 26.7 稳定包。
-
 按公开的稳定包和默认配置，哪些版本会碰上：
 
 | 版本范围 | 默认是否会出现本文问题 | 说明 |
@@ -288,8 +284,6 @@ insert_deduplication_version = NEW_UNIFIED_HASHES
 | 26.4.x ～ 26.5.x | 是 | 默认仍为兼容双 hash / 旧异步窗口 |
 | `v26.6.1.1193-stable` 及之后 | 默认已修复 | 默认使用 `new_unified_hash`；若显式保留 `compatible_double_hashes`，仍会继续使用 `async_blocks` |
 | 26.7.1.552 及以后 | 完整移除旧写入路径 | 升级前必须完成统一 hash 的兼容迁移 |
-
-设置过 `compatibility`、自定义 profile、查询级参数或者表级设置的，实际行为可能不一样。另外要注意，26.2 和 26.3 这些老的维护分支，哪怕补丁发布时间比 26.6 还晚，也不会自动带上 26.6 的默认值变更，升到更新的 26.3 补丁版本解决不了这个问题。
 
 ## 先止血
 
@@ -305,7 +299,7 @@ insert_deduplication_version = NEW_UNIFIED_HASHES
 </clickhouse>
 ```
 
-还留着一部分异步 INSERT 的重试幂等，Keeper 节点上限降到原来的十分之一，适合客户端确实会自动重试的链路。但 `async_blocks` 还在，重试要是超出了窗口，照样可能写重。这个 1000 也别照抄，得按 INSERT 频率和最长重试时间算。
+还留着一部分异步 INSERT 的重试幂等，Keeper 节点上限降到原来的十分之一，适合客户端确实会自动重试的链路。但 `async_blocks` 还在，重试要是超出了窗口，照样可能写重。
 
 第二个是窗口直接设成 0，这次我们用的就是这个：
 
@@ -336,11 +330,9 @@ insert_deduplication_version = NEW_UNIFIED_HASHES
 
 可对 sinker 这种写法，一个批次就是一个大 INSERT，源 INSERT 只有一个，去重记录也只有一条，跟同步插入一模一样，服务端攒批一点便宜都没占到。
 
-那这种集群的 `async_blocks` 怎么还能堆到百万？差别不在条数，在保留期。普通 INSERT 的去重（`deduplication_hashes`）是 10000 条加 1 小时，这个一小时是 #87414 从一周降下来的；异步 INSERT 的去重（`async_blocks`）是 10000 条加 1 周，#87414 恰好跳过了它。同样的写入速率，留存时间差了 168 倍。一条路径要在一周内攒满 10000 条，平均每小时 60 条就够了，也就是每分钟一个批次，这比绝大多数 sinker 的 flush 频率都低。要是走普通窗口，同样的写入只留最近一小时，606 条路径加起来也就几万条，到不了百万。
+那这种集群的 `async_blocks` 怎么还能堆到百万？差别不在条数，在保留期。普通 INSERT 的去重（`deduplication_hashes`）是 10000 条加 1 小时，这个一小时是 [#87414](https://github.com/ClickHouse/ClickHouse/pull/87414)  从一周降下来的；异步 INSERT 的去重（`async_blocks`）是 10000 条加 1 周，[#87414](https://github.com/ClickHouse/ClickHouse/pull/87414)  恰好跳过了它。同样的写入速率，留存时间差了 168 倍。一条路径要在一周内攒满 10000 条，平均每小时 60 条就够了，也就是每分钟一个批次，这比绝大多数 sinker 的 flush 频率都低。要是走普通窗口，同样的写入只留最近一小时，606 条路径加起来也就几万条，到不了百万。
 
 所以对大批次客户端，关掉 `async_insert` 以后，`async_blocks` 不再产生，去重保护却还在，走的是普通的 `deduplication_hashes`，一小时窗口，这一点前两个办法都做不到。攒批本来就在客户端做，不会引出 Too many parts，还省了服务端一次内存缓冲和数据拷贝。默认 `wait_for_async_insert=1` 时客户端本来也要等到刷盘完成，延迟上没有损失。批次边界也回到了客户端手里，对 at-least-once 的消费链路来说，「批次写成功再提交 offset」的粒度是自己可控的。
-
-前提有两个得先确认。一是这些表是不是只有大批次的写入方在写，要是还有业务直写、临时脚本这类小 INSERT，对它们关掉 `async_insert` 真会撞上 Too many parts，所以务必按 profile 或 user 去关，别全局关。二是客户端有没有在连接串里显式带 `async_insert`，带了就会盖掉 profile 的默认值，最稳的是去 `system.query_log` 里看实际生效的 settings。
 
 三个办法放一起比：
 
@@ -413,33 +405,6 @@ ORDER BY database, name;
 | 清理完成检查点 | 105997 | 32284899 字节 | 0 | 2 |
 
 znode 从约 126.2 万降到 105997，少了约 115.6 万，降了 91.6%；Keeper 数据量从约 340 MB 降到 32.3 MB；606 条活跃表分片路径下的 `async_blocks` 全部清零。
-
-## 怎么又涨回了 12 万
-
-105997 只是清理刚结束时的一个检查点。之后半小时左右，总 znode 回到了约 11.4 万，很快又摸到 12.2 万。
-
-第一反应当然是复发了？把 606 条 `async_blocks` 挨个查了一遍，直接子节点总数还是 0，不是它。
-
-接着怀疑 `deduplication_hashes`。用 `find_super_nodes` 扫大目录，命中 8 条路径，合计约 2.81 万，看着很像。可紧接着做了一次增量采样，这 8 条路径 16 秒内纹丝不动，总 znode 却又涨了 271，又不是它。
-
-那就换个办法，对 606 条路径全量分类统计，隔 15 秒再统计一次，做差分：
-
-```
-category                23:47:51    23:48:06    delta
-log                         3465        3494       +29
-blocks                       469         469        +0
-deduplication_hashes       52599       52599        +0
-async_blocks                   0           0        +0
-block_numbers                100         100        +0
-mutations                    200         200        +0
-TOTAL_ZNODE               121723      121832      +109
-```
-
-这下清楚了，在涨的是 `log`，也就是复制日志，去重相关的目录全是 +0。12 万这个水位是 ReplicatedMergeTree 正常运转要用的协调节点。15 秒内总量涨了 109，`log` 只占 29，剩下 80 个左右应该是 `replicas/.../parts`、表结构、选主这些常规元数据，这部分我没有一项项拆开验证，它们本来就跟着写入和 merge 一直在变，去重目录又都是 0，就没再往下挖。
-
-倒过来算也对得上：变更前的 126.2 万减掉 113 万 `async_blocks`，剩下约 13.2 万非异步的基础节点，12 万还略低于它。真正不正常的反而是 10.6 万，那是清理刚结束、复制日志和 parts 状态还没恢复时的一个瞬时低点。
-
-这一段我自己记下了三点：验证效果要同时看总 znode 和目标目录的计数，两者不是一回事；清理结束时的低点不是稳态水位，别拿它当后续告警的基线；`find_super_nodes` 找到的是存量最大的目录，不一定是正在涨的那个，要找在涨的，得做差分。
 
 ## 几件不要做的事
 

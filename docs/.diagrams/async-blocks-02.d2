@@ -1,0 +1,19 @@
+direction: right
+
+clients: "应用侧" {
+  class: base
+  a: "客户端 A\nINSERT #1"
+  b: "客户端 B\nINSERT #2"
+  c: "客户端 C\nINSERT #3"
+}
+
+ch: "ClickHouse Server\nasync_insert 内存攒批\n到阈值统一刷成 1 个 part\n（行数据只写一份）" {
+  class: base
+}
+
+keeper: "Keeper\n/clickhouse/tables/.../async_blocks\n合批后逐条登记：每源 INSERT 一条 hash，约 20B\n每条路径上限 10000 条，留 7 天\n记录数跟着源 INSERT 走，不跟着 part 走" {
+  class: base
+}
+
+clients -> ch: "高频小 INSERT"
+ch -> keeper: "hash #1 #2 #3 各一条"

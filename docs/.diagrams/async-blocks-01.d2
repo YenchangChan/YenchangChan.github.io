@@ -1,0 +1,14 @@
+shape: sequence_diagram
+
+cli: "客户端"
+srv: "ClickHouse Server"
+
+cli -> srv: "INSERT #A（小批量）"
+srv -> srv: "攒批到阈值，统一刷盘\npart 已写成功"
+srv -> cli: "ACK #A" {
+  style.stroke-dash: 4
+}
+cli."没等到 ACK，网络断了\n判定 #A 写入失败"
+cli -> srv: "重试 INSERT #A"
+srv -> srv: "没有去重记录\n#A 再写一遍"
+srv."结果：重复行\n物化视图目标表、SummingMergeTree 被重复累加"

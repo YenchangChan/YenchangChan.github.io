@@ -28,14 +28,20 @@ python3 scripts/diagrams/deploy-topology.py  docs/public/diagrams
 
 ## 其余的图是 d2 画的
 
-`docs/public/diagrams/` 下还有 32 张带 `data-d2-version` 的 SVG，是用 [d2](https://d2lang.com/)
+`docs/public/diagrams/` 下带 `data-d2-version` 的 SVG 是用 [d2](https://d2lang.com/)
 的 `--sketch` 渲染的（带分支汇合的拓扑图手写 HTML 装不下，会丢汇合关系）。
+早期一批图的 `.d2` 源文件没有保留，改不了只能重画；之后的源文件都放在 `docs/.diagrams/`，
+命名跟产物一致（`async-blocks-01.d2` → `async-blocks-01.light/dark.svg`，用在
+[126 万 znode 是怎么长出来的](../../docs/clickhouse/troubleshooting/keeper-async-blocks.md)）。
 
-**这些图的 `.d2` 源文件没有保留**，所以它们改不了，只能重画。以后再用 d2 出图，源文件记得放进这个目录。
-
-d2 的用法大致是：
+渲染（d2 v0.9.0 实测）：
 
 ```bash
-d2 --sketch --theme 0   xxx.d2 docs/public/diagrams/xxx.light.svg
-d2 --sketch --theme 200 xxx.d2 docs/public/diagrams/xxx.dark.svg
+d2 --sketch --theme 0   docs/.diagrams/xxx.d2 docs/public/diagrams/xxx.light.svg
+d2 --sketch --theme 200 docs/.diagrams/xxx.d2 docs/public/diagrams/xxx.dark.svg
+# d2 会给画布铺一层不透明底色，不符合站点透明背景的约定，把背景 rect 的 fill 改掉：
+sed -i 's/fill="#[0-9A-Fa-f]*" class=" fill-N7"/fill="transparent" class=" fill-N7"/' \
+    docs/public/diagrams/xxx.light.svg docs/public/diagrams/xxx.dark.svg
 ```
+
+注意 v0.9.0 里时序图的关键字是 `shape: sequence_diagram`，不是旧文档里的 `sequence`。
