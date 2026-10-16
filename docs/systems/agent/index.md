@@ -18,7 +18,7 @@
 
 ## Fluent Bit 源码笔记
 
-读 Fluent Bit `in_tail` 与引擎源码的四篇笔记。它是我们的同类产品，所以只写有代码位置和实测支撑的东西，每篇都对照上游 master 和在途 PR 复核过，并单独写「哪些不算缺陷」。
+读 Fluent Bit `in_tail`、`filter_kubernetes` 与 K8s 采集架构的五篇笔记。它是我们的同类产品，所以只写有代码位置和实测支撑的东西，每篇都对照上游 master 和在途 PR 复核过，并单独写「哪些不算缺陷」。
 
 <div class="posts">
 
@@ -40,6 +40,11 @@
 <a class="post" href="/systems/agent/fluent-bit-read-boundary">
 <span class="post-t">（四）读取边界上的数据丢失，GBK 日志丢了 27.4%</span>
 <span class="post-d">物理位置与逻辑位置混用：GBK 实测丢 27.4%、UTF-16 每个边界丢一行、<code>.gz</code> 中断后永远读不出来。三个预测都被实测推翻过。</span>
+</a>
+
+<a class="post" href="/systems/agent/fluent-bit-kubernetes-logging">
+<span class="post-t">（五）Kubernetes 日志采集，身份从文件路径里猜</span>
+<span class="post-d"><code>filter_kubernetes</code> 的身份机制与时效暗坑（TTL 默认 0 永不过期）、六种挂载方式矩阵、symlink 断链、hostPath 混写；再拿 loggie 过同一张问题清单：discovery 专业、文件采集外行、上游断更，选型结论落在最后。</span>
 </a>
 
 </div>

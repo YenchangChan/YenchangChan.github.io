@@ -196,6 +196,7 @@ export default defineConfig({
                 { text: '（二）规模天花板', link: '/systems/agent/fluent-bit-million-files' },
                 { text: '（三）offset 存储', link: '/systems/agent/fluent-bit-offset-identity' },
                 { text: '（四）编码与压缩', link: '/systems/agent/fluent-bit-read-boundary' },
+                { text: '（五）K8s 采集与选型', link: '/systems/agent/fluent-bit-kubernetes-logging' },
               ],
             },
           ],
