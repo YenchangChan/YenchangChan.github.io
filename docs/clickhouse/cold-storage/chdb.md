@@ -1250,8 +1250,6 @@ s3://my-bucket/events/
 
 每个 `data.parquet` 里：row group 128 MB，ZSTD level 3 压缩，statistics 打开（每个 row group 有 min/max），page index 打开，bloom filter 只给高基数、没法做主排序键的列开。
 
-配套的基准测试脚本是 `bench_chdb_vs_duckdb.py`。
-
 ---
 
 **相关**：[冷热分层概览](/clickhouse/cold-storage/) · [为什么要转 Parquet](/clickhouse/cold-storage/parquet) · [S3 不可达时起不来：metadata 明明在本地，它却说 S3 上找不到](/clickhouse/troubleshooting/s3-unreachable-startup)

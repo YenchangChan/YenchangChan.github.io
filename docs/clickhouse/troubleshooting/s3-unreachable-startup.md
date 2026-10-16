@@ -8,7 +8,7 @@ title: S3 不可达时起不来：metadata 明明在本地，它却说 S3 上找
 
 ClickHouse 把 S3 的 IO 打爆了，影响到了同一个账号下的其他业务。S3 的维护团队为了止血，直接把 ClickHouse 用的 access key 给停了。几个小时后 ClickHouse 节点例行重启，连不上 S3，server 启动卡住了。
 
-运维当时的救命操作是这样的：把配置里的 S3 endpoint 故意改错，指向一个不存在的域名，同时打开 `skip_access_check=true`。server 居然就起来了。然后把 S3 disk 上的表 `DETACH` 掉，等 access key 重新启用，改回正确的配置，重启，再 `ATTACH` 回来。
+我当时给运维的救命操作是这样的：把配置里的 S3 endpoint 故意改错，指向一个不存在的域名，同时打开 `skip_access_check=true`。server 居然就起来了。然后把 S3 disk 上的表 `DETACH` 掉，等 access key 重新启用，改回正确的配置，重启，再 `ATTACH` 回来。
 
 这一套在 22.8 上好使得很。
 
@@ -45,7 +45,7 @@ ClickHouse 把 S3 的 IO 打爆了，影响到了同一个账号下的其他业�
 
 `skip_access_check` 设计上只是跳过 access check 这一步。它在 22.x 上能救场，按我的理解是沾了副作用的光：endpoint 不可达，S3 client 创建失败，这个 disk 就被标成 broken；broken disk 上的 part 走的是延迟 attach，被推后处理；延迟 attach 不会马上去读 S3 上的那些 part 文件，attach part 那一步就被悄悄跳过了，启动得以继续。参数本来不是为这个设计的，只是那时候对 broken disk 的处理比较宽松，它就阴差阳错成了一个 S3 不可达时的救命开关。
 
-改错 endpoint 的偏方就是借的这个劲。把 endpoint 改成一个不存在的域名，比如 `https://nonexistent.invalid/`，DNS 解析失败，S3 client 初始化失败，access check 必然失败；有 `skip_access_check=true`，这一步被跳过；disk 进入 broken 状态，上面所有的 part 都走延迟 attach，server 就起来了。这时候表是 broken 的，`DETACH` 是合法操作。等 S3 好了，改回正确的 endpoint，重启，再 `ATTACH`，一切照常。这个流程在 22.x 上严丝合缝，运维圈里传得很广。
+改错 endpoint 的偏方就是借的这个劲。把 endpoint 改成一个不存在的域名，比如 `https://nonexistent.invalid/`，DNS 解析失败，S3 client 初始化失败，access check 必然失败；有 `skip_access_check=true`，这一步被跳过；disk 进入 broken 状态，上面所有的 part 都走延迟 attach，server 就起来了。这时候表是 broken 的，`DETACH` 是合法操作。等 S3 好了，改回正确的 endpoint，重启，再 `ATTACH`，一切照常。这个流程在 22.x 上严丝合缝。
 
 从 23.x 开始，ClickHouse 的远端存储逐步引入了 `IObjectStorage` 这些抽象，把 disk 拆成了更清楚的两层：逻辑上的 disk 是 `DiskObjectStorage`，底下的物理存储是 `S3ObjectStorage`、`AzureObjectStorage`、`LocalObjectStorage` 这些。
 
@@ -72,7 +72,7 @@ ClickHouse 把 S3 的 IO 打爆了，影响到了同一个账号下的其他业�
 
 ### 哪个版本都能用：把表的 SQL 文件挪走
 
-这是从 22.x 到 24.x 都好使的硬办法，也是最靠得住的应急手段。
+这是从 22.x 到 24.x 都好使的办法，也是最靠得住的应急手段。
 
 ```bash
 # 1. 停 ClickHouse
@@ -98,7 +98,7 @@ clickhouse-client -q "ATTACH TABLE db_name.big_table"
 
 道理很简单，ClickHouse 启动时只处理 `metadata/` 目录里能看到的 SQL 文件，文件不在了，就不会去 attach 这张表，也就不会去碰 S3，跟版本没关系。
 
-有几点得小心。挪的是 `/var/lib/clickhouse/metadata/` 下面的 SQL 文件，`/var/lib/clickhouse/data/` 千万别碰，那里是真正的本地数据，包括 S3 disk 本地那一层 metadata，动了它是真会丢数据的。挪走的 SQL 文件最好先备份一份再 `ATTACH`。如果是 ReplicatedMergeTree，恢复时要确认 ZK 上的路径还在。
+不过有几点得小心。挪的是 `/var/lib/clickhouse/metadata/` 下面的 SQL 文件，`/var/lib/clickhouse/data/` 千万别碰，那里是真正的本地数据，包括 S3 disk 本地那一层 metadata，动了它是真会丢数据的。挪走的 SQL 文件最好先备份一份再 `ATTACH`。如果是 ReplicatedMergeTree，恢复时要确认 ZK 上的路径还在。
 
 这个办法我建议每个 ClickHouse 运维团队都写进自己的 runbook。
 
@@ -115,8 +115,6 @@ clickhouse-client -q "ATTACH TABLE db_name.big_table"
     </s3_cold>
 </disks>
 ```
-
-集群还在 22.x 的话，这招照样管用。可要是在讲 23.x 以后版本的文章里看到有人推荐这个偏方，多半是作者没在新版本上试过。
 
 ### 23.11 以后：async_load_databases
 

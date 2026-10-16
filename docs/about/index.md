@@ -73,9 +73,25 @@ clickhouse-go / ch-go：
 
 ## 最近在做
 
+### Iceberg调研
+
+#### 为什么值得做
+
+这几年随着AI的爆发式增长，存储成本居高不下。很多客户都在寻求更便宜的存储方式，存算分离架构也成了大家这一年来最容易提到的话题之一。我前面所做的那些工作，包括S3冷盘，backup/restore， chdb+parquet，以及doris、openobserve、greptimedb的存算分离现状调研等，都是在这条路上的探索。目前来看，走得最稳的应该还是chdb+parquet。但parquet对于查询本身还是有些重了，尤其是涉及到带过滤的查询，因此，需要有一种更高效，更通用的数据格式。
+
+#### 我在做什么
+
 在调研 Iceberg，看它能不能接替现在这套冷数据方案。现在的做法是把冷数据从 ClickHouse 导成 Parquet 放进 S3，再拿 chDB 当一个独立的查询端，写在 [chDB + S3 Parquet](/clickhouse/cold-storage/chdb) 里。裸 Parquet 没有表一级的元数据，查询能裁掉多少，全看路径怎么分区、文件内的统计信息有多准，有点吃建表时的手艺。我想看看换成 Iceberg，靠它的快照和清单统计能不能把冷查询再提一截，前提是冷查询这套系统仍然独立于 ClickHouse 集群，不要又把依赖绕回去。还在看文档和搭环境的阶段，有结论了再写。
 
-另一件是想把 ARM 的 ClickHouse 安装包分发这件事做起来。官方 CI 一直在构建 `aarch64v80compat`，可它只活在流水线产物里，能拉到的永远是 master，没有任何 release 或者 LTS 渠道。信创项目要的是明确的版本号和支持周期，这个渠道不存在，这个能力对生产就等于不存在。来龙去脉写在 [ARM 上一跑就 SIGILL](/clickhouse/vendor/kylin-arm-instruction-baseline) 里，现在在评估构建和分发具体怎么做。
+### ARM信创版本发布渠道
+
+#### 为什么值得做
+
+国内信创的deadline是2027年12月，现在该上信创的企业基本都上了，而clickhouse在信创硬件上的适配是出了名的差，除非clickhouse打算彻底放弃信创这块大市场了，否则这是一个不得不面对的死结。你不做兼容，逼迫用户倒向doris/starrocks等支持信创硬件的数据库的怀抱，做兼容，得手动编译，官方不提供这条路。
+
+#### 我在做什么
+
+因此，我想把 ARM 的 ClickHouse 安装包分发这件事做起来。官方 CI 一直在构建 `aarch64v80compat`，可它只活在流水线产物里，能拉到的永远是 master，没有任何 release 或者 LTS 渠道。信创项目要的是明确的版本号和支持周期，这个渠道不存在，这个能力对生产就等于不存在。来龙去脉写在 [ARM 上一跑就 SIGILL](/clickhouse/vendor/kylin-arm-instruction-baseline) 里，整个编译验证流程我已经跑通了，现在在评估具体的分发途径和渠道。
 
 <!-- 半年更一次。别空着，空着说明这人已经停了。 -->
 

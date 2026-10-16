@@ -72,6 +72,11 @@
 <span class="post-d">SQL、Executable、WASM 三种形态性能差着一个数量级，而大多数「需要 UDF」的场景其实用不着。</span>
 </a>
 
+<a class="post" href="/clickhouse/deep-dive/replica-readonly">
+<span class="post-t">副本表 readonly：什么时候等它自愈，什么时候该重建元数据</span>
+<span class="post-d">所有表一起 readonly 是 Keeper 的事，别碰表；少数表不自愈才是元数据的事。restore 以幸存副本为准，本地多出来的 part 会被直接删掉，动手前先捞数据。</span>
+</a>
+
 </div>
 
 <!-- TODO 选题储备：
