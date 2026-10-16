@@ -13,6 +13,11 @@
 <span class="post-d">扫了 8900 万条指令，缺的其实是 rcpc，LSE 没问题。ClickHouse 的指令集自检又排在崩溃之后，出了事什么都不说。</span>
 </a>
 
+<a class="post" href="/clickhouse/vendor/chdb-avx-baseline">
+<span class="post-t">chdb 在老 CPU 上 SIGILL：同一台机器，clickhouse 却跑得好好的</span>
+<span class="post-d">chdb 编译时把基线从 SSE4.2 抬到 AVX，<code>-mavx</code> 把所有 SSE 指令改编成 VEX 编码，静态初始化器里第一条就死，早于 <code>main()</code>，无声无息。降回 SSE4.2，热点性能一条不少。</span>
+</a>
+
 </div>
 
 ## 操作系统与发行版

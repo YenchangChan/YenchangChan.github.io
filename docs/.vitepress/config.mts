@@ -73,6 +73,7 @@ const CH_SIDEBAR = [
           items: [
             { text: '概览', link: '/clickhouse/vendor/' },
             { text: 'ARM 上一跑就 SIGILL', link: '/clickhouse/vendor/kylin-arm-instruction-baseline' },
+            { text: 'x86 老 CPU 一 import chdb 就 SIGILL', link: '/clickhouse/vendor/chdb-avx-baseline' },
             { text: 'systemd AmbientCapabilities', link: '/clickhouse/vendor/systemd-ambient-capabilities' },
             { text: '华为 MRS 的连接协议陷阱', link: '/clickhouse/vendor/huawei-mrs-protocol-trap' },
             { text: '并发 INSERT 串表', link: '/clickhouse/vendor/mrs-http-prepare-cache' },
