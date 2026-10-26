@@ -1,0 +1,12 @@
+direction: down
+
+p1: "进程 1（被 OOM Killer 选中）\n正 D 在 jbd_log_wait_commit()\n不可中断：kill 信号递不进去\n内存释放不了"
+p2: "进程 2\next3_get_blocks_handle()\n__getblk 申请不到内存\nfree_more_memory() 空转"
+
+p1 -> p2: "① 等进程 2 的 transaction 完成"
+p2 -> p1: "② 等进程 1 被杀、腾出内存\n（同一 cgroup，已到限额）"
+
+j: "journal 线程陪葬\nhandle 攥在进程 2 手里，t_updates 减不下来\ntransaction 永远卡在 committing"
+j -> p2: "等 t_updates 归零" {
+  style.stroke-dash: 4
+}

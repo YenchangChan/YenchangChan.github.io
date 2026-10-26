@@ -69,6 +69,11 @@ title: ext3 + memcg 的 OOM 死锁：采集器差点背了锅
 
 而进程 2 要等 `__getblk` 拿到内存才能完成 transaction。可进程 1 杀不掉，内存就释放不出来，`__getblk` 永远拿不到内存，transaction 永远完成不了，进程 1 也就永远等不到。两个进程互相等，死锁了。
 
+<figure class="dfig">
+<img class="dfig-l" src="/diagrams/ext3-jbd-deadlock-01.light.svg" alt="死锁闭环：进程 1 等进程 2 的 transaction 完成，进程 2 等进程 1 被杀释放内存，journal 线程跟着陪葬">
+<img class="dfig-d" src="/diagrams/ext3-jbd-deadlock-01.dark.svg" alt="死锁闭环：进程 1 等进程 2 的 transaction 完成，进程 2 等进程 1 被杀释放内存，journal 线程跟着陪葬">
+</figure>
+
 这里同一个 cgroup 是闭环成立的前提。如果两个进程不在一个 cgroup 里，进程 2 的内存申请就不受进程 1 那边限额的约束，这个环就断了。
 
 ## `__GFP_NOFAIL` 丢在了哪
