@@ -57,6 +57,11 @@
 <span class="post-d">显式 PREWHERE 快 9 倍，但会把被覆盖的旧数据捞回来；禁止跨分区 merge 快 17 倍，但同一个 key 跨了分区就漏去重。26.3.3 上逐条验过。</span>
 </a>
 
+<a class="post" href="/clickhouse/deep-dive/replacingmergetree-dedup">
+<span class="post-t">ReplacingMergeTree 去重的坑：单机 demo 好使，上集群是另一回事</span>
+<span class="post-d">去重要生效，得同一 key 的所有版本落在同一节点同一分区再赶上 merge。sharding 键、分区键、版本列、resharding、副本进度，全是围着这一条的设计义务。</span>
+</a>
+
 <a class="post" href="/clickhouse/deep-dive/materialized-view">
 <span class="post-t">物化视图：三种机制，以及 100T 表上的 POPULATE</span>
 <span class="post-d">传统 MV、TO TABLE、Refreshable 到底差在哪，大表怎么选，回填、修数据和 schema 演化怎么做。</span>
