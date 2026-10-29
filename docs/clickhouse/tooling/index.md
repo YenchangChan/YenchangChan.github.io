@@ -18,6 +18,11 @@
 <span class="post-d">环形部署、轮转多集群技术上都走得通。可同样的机器，双机故障时分片不可用的概率翻倍，写本地表的工具还会静默写错分片。这也是 ckman 只支持一机一副本的原因。</span>
 </a>
 
+<a class="post" href="/clickhouse/tooling/keeper-deployment">
+<span class="post-t">ClickHouse Keeper 部署对比：为什么生产推荐独立部署</span>
+<span class="post-d">内置部署省一套服务，但和 ClickHouse 共用进程资源和生命周期，日志还混进同一个文件，issue #31860 至今 not planned。生产副本集群的基线应该是独立三节点仲裁集群。</span>
+</a>
+
 <a class="post" href="/clickhouse/tooling/why-not-auto-rebalance">
 <span class="post-t">扩容之后为什么不自动做数据均衡</span>
 <span class="post-d">技术上做得到。可 sharding 规则很多时候是写入端定的，存储层不知道它有没有业务含义，搬错了还不报错。</span>

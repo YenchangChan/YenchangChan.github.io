@@ -50,6 +50,7 @@ const CH_SIDEBAR = [
             { text: 'Too many partitions', link: '/clickhouse/deep-dive/too-many-partitions' },
             { text: '同一条 SQL 结果不一样', link: '/clickhouse/deep-dive/inconsistent-query-results' },
             { text: 'FINAL 查询优化', link: '/clickhouse/deep-dive/final-query' },
+            { text: 'ReplacingMergeTree 去重的坑', link: '/clickhouse/deep-dive/replacingmergetree-dedup' },
             { text: '物化视图', link: '/clickhouse/deep-dive/materialized-view' },
             { text: '字典', link: '/clickhouse/deep-dive/dictionary' },
             { text: '到底要不要写 UDF', link: '/clickhouse/deep-dive/udf' },
@@ -62,6 +63,7 @@ const CH_SIDEBAR = [
           items: [
             { text: '概览', link: '/clickhouse/tooling/' },
             { text: '为什么推荐一机一副本', link: '/clickhouse/tooling/deployment-topology' },
+            { text: 'Keeper 内置还是独立', link: '/clickhouse/tooling/keeper-deployment' },
             { text: '扩容后为什么不自动均衡', link: '/clickhouse/tooling/why-not-auto-rebalance' },
             { text: '指标 schema 改了三次', link: '/clickhouse/tooling/metric-schema-evolution' },
             { text: '集群机房搬迁实战', link: '/clickhouse/tooling/datacenter-migration' },
