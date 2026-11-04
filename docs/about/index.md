@@ -17,12 +17,13 @@
 | [ClickHouse](https://github.com/ClickHouse/ClickHouse) | Contributor | 主仓库 |
 | [clickhouse-go](https://github.com/ClickHouse/clickhouse-go) / [ch-go](https://github.com/ClickHouse/ch-go) | Contributor | 官方 Go 客户端 |
 
-### 上游：9 个 PR 已合并，覆盖三个官方仓库
+### 上游：10 个 PR 已合并，覆盖三个官方仓库
 
 ClickHouse/ClickHouse：
 
 | | |
 |---|---|
+| [#128427](https://github.com/ClickHouse/ClickHouse/pull/128427) | 改进 Keeper 超时报错，补充实际超时阈值与对应配置项；在服务端和客户端记录会话超时被调整的情况，方便排查客户端配置未生效的问题。已同步至 ClickHouse Cloud |
 | [#88746](https://github.com/ClickHouse/ClickHouse/pull/88746) | clickhouse-keeper 开机自启。被标记 `must-backport`，已回移至多个稳定分支与 ClickHouse Cloud |
 | [#61969](https://github.com/ClickHouse/ClickHouse/pull/61969) | `numbers` / `numbers_mt` / `zeros` / `zeros_mt` 表函数的零参数变体 |
 | [#61622](https://github.com/ClickHouse/ClickHouse/pull/61622) | 清理 `copyS3File` 重复代码 |
