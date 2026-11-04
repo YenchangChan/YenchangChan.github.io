@@ -12,7 +12,7 @@ title: ReplacingMergeTree 去重的坑：单机 demo 好使，上集群是另一
 
 `FINAL` 会在查询时把涉及的所有 part 在内存里做一次 merge，等于把后台 merge 的活搬到了查询路径上。数据量小无所谓，单个分区到了上千万、上亿行，一次 `FINAL` 的延迟和资源消耗都会明显上去。
 
-这个代价具体多大、能怎么压，我在 [FINAL 那篇](/clickhouse/deep-dive/final-query)里用 opensky 数据集实测过，这里不重复。要记的是：用了 ReplacingMergeTree，`FINAL` 的开销就是常态，不是偶发。
+这个代价具体多大、能怎么压，我在 [FINAL 那篇](/clickhouse/deep-dive/final-query)里用 opensky 数据集实测过，这里不重复。只是在 ReplacingMergeTree 的场景里，这份开销每次查询都会发生，躲不开。
 
 ## 去重认的是 ORDER BY
 
@@ -26,7 +26,7 @@ title: ReplacingMergeTree 去重的坑：单机 demo 好使，上集群是另一
 
 实际上 merge 是后台异步、择优触发的，最后一个 part 可能永远不再参与 merge。官方文档的措辞比「不可靠」严厉得多：它只提供 eventual correctness，不保证行会被去重，you should not rely on it。
 
-所以查询侧的 `FINAL` 不是性能选项，是**正确性需求**。不想加 `FINAL`，就得用 `GROUP BY` 加 `argMax` 之类的写法，自己在查询侧把去重语义实现一遍，反正绕不开。
+所以查询侧的 `FINAL` 首先是**正确性需求**，性能账还在其次。不想加 `FINAL`，就得用 `GROUP BY` 加 `argMax` 之类的写法，自己在查询侧把去重语义实现一遍，反正绕不开。
 
 ## 上了集群，条件一个个失效
 
@@ -40,7 +40,7 @@ title: ReplacingMergeTree 去重的坑：单机 demo 好使，上集群是另一
 
 ## 扩缩容之后要 resharding
 
-分片数一变，路由结果跟着变。不做 resharding 的话，同一个 key 的历史数据留在旧分片，新写入去了新分片，两个分片各存着一份「最新值」，查出来就错乱了。所以用了 ReplacingMergeTree 的集群，扩缩容必须按 `ORDER BY` key 把数据重新分布一遍，这不是可选项。
+分片数一变，路由结果跟着变。不做 resharding 的话，同一个 key 的历史数据留在旧分片，新写入去了新分片，两个分片各存着一份「最新值」，查出来就错乱了。所以用了 ReplacingMergeTree 的集群，扩缩容必须按 `ORDER BY` key 把数据重新分布一遍，这一步省不掉。
 
 ## 跨分区合并不了
 
@@ -68,7 +68,7 @@ sharding 键定了，写入怎么落地？两条路都不完美。
 
 先看连接池（`pool/conn.go`），它是按 shard 组织的，不是按节点。配置里的 `Hosts` 是二维数组，每个 shard 一组副本，连接池为每个 shard 维护一条连接，在 shard 内部对多个副本轮询挑健康节点（代码里叫 `NextGoodReplica`）。每个 shard 还带一个健康状态机：写失败就标记不可用，后台每 60 秒探测一次，恢复后自动加回路由。
 
-再看 sharding 键和去重键的对齐（`output/clickhouse.go`），这个是代码强制的，不靠人肉。任务没显式配置 `shardingKey` 的时候，sinker 会查目标表的引擎，发现是 `Replacing*` 系列，就从 `system.columns` 读出所有 `is_in_sorting_key = 1` 的列作为 sorting key，然后自动执行 `ALTER TABLE ... ADD COLUMN __shardingkey Int64`。写入时把 sorting key 各列的值拼起来做 xxhash，写进 `__shardingkey` 列，按它选分片。「同一 `ORDER BY` key 进同一分片」这条不变量，是代码保证的，不是约定。
+再看 sharding 键和去重键的对齐（`output/clickhouse.go`），这个是代码强制的，不靠人肉。任务没显式配置 `shardingKey` 的时候，sinker 会查目标表的引擎，发现是 `Replacing*` 系列，就从 `system.columns` 读出所有 `is_in_sorting_key = 1` 的列作为 sorting key，然后自动执行 `ALTER TABLE ... ADD COLUMN __shardingkey Int64`。写入时把 sorting key 各列的值拼起来做 xxhash，写进 `__shardingkey` 列，按它选分片。「同一 `ORDER BY` key 进同一分片」这条不变量由代码保证，不用靠人守约定。
 
 分片算法本身（`task/sharding.go`）支持两种显式配置：字符串列走 xxhash 取模；数值列支持 stripe 分桶，`(val / stripe) % shards`，同一个 stripe 窗口内的相邻值落在同一分片，适合需要保序或者局部性的场景。另外还有 `__offset__`（Kafka offset）兜底。
 
@@ -90,7 +90,7 @@ sharding 键定了，写入怎么落地？两条路都不完美。
 
 超时和失败语义也得知道。`insert_quorum_timeout` 默认 600000 毫秒，一次 quorum 写入最坏要卡上十分钟才报错。超时算写失败，ClickHouse 会把已经写进部分副本的块删掉，客户端负责重试。重试同一份数据是安全的，副本表按块做插入去重。
 
-最后要分清一层：quorum 解决的是「写完立刻能读到」，不是去重进度。merge 还是各副本各做各的，quorum 管不着。一致性和去重是两层问题。
+最后要分清一层：quorum 解决的只是「写完立刻能读到」。merge 还是各副本各做各的，去重进度 quorum 管不着。
 
 代价是写吞吐明显下降，每次写入都要等副本间同步。quorum 写入适合一致性敏感、写入量不大的表，不适合高吞吐的日志流。大多数场景的现实选择，还是固定副本读写，接受 merge 进度差。
 
@@ -122,9 +122,9 @@ ENGINE = ReplacingMergeTree(ver, is_deleted)
 
 ## 最后
 
-ClickHouse 的去重能力不是白送的。选定 ReplacingMergeTree 的那一刻，就同时签下了这些义务：查询必须带 `FINAL`，或者在查询侧自己去重；分区键要保证同一 `ORDER BY` key 落在同一分区；sharding 键要保证同一 key 落在同一分片；版本列要用业务时间戳定义「谁最新」，不能靠插入顺序；扩缩容要按 `ORDER BY` key resharding；副本读写尽量固定，容忍或者绕开 merge 进度差。
+ClickHouse 的去重能力不是白送的。选定 ReplacingMergeTree，这些事就得一起定下来：查询必须带 `FINAL`，或者在查询侧自己去重；分区键要保证同一 `ORDER BY` key 落在同一分区；sharding 键要保证同一 key 落在同一分片；版本列要用业务时间戳定义「谁最新」，不能靠插入顺序；扩缩容要按 `ORDER BY` key resharding；副本读写尽量固定，容忍或者绕开 merge 进度差。
 
-这些都要在建表和集群设计之初就想清楚，事后再补任何一条，都是伤筋动骨的改造。去重在 ClickHouse 里从来不是一个引擎参数的事，是一套从分区键、sharding 键到版本列的配套设计。单机 demo 之所以看起来简单，是因为这些配套在单机上全都默认成立。
+这些都要在建表和集群设计之初就想清楚，事后再补任何一条，都是伤筋动骨的改造。去重在 ClickHouse 里靠的是从分区键、sharding 键到版本列的一整套配套设计，单设一个引擎参数罩不住。单机 demo 之所以看起来简单，是因为这些配套在单机上全都默认成立。
 
 ---
 

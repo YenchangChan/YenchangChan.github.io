@@ -187,7 +187,7 @@ hostPath 没有命名空间隔离，同节点多 pod 挂同一个卷，应用再
 
 真正麻烦的是另外三件事：Deployment 维度不存在，业务按 deploy 聚合得自建映射；身份数据有时效暗坑，前面说过，TTL 默认 0，短 Job 可能整条没有元数据字段；身份来自路径约定，约定一变元数据静默消失，symlink 那节就是例子。
 
-放到设计取向的坐标系里看：Filebeat autodiscover 是 watch 控制面的路线，感知 pod 生命周期，覆盖好但耦合重；OTel 的 k8sattributes 走中间路线，也是 watch；fluent-bit 是零控制面依赖的节点哑管道。**它的所有优点和所有缺陷，都是"零控制面"这一个选择的投影。**这句话是这一篇的纲，loggie 那半是同一个纲的镜像。
+放到设计取向的坐标系里看：Filebeat autodiscover 是 watch 控制面的路线，感知 pod 生命周期，覆盖好但耦合重；OTel 的 k8sattributes 走中间路线，也是 watch；fluent-bit 是零控制面依赖的节点哑管道。**它的所有优点和所有缺陷，都是从"零控制面"这一个选择里长出来的。**loggie 那半篇反着选了一家，拿同一句话去对照就行。
 
 ## 换 loggie 过同一张清单
 
