@@ -53,6 +53,7 @@ const CH_SIDEBAR = [
             { text: 'ReplacingMergeTree 去重的坑', link: '/clickhouse/deep-dive/replacingmergetree-dedup' },
             { text: '物化视图', link: '/clickhouse/deep-dive/materialized-view' },
             { text: '字典', link: '/clickhouse/deep-dive/dictionary' },
+            { text: 'text 索引的 GRANULARITY', link: '/clickhouse/deep-dive/text-index-granularity' },
             { text: '到底要不要写 UDF', link: '/clickhouse/deep-dive/udf' },
             { text: '副本表 readonly', link: '/clickhouse/deep-dive/replica-readonly' },
           ],

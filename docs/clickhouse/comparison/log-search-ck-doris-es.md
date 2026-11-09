@@ -191,6 +191,8 @@ CK 慢的那条，是因为要把整列读一遍逐字节比对；ES 慢的那�
 
 不过生产里很多查询其实是首轮冷查询，而三家的首轮都比中位数高出好几倍。CK 是 3–5 倍，Doris 2–7 倍，ES 在 token 类用例上几乎没差别，可到了中文和短语类，能高出 15–17 倍。
 
+text 索引为什么能在整个 part 内定位候选行，以及建表时的 `GRANULARITY 1` 为什么会变成一亿，另见 [text 索引的 GRANULARITY](/clickhouse/deep-dive/text-index-granularity)。
+
 ### CK 的短语检索是近似匹配
 
 CK 的 text 索引不存 token 位置，所以短语查询只能确认「这几个词都出现过」，确认不了「它们挨在一起」。不同档位的精度还不一样：

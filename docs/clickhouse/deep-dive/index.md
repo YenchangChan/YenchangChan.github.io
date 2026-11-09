@@ -72,6 +72,11 @@
 <span class="post-d">刷新时 2.2~2.5 倍的内存尖刺、LAYOUT 怎么选，以及到了什么规模就不该再用字典。</span>
 </a>
 
+<a class="post" href="/clickhouse/deep-dive/text-index-granularity">
+<span class="post-t">text 索引的 GRANULARITY：写了 1，为什么变成一亿</span>
+<span class="post-d">SQL 解析时就改了。倒排索引按整个 part 组织，靠 posting list 定位候选行；26.3.3.20 实测元数据，源码追到布局约束。</span>
+</a>
+
 <a class="post" href="/clickhouse/deep-dive/udf">
 <span class="post-t">到底要不要写 UDF</span>
 <span class="post-d">SQL、Executable、WASM 三种形态性能差着一个数量级，而大多数「需要 UDF」的场景其实用不着。</span>
