@@ -10,7 +10,7 @@
 
 <a class="post" href="/others/doris/">
 <span class="post-t">Apache Doris</span>
-<span class="post-d">金融行业的日志平台，日增百 TB 级。存储策略与 S3、跨数据中心查询。</span>
+<span class="post-d">金融行业的日志平台，日增百 TB 级。存储策略与 S3、跨数据中心查询，以及数据组织、Compaction 和存算分离机制。</span>
 </a>
 
 </div>

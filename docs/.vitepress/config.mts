@@ -105,6 +105,9 @@ const OTHERS_SIDEBAR = [
           collapsed: false,
           items: [
             { text: '概览', link: '/others/doris/' },
+            { text: 'Partition、Tablet 与 Rowset', link: '/others/doris/data-layout' },
+            { text: 'Compaction 与小批写入', link: '/others/doris/compaction' },
+            { text: '与 StarRocks 的存算分离对照', link: '/others/doris/shared-data' },
             { text: '存储策略与 S3', link: '/others/doris/storage-policy-s3' },
             { text: '跨数据中心查询', link: '/others/doris/cross-datacenter-query' },
           ],

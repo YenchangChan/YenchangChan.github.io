@@ -483,4 +483,4 @@ O2 的护城河，也不是存算分离本身。这个能力在 2026 年已经�
 
 ---
 
-**相关**：[OpenObserve 源码深挖](/clickhouse/comparison/openobserve-internals) · [OpenObserve 压测实录](/clickhouse/comparison/openobserve-benchmark) · [chDB + S3 Parquet](/clickhouse/cold-storage/chdb) · [2026 年 ClickHouse 和 Doris 怎么选](/clickhouse/comparison/clickhouse-vs-doris)
+**相关**：[Doris 与 StarRocks 的存算分离机制](/others/doris/shared-data) · [OpenObserve 源码深挖](/clickhouse/comparison/openobserve-internals) · [OpenObserve 压测实录](/clickhouse/comparison/openobserve-benchmark) · [chDB + S3 Parquet](/clickhouse/cold-storage/chdb) · [2026 年 ClickHouse 和 Doris 怎么选](/clickhouse/comparison/clickhouse-vs-doris)
